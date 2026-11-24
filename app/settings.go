@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -23,7 +25,7 @@ const (
 	// UpdatesPath is the public download prefix; it is part of CONTRACT.md 1.4.
 	UpdatesPath = "/api/updates/"
 	// releaseSuffix completes the hosted file name from the version.
-	releaseSuffix = "-mesh-client.exe"
+	releaseSuffix = "-mesh-client.zip"
 	// MaxAppVersionRunes bounds the client version string.
 	MaxAppVersionRunes = 64
 	// MaxUploadBytes bounds the uploaded client binary.
@@ -170,9 +172,16 @@ func (a *App) PublishUpload(version, notes string, src io.Reader) (db.Settings, 
 		return db.Settings{}, err
 	}
 	name := version + releaseSuffix
-	hash, sha, size, err := writeReleaseFile(a.updatesDir(), name, src)
+	_, sha, size, err := writeReleaseFile(a.updatesDir(), name, src)
 	if err != nil {
 		return db.Settings{}, err
+	}
+	target := filepath.Join(a.updatesDir(), name)
+	// 心跳上报的是 mesh-client.exe 的哈希，不是整个包的哈希，所以要拆开看。
+	hash, err := releaseExeDigest(target)
+	if err != nil {
+		_ = os.Remove(target)
+		return db.Settings{}, invalid("更新包不可用：%v", err)
 	}
 	next := db.Settings{
 		AppVersion:  version,
@@ -302,9 +311,10 @@ func writeReleaseFile(dir, name string, src io.Reader) (hash, sha string, size i
 	return full[:releaseHashLen], full, size, nil
 }
 
-// fetchDigest downloads rawURL and returns the truncated and the full sha256 of
-// the body. The body is discarded: an external release is compared exactly like
-// an uploaded one.
+// fetchDigest downloads rawURL and returns the truncated hash of the client
+// inside it together with the full sha256 of the package. The body is kept only
+// long enough to read the zip: an external release is compared exactly like an
+// uploaded one.
 func fetchDigest(rawURL string) (hash, sha string, err error) {
 	client := &http.Client{Timeout: fetchTimeout}
 	res, err := client.Get(rawURL)
@@ -315,14 +325,75 @@ func fetchDigest(rawURL string) (hash, sha string, err error) {
 	if res.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("HTTP %d", res.StatusCode)
 	}
+	tmp, err := os.CreateTemp("", "release-*.zip")
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}()
 	sum := sha256.New()
-	n, err := io.Copy(sum, io.LimitReader(res.Body, MaxUploadBytes+1))
+	n, err := io.Copy(io.MultiWriter(tmp, sum), io.LimitReader(res.Body, MaxUploadBytes+1))
 	if err != nil {
 		return "", "", err
 	}
 	if n > MaxUploadBytes {
 		return "", "", errors.New("文件超过 200MB")
 	}
+	if err := tmp.Close(); err != nil {
+		return "", "", err
+	}
 	full := hex.EncodeToString(sum.Sum(nil))
-	return full[:releaseHashLen], full, nil
+	hash, err = releaseExeDigest(tmp.Name())
+	if err != nil {
+		return "", "", err
+	}
+	return hash, full, nil
+}
+
+// releaseExeDigest reads the client out of a release package and returns its
+// truncated sha256. The package layout is fixed: mesh-client.exe at the root and
+// bin/easytier-core.exe beside it, which is also what the updater requires.
+func releaseExeDigest(zipPath string) (string, error) {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", fmt.Errorf("不是有效的 zip 包: %w", err)
+	}
+	defer r.Close()
+	var clientHash, clientName string
+	var hasCore bool
+	for _, f := range r.File {
+		name := path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))
+		switch name {
+		case "bin/easytier-core.exe":
+			hasCore = true
+		case "mesh-client.exe":
+			sum, err := digestZipEntry(f)
+			if err != nil {
+				return "", err
+			}
+			clientHash, clientName = sum[:releaseHashLen], name
+		}
+	}
+	if clientName == "" {
+		return "", errors.New("包里没有 mesh-client.exe")
+	}
+	if !hasCore {
+		return "", errors.New("包里没有 bin/easytier-core.exe")
+	}
+	return clientHash, nil
+}
+
+func digestZipEntry(f *zip.File) (string, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, io.LimitReader(rc, MaxUploadBytes+1)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }

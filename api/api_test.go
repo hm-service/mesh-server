@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -195,6 +196,29 @@ func registerDevice(t *testing.T, env *testenv.Env, name, toml string) registere
 	return registeredDevice{internalID: id, deviceID: deviceID, priv: priv, configTOML: toml, configHash: wantHash}
 }
 
+// releaseZip packs client bytes into a release package. The server only accepts
+// this format, and the package must carry the kernel beside the client.
+func releaseZip(t *testing.T, client []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	write := func(name string, data []byte) {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("zip create %s: %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("zip write %s: %v", name, err)
+		}
+	}
+	write("mesh-client.exe", client)
+	write("bin/easytier-core.exe", []byte("core"))
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 // fileServer serves body at every path so external URL releases are testable.
 func fileServer(t *testing.T, body []byte) string {
 	t.Helper()
@@ -203,7 +227,7 @@ func fileServer(t *testing.T, body []byte) string {
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	return srv.URL + "/mesh-client.exe"
+	return srv.URL + "/mesh-client.zip"
 }
 
 func TestAuthRequiresCorrectToken(t *testing.T) {
@@ -462,7 +486,7 @@ func uploadSettings(t *testing.T, env *testenv.Env, version, notes, defaultTOML 
 		}
 	}
 	if file != nil {
-		part, err := mw.CreateFormFile("file", "mesh-client.exe")
+		part, err := mw.CreateFormFile("file", "mesh-client.zip")
 		if err != nil {
 			t.Fatalf("create file part: %v", err)
 		}
@@ -495,7 +519,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 
 	// Publish a build so app_hash has a value to compare against.
-	build := []byte("client build one")
+	build := releaseZip(t, []byte("client build one"))
 	release := publishUpload(t, env, "2026.11.24-4", "修复窄屏布局", "", build)
 	sum := sha256.Sum256(build)
 	wantSHA := hex.EncodeToString(sum[:])
@@ -582,7 +606,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 
 	// Publishing another build flips app_hash and the update comes back.
-	next := publishUpload(t, env, "2026.11.25-1", "", "", []byte("client build two"))
+	next := publishUpload(t, env, "2026.11.25-1", "", "", releaseZip(t, []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppHash)
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
@@ -596,7 +620,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishUpload(t, env, "2026.11.24-4", "", "", []byte("client build one"))
+	release := publishUpload(t, env, "2026.11.24-4", "", "", releaseZip(t, []byte("client build one")))
 
 	summary := func() deviceSummary {
 		t.Helper()
@@ -792,18 +816,22 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	const toml = `hostname = "saved-by-settings"`
 	external := []byte("external mesh client binary")
-	url := fileServer(t, external)
+	externalPkg := releaseZip(t, external)
+	url := fileServer(t, externalPkg)
 	saved := putSettings(t, env, map[string]string{
 		"default_toml": toml,
 		"app_version":  "0.3.0",
 		"app_url":      url,
 		"app_notes":    "修复窄屏布局",
 	})
+	// app_hash describes the client inside the package; app_sha256 the package.
 	externalSum := sha256.Sum256(external)
 	wantFull := hex.EncodeToString(externalSum[:])
+	pkgSum := sha256.Sum256(externalPkg)
+	wantPkg := hex.EncodeToString(pkgSum[:])
 	if saved.DefaultTOML != toml || saved.AppVersion != "0.3.0" || saved.AppURL != url ||
 		saved.AppNotes != "修复窄屏布局" || saved.AppSource != "url" || saved.AppHash != wantFull[:16] ||
-		saved.AppSHA256 != wantFull {
+		saved.AppSHA256 != wantPkg {
 		t.Fatalf("save response = %+v, want hash %s / %s", saved, wantFull[:16], wantFull)
 	}
 
@@ -912,7 +940,8 @@ func TestUploadReleaseMode(t *testing.T) {
 	env := testenv.New(t)
 	const version = "2026.11.24-3"
 	const toml = `hostname = "uploaded"`
-	file := []byte{0x4d, 0x5a, 0x90, 0x00, 0xff, 0x7f, 0x0a, 0x01}
+	client := []byte{0x4d, 0x5a, 0x90, 0x00, 0xff, 0x7f, 0x0a, 0x01}
+	file := releaseZip(t, client)
 
 	res, data := uploadSettings(t, env, version, "首个上传版本", toml, file)
 	if res.StatusCode != http.StatusOK {
@@ -922,9 +951,11 @@ func TestUploadReleaseMode(t *testing.T) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatalf("decode upload response: %v", err)
 	}
-	sum := sha256.Sum256(file)
+	sum := sha256.Sum256(client)
 	full := hex.EncodeToString(sum[:])
-	name := version + "-mesh-client.exe"
+	pkgSum := sha256.Sum256(file)
+	pkgFull := hex.EncodeToString(pkgSum[:])
+	name := version + "-mesh-client.zip"
 	want := settingsResponse{
 		DefaultTOML: toml,
 		AppVersion:  version,
@@ -934,7 +965,7 @@ func TestUploadReleaseMode(t *testing.T) {
 		AppFileName: name,
 		AppSize:     int64(len(file)),
 		AppHash:     full[:16],
-		AppSHA256:   full,
+		AppSHA256:   pkgFull,
 	}
 	if saved != want {
 		t.Fatalf("upload response = %+v, want %+v", saved, want)
@@ -976,7 +1007,7 @@ func TestUploadReleaseMode(t *testing.T) {
 	}
 
 	// Re-uploading the same version replaces the hosted file.
-	second := []byte("second build of the same version")
+	second := releaseZip(t, []byte("second build of the same version"))
 	if res, data = uploadSettings(t, env, version, "", "", second); res.StatusCode != http.StatusOK {
 		t.Fatalf("re-upload = %d: %s", res.StatusCode, data)
 	}
@@ -1022,13 +1053,17 @@ func TestUploadReleaseMode(t *testing.T) {
 	}
 
 	// Switching to an external URL clears the hosted-file fields and hashes
-	// the remote binary instead.
-	externalURL := fileServer(t, []byte("external build"))
+	// the remote package instead.
+	externalClient := []byte("external build")
+	externalPkg := releaseZip(t, externalClient)
+	externalURL := fileServer(t, externalPkg)
 	switched := putSettings(t, env, map[string]string{"app_version": version, "app_url": externalURL})
-	externalSum := sha256.Sum256([]byte("external build"))
+	externalSum := sha256.Sum256(externalClient)
 	externalFull := hex.EncodeToString(externalSum[:])
+	extPkgSum := sha256.Sum256(externalPkg)
+	extPkgFull := hex.EncodeToString(extPkgSum[:])
 	if switched.AppSource != "url" || switched.AppFileName != "" || switched.AppSize != 0 ||
-		switched.AppHash != externalFull[:16] || switched.AppSHA256 != externalFull {
+		switched.AppHash != externalFull[:16] || switched.AppSHA256 != extPkgFull {
 		t.Fatalf("switched settings = %+v", switched)
 	}
 }

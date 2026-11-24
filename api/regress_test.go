@@ -137,19 +137,22 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	file := []byte("a whole mesh client binary")
+	client := []byte("a whole mesh client binary")
+	file := releaseZip(t, client)
 	release := publishUpload(t, env, "2026.11.24-3", "", "", file)
 
-	sum := sha256.Sum256(file)
+	sum := sha256.Sum256(client)
 	full := hex.EncodeToString(sum[:])
+	pkgSum := sha256.Sum256(file)
+	pkgFull := hex.EncodeToString(pkgSum[:])
 	if len(release.AppHash) != 16 {
 		t.Fatalf("app_hash = %q, want 16 characters", release.AppHash)
 	}
 	if release.AppHash != full[:16] {
 		t.Fatalf("app_hash = %q, want %q", release.AppHash, full[:16])
 	}
-	if release.AppSHA256 != full {
-		t.Fatalf("app_sha256 = %q, want %q", release.AppSHA256, full)
+	if release.AppSHA256 != pkgFull {
+		t.Fatalf("app_sha256 = %q, want %q", release.AppSHA256, pkgFull)
 	}
 
 	// The heartbeat carries the same digest to the client.
@@ -161,7 +164,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.AppUpdate == nil || out.AppUpdate.SHA256 != full {
+	if out.AppUpdate == nil || out.AppUpdate.SHA256 != pkgFull {
 		t.Fatalf("app_update = %+v, want sha256 %q", out.AppUpdate, full)
 	}
 }

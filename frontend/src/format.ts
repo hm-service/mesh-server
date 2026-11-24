@@ -72,8 +72,8 @@ export function appStateClass(device: DeviceSummary): string {
   return device.app_state === "current" ? "badge on" : "badge warn";
 }
 
-export function relTime(sec: number): string {
-  const diff = Math.max(0, Math.floor(Date.now() / 1000) - sec);
+export function relTime(sec: number, now: number): string {
+  const diff = Math.max(0, now - sec);
   if (diff < 60) return diff + "s 前";
   if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
   if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";

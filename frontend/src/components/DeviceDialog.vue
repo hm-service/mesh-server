@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { api, ApiError, type DeviceDetail } from "../api";
 import { copyText } from "../clipboard";
+import { nowSec } from "../clock";
 import {
   absTime,
   appStateClass,
@@ -163,7 +164,7 @@ async function copy() {
                 <div class="k">状态</div>
                 <div class="v">
                   {{ statusText(device.status) }}
-                  <template v-if="device.last_seen_at"> · {{ relTime(device.last_seen_at) }}</template>
+                  <template v-if="device.last_seen_at"> · {{ relTime(device.last_seen_at, nowSec) }}</template>
                 </div>
                 <div class="k">配置 hash</div>
                 <div class="v">{{ configHash }}</div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { DeviceSummary } from "../api";
+import { nowSec } from "../clock";
 import {
   appStateClass,
   appStateText,
@@ -57,7 +58,7 @@ const dotClass = computed(() => {
       </template>
       <div class="row">
         <span class="k">最后心跳</span>
-        <span class="v">{{ device.last_seen_at ? relTime(device.last_seen_at) : "从未" }}</span>
+        <span class="v">{{ device.last_seen_at ? relTime(device.last_seen_at, nowSec) : "从未" }}</span>
       </div>
     </div>
   </article>

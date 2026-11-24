@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -20,8 +19,11 @@ import (
 	"mesh-server/core"
 )
 
-// Password is the admin password every test environment uses.
-const Password = "test-password-12"
+// Token is the AUTH_TOKEN every test environment uses.
+const Token = "test_token_0123456789"
+
+// sessionKey keeps issued credentials verifiable across one test.
+var sessionKey = []byte("test_session_key_0123456789abcdef")
 
 // Env is one isolated control plane.
 type Env struct {
@@ -31,6 +33,8 @@ type Env struct {
 	Server  *httptest.Server
 	Client  *http.Client
 	Clock   *Clock
+	// credential is the bearer token obtained by Login; empty before that.
+	credential string
 }
 
 // Clock is the injectable application clock.
@@ -58,7 +62,7 @@ func WithReadyzToken(token string) Option {
 	return func(c *config) { c.readyzToken = token }
 }
 
-// WithoutLogin leaves the client without a session cookie.
+// WithoutLogin leaves the client without a bearer credential.
 func WithoutLogin() Option {
 	return func(c *config) { c.login = false }
 }
@@ -75,7 +79,7 @@ func New(t *testing.T, options ...Option) *Env {
 	if err := writeConfig(dir); err != nil {
 		t.Fatalf("write config.json: %v", err)
 	}
-	instance, _, err := app.Open(dir, app.Options{Now: clock.Now})
+	instance, err := app.Open(dir, app.Options{Now: clock.Now})
 	if err != nil {
 		t.Fatalf("open app: %v", err)
 	}
@@ -84,19 +88,21 @@ func New(t *testing.T, options ...Option) *Env {
 			t.Logf("close app: %v", err)
 		}
 	})
+	hash, err := core.NewTokenHash(Token)
+	if err != nil {
+		t.Fatalf("hash AUTH_TOKEN: %v", err)
+	}
 	handler := api.New(api.Options{
 		App:          instance,
 		Logger:       cfg.logger,
 		ReadyzToken:  cfg.readyzToken,
+		TokenHash:    hash,
+		SessionKey:   sessionKey,
 		MinAuthDelay: 0,
 	}).Handler()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookie jar: %v", err)
-	}
-	client := &http.Client{Jar: jar, Timeout: 5 * time.Second, Transport: server.Client().Transport}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: server.Client().Transport}
 	env := &Env{T: t, DataDir: dir, App: instance, Server: server, Client: client, Clock: clock}
 	if cfg.login {
 		env.Login()
@@ -104,37 +110,38 @@ func New(t *testing.T, options ...Option) *Env {
 	return env
 }
 
-// writeConfig stores a config.json whose password is Password, so a test
-// environment does not have to replay the first-start password from the log.
+// writeConfig stores the DATA_DIR/config.json a deployment would have.
 func writeConfig(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	salt, hash, err := core.HashPassword(Password)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(map[string]string{
-		"listen":        ":8088",
-		"password_salt": salt,
-		"password_hash": hash,
-	})
+	raw, err := json.Marshal(map[string]string{"listen": ":8088"})
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "config.json"), raw, 0o600)
 }
 
-// Login obtains the admin session.
+// Login exchanges AUTH_TOKEN for a bearer credential.
 func (e *Env) Login() {
 	e.T.Helper()
-	res, body := e.Do("POST", "/api/login", map[string]string{"password": Password})
-	if res.StatusCode != http.StatusNoContent {
-		e.T.Fatalf("login = %d, want 204: %s", res.StatusCode, body)
+	res, body := e.Do("POST", "/api/auth", map[string]string{"token": Token})
+	if res.StatusCode != http.StatusOK {
+		e.T.Fatalf("auth = %d, want 200: %s", res.StatusCode, body)
 	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.AccessToken == "" {
+		e.T.Fatalf("decode auth response: %v (%s)", err, body)
+	}
+	e.credential = out.AccessToken
 }
 
-// Do sends a JSON request with the session cookie.
+// Credential returns the current bearer token, empty when not logged in.
+func (e *Env) Credential() string { return e.credential }
+
+// Do sends a JSON request with the bearer credential.
 func (e *Env) Do(method, path string, body any) (*http.Response, []byte) {
 	e.T.Helper()
 	var reader io.Reader
@@ -152,7 +159,16 @@ func (e *Env) Do(method, path string, body any) (*http.Response, []byte) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	e.Authorize(req)
 	return e.send(req, method, path)
+}
+
+// Authorize attaches the bearer credential to a hand-built request, so tests
+// that can not go through Do (multipart, custom headers) stay authenticated.
+func (e *Env) Authorize(req *http.Request) {
+	if e.credential != "" {
+		req.Header.Set("Authorization", "Bearer "+e.credential)
+	}
 }
 
 // Send performs one fully prepared request.

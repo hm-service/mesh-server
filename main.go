@@ -75,17 +75,11 @@ func run() int {
 	logger := newLogger(io.MultiWriter(os.Stdout, logFile), loc)
 	slog.SetDefault(logger)
 
-	application, generated, err := app.Open(dataDir, app.Options{Now: time.Now})
+	application, err := app.Open(dataDir, app.Options{Now: time.Now})
 	if err != nil {
 		logger.Error("startup failed", "error", err)
 		_ = logFile.Close()
 		return 1
-	}
-	if generated != "" {
-		logger.Warn("first start: admin password generated",
-			"password", generated,
-			"hint", "only the scrypt hash is stored; delete "+filepath.Join(dataDir, "config.json")+" and restart to generate a new one",
-		)
 	}
 
 	listen := application.Config().Listen
@@ -105,6 +99,8 @@ func run() int {
 		Static:               frontendFS(),
 		Logger:               logger,
 		ReadyzToken:          conf.readyzToken,
+		TokenHash:            conf.tokenHash,
+		SessionKey:           conf.sessionKey,
 		TrustedProxies:       conf.trustedProxies,
 		MaxAuthConcurrency:   conf.maxAuth,
 		MaxAPIConcurrency:    conf.maxAPI,
@@ -175,6 +171,8 @@ type environment struct {
 	port           int
 	trustedProxies []netip.Prefix
 	readyzToken    string
+	tokenHash      *core.TokenHash
+	sessionKey     []byte
 	maxAuth        int
 	maxAPI         int
 	maxStatic      int
@@ -207,6 +205,24 @@ func readEnvironment() (environment, error) {
 	if readyzToken != "" && !validSecret(readyzToken) {
 		return environment{}, fmt.Errorf("READYZ_TOKEN must match ^[A-Za-z0-9_]{16,128}$")
 	}
+	// AUTH_TOKEN is the only admin credential; it is required and hashed before
+	// anything else starts, so the raw value never outlives startup.
+	authToken := os.Getenv("AUTH_TOKEN")
+	_ = os.Unsetenv("AUTH_TOKEN")
+	if !validSecret(authToken) {
+		return environment{}, fmt.Errorf("AUTH_TOKEN must match ^[A-Za-z0-9_]{16,128}$")
+	}
+	tokenHash, err := core.NewTokenHash(authToken)
+	if err != nil {
+		return environment{}, fmt.Errorf("hash AUTH_TOKEN: %w", err)
+	}
+	// An absent signing key is generated below; rotating it revokes every
+	// credential ever issued.
+	sessionKey := strings.TrimSpace(os.Getenv("SESSION_SIGNING_KEY"))
+	_ = os.Unsetenv("SESSION_SIGNING_KEY")
+	if sessionKey != "" && !validSessionKey(sessionKey) {
+		return environment{}, fmt.Errorf("SESSION_SIGNING_KEY must match ^[A-Za-z0-9_]{32,128}$")
+	}
 	maxAuth, err := positiveIntEnv("MAX_AUTH_CONCURRENCY", 32)
 	if err != nil {
 		return environment{}, err
@@ -228,6 +244,8 @@ func readEnvironment() (environment, error) {
 		port:           port,
 		trustedProxies: proxies,
 		readyzToken:    readyzToken,
+		tokenHash:      tokenHash,
+		sessionKey:     []byte(sessionKey),
 		maxAuth:        maxAuth,
 		maxAPI:         maxAPI,
 		maxStatic:      maxStatic,
@@ -258,6 +276,11 @@ func validSecret(value string) bool {
 		}
 	}
 	return true
+}
+
+// validSessionKey accepts the longer alphabet-only key used for signing.
+func validSessionKey(value string) bool {
+	return len(value) >= 32 && validSecret(value)
 }
 
 func loadTimezone(name string) (*time.Location, error) {

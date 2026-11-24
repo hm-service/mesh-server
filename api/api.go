@@ -13,11 +13,8 @@ import (
 	"mesh-server/httpx"
 )
 
-// SessionTTL is how long an admin cookie session lives.
-const SessionTTL = 24 * time.Hour
-
-// SessionCookie is the admin session cookie name; clients never see it.
-const SessionCookie = "mesh_session"
+// sessionTTL is how long one issued credential lives.
+const sessionTTL = 24 * time.Hour
 
 // Options wires a Server to the application and to its deployment settings.
 type Options struct {
@@ -28,6 +25,11 @@ type Options struct {
 	Logger *slog.Logger
 	// ReadyzToken protects /readyz when it is not empty.
 	ReadyzToken string
+	// TokenHash verifies the AUTH_TOKEN a client presents to /api/auth.
+	TokenHash *core.TokenHash
+	// SessionKey signs the issued credentials. An empty key is replaced by a
+	// random one, which just means every restart invalidates old credentials.
+	SessionKey []byte
 	// TrustedProxies are the peers whose forwarding headers are believed. An
 	// empty list trusts nobody, which is the default.
 	TrustedProxies []netip.Prefix
@@ -40,7 +42,8 @@ type Options struct {
 	MinAuthDelay time.Duration
 }
 
-// Server holds the HTTP state: the session table and the nonce replay cache.
+// Server holds the HTTP state: the token hash, the signing key and the nonce
+// replay cache.
 type Server struct {
 	app          *app.App
 	logger       *slog.Logger
@@ -52,7 +55,8 @@ type Server struct {
 	apiGate      *httpx.Gate
 	staticGate   *httpx.Gate
 	readyzGate   *httpx.Gate
-	sessions     *core.Sessions
+	tokenHash    *core.TokenHash
+	sessionKey   []byte
 	nonces       *core.NonceCache
 	minAuthDelay time.Duration
 	// fallbacks records the paths whose 405 fallback is already registered.
@@ -75,10 +79,20 @@ func New(opts Options) *Server {
 		apiGate:      httpx.NewGate(orDefault(opts.MaxAPIConcurrency, 128)),
 		staticGate:   httpx.NewGate(orDefault(opts.MaxStaticConcurrency, 64)),
 		readyzGate:   httpx.NewGate(4),
-		sessions:     core.NewSessions(SessionTTL, opts.App.Now),
+		tokenHash:    opts.TokenHash,
+		sessionKey:   opts.SessionKey,
 		nonces:       core.NewNonceCache(core.ClockSkew),
 		minAuthDelay: opts.MinAuthDelay,
 		fallbacks:    make(map[string]struct{}),
+	}
+	if len(s.sessionKey) == 0 {
+		key, err := core.RandomBytes(core.SessionKeyBytes)
+		if err != nil {
+			// Without a signing key no credential can be trusted, so refuse to
+			// build a server that would accept none of them silently.
+			panic("api: generate session key: " + err.Error())
+		}
+		s.sessionKey = key
 	}
 	if s.static != nil {
 		if raw, err := fs.ReadFile(s.static, "index.html"); err == nil {
@@ -108,8 +122,7 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "GET", "/livez", s.handleLivez)
 	s.route(mux, "GET", "/readyz", s.withGate(s.readyzGate, s.handleReadyz))
 	// Admin surface.
-	s.route(mux, "POST", "/api/login", s.withGate(s.authGate, s.handleLogin))
-	s.route(mux, "POST", "/api/logout", s.handleLogout)
+	s.route(mux, "POST", "/api/auth", s.withGate(s.authGate, s.handleAuth))
 	s.route(mux, "GET", "/api/health", s.withGate(s.apiGate, s.handleHealth))
 	s.route(mux, "GET", "/api/template", s.admin(s.handleTemplate))
 	s.route(mux, "GET", "/api/devices", s.admin(s.handleListDevices))
@@ -145,9 +158,9 @@ func (s *Server) route(mux *http.ServeMux, method, path string, h http.HandlerFu
 	mux.HandleFunc(path, methodNotAllowed)
 }
 
-// admin guards an endpoint with the mesh_session cookie.
+// admin guards an endpoint with the bearer credential.
 func (s *Server) admin(h http.HandlerFunc) http.HandlerFunc {
-	return s.withGate(s.apiGate, s.withSession(h))
+	return s.withGate(s.apiGate, s.withBearer(h))
 }
 
 // withGate answers 503 right away when the route is already at its capacity.

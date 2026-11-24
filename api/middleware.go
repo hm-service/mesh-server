@@ -2,8 +2,10 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
+	"mesh-server/core"
 	"mesh-server/httpx"
 )
 
@@ -62,16 +64,26 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-// withSession guards admin endpoints with the mesh_session cookie.
-func (s *Server) withSession(next http.HandlerFunc) http.HandlerFunc {
+// withBearer guards admin endpoints with the Authorization: Bearer credential.
+func (s *Server) withBearer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(SessionCookie)
-		if err != nil || !s.sessions.Valid(cookie.Value) {
+		token, ok := bearerToken(r)
+		if !ok || !core.VerifyBearer(s.sessionKey, token, s.app.Now()) {
 			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// bearerToken extracts the credential from the Authorization header.
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if len(header) <= len(prefix) || !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(header[len(prefix):]), true
 }
 
 // methodNotAllowed answers a known path with an unsupported method.

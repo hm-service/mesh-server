@@ -84,29 +84,25 @@ async function loadSettings() {
   }
 }
 
-async function login(password: string) {
+async function login(token: string) {
   loginError.value = "";
   loginBusy.value = true;
   try {
-    await api.login(password);
+    await api.auth(token);
     await loadDevices();
     authed.value = true;
     page.value = "devices";
     startPolling();
     void loadSettings();
   } catch (err) {
-    loginError.value = err instanceof ApiError && err.status === 401 ? "密码错误" : err instanceof Error ? err.message : "登录失败";
+    loginError.value = err instanceof ApiError && err.status === 401 ? "访问令牌错误" : err instanceof Error ? err.message : "登录失败";
   } finally {
     loginBusy.value = false;
   }
 }
 
-async function logout() {
-  try {
-    await api.logout();
-  } catch {
-    // 退出失败也要回到登录页：cookie 可能是坏的。
-  }
+function logout() {
+  api.logout();
   handleUnauthorized();
 }
 

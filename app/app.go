@@ -39,25 +39,24 @@ type App struct {
 	revoked   map[string]struct{}
 }
 
-// Open prepares DATA_DIR and returns the ready application together with the
-// generated admin password (empty unless config.json was just created).
-func Open(dataDir string, opts Options) (*App, string, error) {
+// Open prepares DATA_DIR and returns the ready application.
+func Open(dataDir string, opts Options) (*App, error) {
 	if strings.TrimSpace(dataDir) == "" {
-		return nil, "", fmt.Errorf("data directory is empty")
+		return nil, fmt.Errorf("data directory is empty")
 	}
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, "", fmt.Errorf("create data directory: %w", err)
+		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 	if err := os.Chmod(dataDir, 0o700); err != nil {
-		return nil, "", fmt.Errorf("tighten data directory: %w", err)
+		return nil, fmt.Errorf("tighten data directory: %w", err)
 	}
-	cfg, password, err := loadOrCreateConfig(dataDir)
+	cfg, err := loadOrCreateConfig(dataDir)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	database, err := db.Open(filepath.Join(dataDir, databaseName))
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	a := &App{
 		dataDir:  dataDir,
@@ -71,19 +70,19 @@ func Open(dataDir string, opts Options) (*App, string, error) {
 	}
 	if err := a.importLegacyState(); err != nil {
 		database.Close()
-		return nil, "", err
+		return nil, err
 	}
 	if err := a.backfillReleaseDigest(); err != nil {
 		database.Close()
-		return nil, "", err
+		return nil, err
 	}
 	if purged, err := a.database.PurgeExpiredTokens(a.now().Unix()); err != nil {
 		database.Close()
-		return nil, "", err
+		return nil, err
 	} else if purged > 0 {
 		slog.Info("expired registration tokens purged", "count", purged)
 	}
-	return a, password, nil
+	return a, nil
 }
 
 // Close releases the database.
@@ -97,7 +96,7 @@ func (a *App) DataDir() string { return a.dataDir }
 // Now is the application clock.
 func (a *App) Now() time.Time { return a.now() }
 
-// Config is the persisted listen address and admin credential hash.
+// Config is the persisted listen address.
 func (a *App) Config() Config { return a.config }
 
 // Probe verifies that DATA_DIR has the expected permissions and that the

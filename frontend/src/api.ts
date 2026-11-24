@@ -35,6 +35,22 @@ export interface ConsoleSettings {
   app_size: number;
 }
 
+/** The bearer credential lives in sessionStorage: gone when the tab closes. */
+const CREDENTIAL_KEY = "mesh_credential";
+
+function credential(): string {
+  return sessionStorage.getItem(CREDENTIAL_KEY) ?? "";
+}
+
+function clearCredential(): void {
+  sessionStorage.removeItem(CREDENTIAL_KEY);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = credential();
+  return token ? { Authorization: "Bearer " + token } : {};
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -58,7 +74,10 @@ function describe(status: number, code: string): string {
 }
 
 async function decode<T>(res: Response): Promise<T> {
-  if (res.status === 401) throw new ApiError(401, "unauthorized");
+  if (res.status === 401) {
+    clearCredential();
+    throw new ApiError(401, "unauthorized");
+  }
   if (!res.ok) {
     const text = await res.text();
     let code = "";
@@ -79,9 +98,10 @@ async function decode<T>(res: Response): Promise<T> {
 }
 
 async function jsonRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method, credentials: "same-origin", headers: {} };
+  const headers: Record<string, string> = authHeaders();
+  const init: RequestInit = { method, headers };
   if (body !== undefined) {
-    init.headers = { "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
   return decode<T>(await fetch(path, init));
@@ -89,8 +109,11 @@ async function jsonRequest<T>(method: string, path: string, body?: unknown): Pro
 
 /** 设置类请求的 400 会带 message，直接展示比通用文案有用。 */
 async function settingsRequest(init: RequestInit): Promise<ConsoleSettings> {
-  const res = await fetch("/api/admin/settings", { credentials: "same-origin", ...init });
-  if (res.status === 401) throw new ApiError(401, "unauthorized");
+  const res = await fetch("/api/admin/settings", init);
+  if (res.status === 401) {
+    clearCredential();
+    throw new ApiError(401, "unauthorized");
+  }
   if (!res.ok) {
     const text = await res.text();
     let payload: { code?: string; message?: string } = {};
@@ -110,11 +133,19 @@ async function settingsRequest(init: RequestInit): Promise<ConsoleSettings> {
 }
 
 export const api = {
-  login(password: string): Promise<void> {
-    return jsonRequest<void>("POST", "/api/login", { password });
+  async auth(token: string): Promise<void> {
+    const res = await fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (res.status === 401) throw new ApiError(401, "invalid_token");
+    if (!res.ok) throw new ApiError(res.status, "");
+    const issued = (await res.json()) as { access_token: string };
+    sessionStorage.setItem(CREDENTIAL_KEY, issued.access_token);
   },
-  logout(): Promise<void> {
-    return jsonRequest<void>("POST", "/api/logout");
+  logout(): void {
+    clearCredential();
   },
   listDevices(): Promise<DeviceSummary[]> {
     return jsonRequest<DeviceSummary[]>("GET", "/api/devices");

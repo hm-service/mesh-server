@@ -113,12 +113,9 @@ func TestLegacyStateIsImportedOnce(t *testing.T) {
 	dir := t.TempDir()
 	writeLegacyData(t, dir)
 
-	instance, password, err := Open(dir, Options{})
+	instance, err := Open(dir, Options{})
 	if err != nil {
 		t.Fatalf("Open() error: %v", err)
-	}
-	if password != "" {
-		t.Fatalf("password = %q, want empty for an existing config.json", password)
 	}
 	devices, err := instance.ListDevices()
 	if err != nil {
@@ -165,7 +162,7 @@ func TestLegacyStateIsImportedOnce(t *testing.T) {
 	}
 
 	// A second start must neither duplicate the devices nor overwrite an edit.
-	reopened, _, err := Open(dir, Options{})
+	reopened, err := Open(dir, Options{})
 	if err != nil {
 		t.Fatalf("reopen error: %v", err)
 	}
@@ -179,7 +176,7 @@ func TestLegacyStateIsImportedOnce(t *testing.T) {
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
-	third, _, err := Open(dir, Options{})
+	third, err := Open(dir, Options{})
 	if err != nil {
 		t.Fatalf("third open error: %v", err)
 	}
@@ -203,7 +200,7 @@ func TestLegacyStateFileIsKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance, _, err := Open(dir, Options{})
+	instance, err := Open(dir, Options{})
 	if err != nil {
 		t.Fatalf("Open() error: %v", err)
 	}
@@ -222,7 +219,7 @@ func TestLegacyStateFileIsKept(t *testing.T) {
 func TestLegacyNoAuthFieldIsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	writeLegacyData(t, dir)
-	instance, _, err := Open(dir, Options{})
+	instance, err := Open(dir, Options{})
 	if err != nil {
 		t.Fatalf("Open() with no_auth in config.json: %v", err)
 	}
@@ -234,14 +231,11 @@ func TestLegacyNoAuthFieldIsIgnored(t *testing.T) {
 
 func TestMissingStateFileIsNotAnError(t *testing.T) {
 	dir := t.TempDir()
-	instance, password, err := Open(dir, Options{})
+	instance, err := Open(dir, Options{})
 	if err != nil {
 		t.Fatalf("Open() error: %v", err)
 	}
 	defer instance.Close()
-	if password == "" {
-		t.Fatal("a fresh data directory must generate a password")
-	}
 	if devices, err := instance.ListDevices(); err != nil || len(devices) != 0 {
 		t.Fatalf("devices in a fresh directory = %d, %v", len(devices), err)
 	}

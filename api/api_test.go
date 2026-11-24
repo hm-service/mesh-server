@@ -206,11 +206,11 @@ func fileServer(t *testing.T, body []byte) string {
 	return srv.URL + "/mesh-client.exe"
 }
 
-func TestLoginRequiresCorrectPassword(t *testing.T) {
+func TestAuthRequiresCorrectToken(t *testing.T) {
 	env := testenv.New(t, testenv.WithoutLogin())
-	res, _ := env.Do("POST", "/api/login", map[string]string{"password": "wrong-password"})
+	res, _ := env.Do("POST", "/api/auth", map[string]string{"token": "wrong_token_0123456789"})
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong password = %d, want 401", res.StatusCode)
+		t.Fatalf("wrong token = %d, want 401", res.StatusCode)
 	}
 	anonymous := &http.Client{Transport: env.Server.Client().Transport}
 	res, err := anonymous.Get(env.Server.URL + "/api/devices")
@@ -223,13 +223,32 @@ func TestLoginRequiresCorrectPassword(t *testing.T) {
 	}
 }
 
-func TestSessionRequiredAfterLogout(t *testing.T) {
+// TestCredentialExpires pins the stateless model: the issued credential carries
+// its own expiry and the server keeps no table to look it up in.
+func TestCredentialExpires(t *testing.T) {
 	env := testenv.New(t)
-	env.Do("POST", "/api/logout", nil)
+	env.Clock.Advance(25 * time.Hour)
 
 	res, _ := env.Do("GET", "/api/devices", nil)
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("list devices after logout = %d, want 401", res.StatusCode)
+		t.Fatalf("list devices with an expired credential = %d, want 401", res.StatusCode)
+	}
+}
+
+// TestTamperedCredentialIsRejected checks the signature before the expiry.
+func TestTamperedCredentialIsRejected(t *testing.T) {
+	env := testenv.New(t)
+	good := env.Credential()
+	tampered := good[:len(good)-1] + string(good[len(good)-1]^1)
+
+	req, err := http.NewRequest("GET", env.Server.URL+"/api/devices", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tampered)
+	res, _ := env.Send(req)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("tampered credential = %d, want 401", res.StatusCode)
 	}
 }
 
@@ -459,6 +478,7 @@ func uploadSettings(t *testing.T, env *testenv.Env, version, notes, defaultTOML 
 		t.Fatalf("build upload request: %v", err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	env.Authorize(req)
 	return env.Send(req)
 }
 

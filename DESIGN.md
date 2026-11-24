@@ -22,20 +22,19 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | 配置 | 默认 EasyTier 模板（写回 `DATA_DIR/peer.default.toml`） |
 | 客户端更新 | 上传或外部地址发布客户端，展示当前发布的版本、hash 与体积 |
 
-鉴权只有密码登录一种形态：`mesh_session` cookie 24 小时；没有跳过登录的开关。
+鉴权只有 `AUTH_TOKEN` 一种形态：登录页提交它，换回一个 24 小时的无状态 Bearer 凭证；没有跳过登录的开关。
 
 ## 3. 接口
 
 | 方法 | 路径 | 认证 |
 | --- | --- | --- |
-| POST | `/api/login` | 无 |
-| POST | `/api/logout` | cookie |
+| POST | `/api/auth` | 无 |
 | GET | `/api/health` | 无（只回 `{ok:true}`） |
-| GET | `/api/template` | cookie |
-| GET/POST | `/api/devices` | cookie |
-| GET/PUT/DELETE | `/api/devices/{id}` | cookie |
-| POST | `/api/devices/{id}/token` | cookie |
-| GET/PUT | `/api/admin/settings` | cookie |
+| GET | `/api/template` | Bearer |
+| GET/POST | `/api/devices` | Bearer |
+| GET/PUT/DELETE | `/api/devices/{id}` | Bearer |
+| POST | `/api/devices/{id}/token` | Bearer |
+| GET/PUT | `/api/admin/settings` | Bearer |
 | GET | `/api/updates/{file}` | 无 |
 | POST | `/api/register` | token 或设备签名 |
 | GET | `/api/config` | 设备签名 |
@@ -49,7 +48,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 
 ```
 DATA_DIR/
-  config.json          监听地址 + 管理员 scrypt 盐与哈希（0600）
+  config.json          监听地址（0600）
   mesh.db              SQLite（WAL、synchronous=FULL）
   mesh.db-wal / -shm
   peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600）
@@ -111,14 +110,14 @@ CREATE TABLE setting (
 
 | 面 | 机制 |
 | --- | --- |
-| 管理面 | scrypt(N=2^15, r=8, p=1) 密码哈希 + 内存会话表 + `mesh_session` cookie（HttpOnly、SameSite=Lax、24h）；登录响应有 1s + rand(0..200ms) 的下限时长 |
+| 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长 |
 | 设备面 | Ed25519 请求签名（`MESH1` 五行原文）+ 300 秒时间窗 + nonce 重放缓存 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
 | 发布包 | `app_hash`（16 位）用于判定，`app_sha256`（完整）用于下载后校验 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，上传 200MB 上限，设备数 200 上限，版本号/文件名白名单 |
 | 响应头 | `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options`、严格 `Content-Security-Policy` |
-| 并发 | `/api/login`、`/api/*`、静态资源、`/readyz` 各自独立信号量；scrypt 并发上限 4 |
+| 并发 | `/api/auth`、`/api/*`、静态资源、`/readyz` 各自独立信号量；Argon2id 并发上限 4 |
 
 ## 7. 环境变量与 Secrets
 
@@ -129,9 +128,11 @@ CREATE TABLE setting (
 | `PORT` | 否 | 空 | 设置时覆盖 `config.json` 的 `listen`；未设置时用 `listen`（默认 `:8088`） |
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
-| `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/login` 并发上限 |
+| `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |
 | `MAX_API_CONCURRENCY` | 否 | 128 | `/api/*` 并发上限 |
 | `MAX_STATIC_CONCURRENCY` | 否 | 64 | 静态资源并发上限 |
+| `AUTH_TOKEN` | 是 | — | 管理台唯一凭证，`^[A-Za-z0-9_]{16,128}$`；启动时哈希，明文读完即从环境表移除 |
+| `SESSION_SIGNING_KEY` | 否 | 随机 | Bearer 的 HMAC 密钥，`^[A-Za-z0-9_]{32,128}$`；轮换它等于吊销全部已发凭证 |
 | `READYZ_TOKEN` | 否 | 空 | 非空时 `/readyz` 必须带同值 token；读入后立即从环境表移除 |
 | `GOMEMLIMIT` | 否 | 128MiB | 未设置时由程序设置该软上限 |
 

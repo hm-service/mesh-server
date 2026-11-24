@@ -12,7 +12,7 @@ import (
 
 func openTemp(t *testing.T) *App {
 	t.Helper()
-	instance, _, err := Open(t.TempDir(), Options{})
+	instance, err := Open(t.TempDir(), Options{})
 	if err != nil {
 		t.Fatalf("Open() error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBindDeviceConsumesToken(t *testing.T) {
 func TestBindDeviceRejectsExpiredToken(t *testing.T) {
 	dir := t.TempDir()
 	clock := struct{ now time.Time }{now: time.Unix(1_732_400_000, 0)}
-	instance, _, err := Open(dir, Options{Now: func() time.Time { return clock.now }})
+	instance, err := Open(dir, Options{Now: func() time.Time { return clock.now }})
 	if err != nil {
 		t.Fatal(err)
 	}

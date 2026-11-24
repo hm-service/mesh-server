@@ -9,48 +9,50 @@ import (
 	"mesh-server/httpx"
 )
 
-// authJitter is the extra random delay added on top of the login floor.
+// authJitter is the extra random delay added on top of the auth floor.
 const authJitter = 200 * time.Millisecond
 
-type loginRequest struct {
-	Password string `json:"password"`
+type authRequest struct {
+	Token string `json:"token"`
 }
 
-// handleLogin exchanges the admin password for the mesh_session cookie.
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+// authResponse carries the credential issued by POST /api/auth. The credential
+// is stateless: the server keeps no per-session state, so revoking one means
+// rotating SESSION_SIGNING_KEY.
+type authResponse struct {
+	AccessToken string `json:"access_token"`
+	ExpiresAt   int64  `json:"expires_at"`
+}
+
+// handleAuth exchanges AUTH_TOKEN for a bearer credential.
+func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	var req loginRequest
+	var req authRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
-	cfg := s.app.Config()
-	ok := req.Password != "" && core.VerifyPassword(req.Password, cfg.PasswordSalt, cfg.PasswordHash)
+	ok := req.Token != "" && s.tokenHash.Matches(req.Token)
 	s.holdAuthFloor(start)
 	if !ok {
-		httpx.WriteError(w, http.StatusUnauthorized, "invalid_password")
+		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token")
 		return
 	}
-	id, err := s.sessions.Create()
+	nonce, err := core.RandomBytes(core.NonceBytes)
 	if err != nil {
-		s.logger.Error("create session", "error", err)
+		s.logger.Error("generate nonce", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookie,
-		Value:    id,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(SessionTTL / time.Second),
-		Expires:  s.app.Now().Add(SessionTTL),
+	expires := s.app.Now().Add(sessionTTL)
+	httpx.WriteJSON(w, http.StatusOK, authResponse{
+		AccessToken: core.SignBearer(s.sessionKey, expires, nonce),
+		ExpiresAt:   expires.Unix(),
 	})
-	w.WriteHeader(http.StatusNoContent)
 }
 
-// holdAuthFloor keeps a login from answering faster than the documented floor,
-// so the response time does not tell which branch was taken.
+// holdAuthFloor keeps a credential exchange from answering faster than the
+// documented floor, so the response time does not tell which branch was taken.
 func (s *Server) holdAuthFloor(start time.Time) {
 	if s.minAuthDelay <= 0 {
 		return
@@ -61,25 +63,8 @@ func (s *Server) holdAuthFloor(start time.Time) {
 	}
 }
 
-// handleLogout drops the session and clears the cookie.
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(SessionCookie); err == nil {
-		s.sessions.Delete(cookie.Value)
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookie,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-		Expires:  time.Unix(0, 0),
-	})
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // handleHealth reports that the console is reachable. It carries no
-// authentication state: the admin surface always requires a session.
+// authentication state: the admin surface always requires a credential.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

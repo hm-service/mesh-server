@@ -14,6 +14,8 @@ data:
     MAX_AUTH_CONCURRENCY: "32"
     MAX_API_CONCURRENCY: "128"
     MAX_STATIC_CONCURRENCY: "64"
+    # 发布下载默认只允许公网地址；包目录在 mesh 上的 10.126.126.1，单独放行。
+    RELEASE_FETCH_ALLOW: "10.126.126.1/32"
 
 ---
 apiVersion: v1

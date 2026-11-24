@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,6 +31,9 @@ type Options struct {
 	// Nil selects the hardened client, which refuses loopback and private
 	// addresses; tests that publish from a local server pass their own.
 	FetchClient *http.Client
+	// FetchAllow lists the prefixes the hardened client may reach even though
+	// they are not public, such as an operator-owned file server on the mesh.
+	FetchAllow []netip.Prefix
 }
 
 // App owns DATA_DIR: the SQLite database and peer.default.toml.
@@ -69,7 +73,7 @@ func Open(dataDir string, opts Options) (*App, error) {
 		a.now = time.Now
 	}
 	if a.fetch == nil {
-		a.fetch = newFetchClient()
+		a.fetch = newFetchClient(opts.FetchAllow)
 	}
 	if purged, err := a.database.PurgeExpiredTokens(a.now().Unix()); err != nil {
 		database.Close()

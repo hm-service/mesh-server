@@ -83,7 +83,7 @@ func run() int {
 	logger := newLogger(io.MultiWriter(os.Stdout, logFile), loc)
 	slog.SetDefault(logger)
 
-	application, err := app.Open(dataDir, app.Options{Now: time.Now})
+	application, err := app.Open(dataDir, app.Options{Now: time.Now, FetchAllow: conf.fetchAllow})
 	if err != nil {
 		logger.Error("startup failed", "error", err)
 		_ = logFile.Close()
@@ -181,6 +181,7 @@ type environment struct {
 	host           string
 	port           int
 	trustedProxies []netip.Prefix
+	fetchAllow     []netip.Prefix
 	readyzToken    string
 	tokenHash      *core.TokenHash
 	sessionKey     []byte
@@ -207,6 +208,12 @@ func readEnvironment() (environment, error) {
 		port = parsed
 	}
 	proxies, err := httpx.ParseTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		return environment{}, err
+	}
+	// RELEASE_FETCH_ALLOW 让发布下载能读内网文件服务（例如 mesh 上的包目录）；
+	// 留空就是「只允许公网地址」。
+	fetchAllow, err := httpx.ParsePrefixes(os.Getenv("RELEASE_FETCH_ALLOW"))
 	if err != nil {
 		return environment{}, err
 	}
@@ -254,6 +261,7 @@ func readEnvironment() (environment, error) {
 		host:           host,
 		port:           port,
 		trustedProxies: proxies,
+		fetchAllow:     fetchAllow,
 		readyzToken:    readyzToken,
 		tokenHash:      tokenHash,
 		sessionKey:     []byte(sessionKey),

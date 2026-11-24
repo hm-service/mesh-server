@@ -139,6 +139,7 @@ CREATE TABLE release (
 | `PORT` | 否 | `:8088` | 与 `HOST` 一起决定监听地址；未设置时用 `:8088` |
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
+| `RELEASE_FETCH_ALLOW` | 否 | 空（只允许公网） | 逗号分隔的 IP 或 CIDR；发布下载允许连接这些内网地址 |
 | `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |
 | `MAX_API_CONCURRENCY` | 否 | 128 | 管理面与设备面各自的上限 |
 | `MAX_STATIC_CONCURRENCY` | 否 | 64 | 静态资源并发上限 |

@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// ParseTrustedProxies turns a comma-separated list of IPs and CIDRs into
-// prefixes. An empty list trusts nobody, which is the default.
-func ParseTrustedProxies(spec string) ([]netip.Prefix, error) {
+// ParsePrefixes turns a comma-separated list of IPs and CIDRs into prefixes. A
+// bare address becomes a single-host prefix. An empty list is nil.
+func ParsePrefixes(spec string) ([]netip.Prefix, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return nil, nil
@@ -28,11 +28,17 @@ func ParseTrustedProxies(spec string) ([]netip.Prefix, error) {
 		}
 		addr, err := netip.ParseAddr(item)
 		if err != nil {
-			return nil, fmt.Errorf("invalid trusted proxy %q", item)
+			return nil, fmt.Errorf("非法的地址或网段 %q", item)
 		}
 		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
 	}
 	return out, nil
+}
+
+// ParseTrustedProxies is ParsePrefixes for the proxy list. An empty list trusts
+// nobody, which is the default.
+func ParseTrustedProxies(spec string) ([]netip.Prefix, error) {
+	return ParsePrefixes(spec)
 }
 
 // ClientIP returns the address of the caller. Proxy headers are honored only

@@ -229,9 +229,11 @@ func validateSlot(slot, version, rawURL string) error {
 // newFetchClient is the client that downloads a published package. It follows a
 // bounded number of redirects, uses no proxy, and refuses to connect to an
 // address inside the host or the local network: the control plane must not
-// become an HTTP client for whatever the admin form is pointed at.
-func newFetchClient() *http.Client {
-	dialer := &net.Dialer{Timeout: fetchDialTimeout, Control: checkDialAddress}
+// become an HTTP client for whatever the admin form is pointed at. allow names
+// the prefixes that are reachable on purpose, such as the operator's own file
+// server on the mesh.
+func newFetchClient(allow []netip.Prefix) *http.Client {
+	dialer := &net.Dialer{Timeout: fetchDialTimeout, Control: dialGuard(allow)}
 	return &http.Client{
 		Timeout: fetchTimeout,
 		Transport: &http.Transport{
@@ -248,20 +250,28 @@ func newFetchClient() *http.Client {
 	}
 }
 
-// checkDialAddress rejects a dial whose resolved address is not a public unicast
-// address. net.Dialer calls it for every connection attempt, so a redirect to an
-// internal address is refused as well.
-func checkDialAddress(_, address string, _ syscall.RawConn) error {
-	addrPort, err := netip.ParseAddrPort(address)
-	if err != nil {
-		return fmt.Errorf("无法识别的连接地址 %q: %w", address, err)
+// dialGuard rejects a dial whose resolved address is not a public unicast
+// address, unless allow names the prefix it falls in. net.Dialer calls it for
+// every connection attempt, so a redirect to an internal address is refused as
+// well.
+func dialGuard(allow []netip.Prefix) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		addrPort, err := netip.ParseAddrPort(address)
+		if err != nil {
+			return fmt.Errorf("无法识别的连接地址 %q: %w", address, err)
+		}
+		addr := addrPort.Addr().Unmap()
+		if !addr.IsValid() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() ||
+			addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
+			for _, prefix := range allow {
+				if prefix.Contains(addr) {
+					return nil
+				}
+			}
+			return fmt.Errorf("拒绝连接非公网地址 %s", addr)
+		}
+		return nil
 	}
-	addr := addrPort.Addr().Unmap()
-	if !addr.IsValid() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() ||
-		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
-		return fmt.Errorf("拒绝连接非公网地址 %s", addr)
-	}
-	return nil
 }
 
 // fetchDigest downloads rawURL and returns the shortened and full sha256 of the

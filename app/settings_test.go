@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,20 +73,30 @@ func TestPublishRefusesInternalAddresses(t *testing.T) {
 	}
 }
 
-// TestCheckDialAddress covers the addresses the download client must not reach.
-func TestCheckDialAddress(t *testing.T) {
+// TestDialGuard covers the addresses the download client must not reach, and
+// the explicit prefixes it may reach anyway.
+func TestDialGuard(t *testing.T) {
+	guard := dialGuard(nil)
 	for _, address := range []string{
 		"127.0.0.1:80", "127.1.2.3:80", "[::1]:80",
 		"10.1.2.3:80", "172.16.0.1:80", "192.168.1.1:80",
 		"169.254.169.254:80", "0.0.0.0:80", "[ff02::1]:80",
 	} {
-		if err := checkDialAddress("tcp", address, nil); err == nil {
-			t.Fatalf("checkDialAddress(%q) allowed an internal address", address)
+		if err := guard("tcp", address, nil); err == nil {
+			t.Fatalf("guard(%q) allowed an internal address", address)
 		}
 	}
 	for _, address := range []string{"8.8.8.8:53", "1.1.1.1:443", "[2606:4700:4700::1111]:443"} {
-		if err := checkDialAddress("tcp", address, nil); err != nil {
-			t.Fatalf("checkDialAddress(%q) rejected a public address: %v", address, err)
+		if err := guard("tcp", address, nil); err != nil {
+			t.Fatalf("guard(%q) rejected a public address: %v", address, err)
 		}
+	}
+
+	allowed := dialGuard([]netip.Prefix{netip.MustParsePrefix("10.126.126.1/32")})
+	if err := allowed("tcp", "10.126.126.1:18080", nil); err != nil {
+		t.Fatalf("guard rejected the configured prefix: %v", err)
+	}
+	if err := allowed("tcp", "10.126.126.2:18080", nil); err == nil {
+		t.Fatal("guard allowed a host outside the configured prefix")
 	}
 }

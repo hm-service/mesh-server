@@ -33,12 +33,14 @@ type Device struct {
 	LastConfigHash string
 	LastAppHash    string
 	LastPlatform   string
+	GroupID        int64
+	Position       int64
 }
 
 const deviceColumns = "public_id, legacy_id, name, device_id, hostname, pubkey, config_toml, config_hash, " +
-	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_hash, last_platform"
+	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_hash, last_platform, group_id, position"
 
-const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -48,7 +50,7 @@ func scanDevice(row rowScanner) (Device, error) {
 	var d Device
 	err := row.Scan(&d.PublicID, &d.LegacyID, &d.Name, &d.DeviceID, &d.Hostname, &d.Pubkey,
 		&d.ConfigTOML, &d.ConfigHash, &d.Token, &d.TokenExpiresAt, &d.CreatedAt, &d.LastSeenAt,
-		&d.LastIP, &d.LastConfigHash, &d.LastAppHash, &d.LastPlatform)
+		&d.LastIP, &d.LastConfigHash, &d.LastAppHash, &d.LastPlatform, &d.GroupID, &d.Position)
 	return d, err
 }
 
@@ -143,6 +145,10 @@ func (d *DB) Create(dev Device, max int) error {
 	if n >= max {
 		return ErrLimit
 	}
+	// 新设备排在未分组末尾；已有行迁移后 position 都是 0，仍保持创建顺序。
+	if err := tx.QueryRow("SELECT COALESCE(MAX(position), -1) + 1 FROM device WHERE group_id = 0").Scan(&dev.Position); err != nil {
+		return fmt.Errorf("next device position: %w", err)
+	}
 	if _, err := tx.Exec(insertDevice, deviceArgs(dev)...); err != nil {
 		return fmt.Errorf("insert device: %w", err)
 	}
@@ -157,6 +163,7 @@ func deviceArgs(dev Device) []any {
 		dev.PublicID, dev.LegacyID, dev.Name, dev.DeviceID, dev.Hostname, dev.Pubkey,
 		dev.ConfigTOML, dev.ConfigHash, dev.Token, dev.TokenExpiresAt, dev.CreatedAt,
 		dev.LastSeenAt, dev.LastIP, dev.LastConfigHash, dev.LastAppHash, dev.LastPlatform,
+		dev.GroupID, dev.Position,
 	}
 }
 
@@ -180,10 +187,11 @@ func (d *DB) Update(publicID string, mutate func(*Device) error) (Device, error)
 	}
 	if _, err := tx.Exec("UPDATE device SET name=?, device_id=?, hostname=?, pubkey=?, config_toml=?, "+
 		"config_hash=?, token=?, token_expires_at=?, created_at=?, last_seen_at=?, last_ip=?, "+
-		"last_config_hash=?, last_app_hash=?, last_platform=? WHERE public_id=?",
+		"last_config_hash=?, last_app_hash=?, last_platform=?, group_id=?, position=? WHERE public_id=?",
 		device.Name, device.DeviceID, device.Hostname, device.Pubkey, device.ConfigTOML,
 		device.ConfigHash, device.Token, device.TokenExpiresAt, device.CreatedAt, device.LastSeenAt,
-		device.LastIP, device.LastConfigHash, device.LastAppHash, device.LastPlatform, publicID,
+		device.LastIP, device.LastConfigHash, device.LastAppHash, device.LastPlatform, device.GroupID,
+		device.Position, publicID,
 	); err != nil {
 		return Device{}, fmt.Errorf("update device: %w", err)
 	}

@@ -85,6 +85,3 @@ export function absTime(sec: number): string {
   return new Date(sec * 1000).toLocaleString("zh-CN", { hour12: false });
 }
 
-export function formatMB(bytes: number): string {
-  return (Math.max(0, bytes || 0) / (1024 * 1024)).toFixed(1) + " MB";
-}

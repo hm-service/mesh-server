@@ -24,6 +24,8 @@ type deviceSummary struct {
 	AppState       string `json:"app_state"`
 	AppVersion     string `json:"app_version"`
 	Platform       string `json:"last_platform"`
+	GroupID        int64  `json:"group_id"`
+	Position       int64  `json:"position"`
 	CreatedAt      int64  `json:"created_at"`
 	LastSeenAt     int64  `json:"last_seen_at"`
 }
@@ -53,6 +55,8 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 		AppState:       app.AppState(d, release),
 		AppVersion:     app.ReleaseVersion(release),
 		Platform:       d.LastPlatform,
+		GroupID:        d.GroupID,
+		Position:       d.Position,
 		CreatedAt:      d.CreatedAt,
 		LastSeenAt:     d.LastSeenAt,
 	}
@@ -80,6 +84,8 @@ type deviceDetail struct {
 	AppState       string `json:"app_state"`
 	AppVersion     string `json:"app_version"`
 	Platform       string `json:"last_platform"`
+	GroupID        int64  `json:"group_id"`
+	Position       int64  `json:"position"`
 }
 
 func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
@@ -103,6 +109,8 @@ func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
 		AppState:       app.AppState(d, release),
 		AppVersion:     app.ReleaseVersion(release),
 		Platform:       d.LastPlatform,
+		GroupID:        d.GroupID,
+		Position:       d.Position,
 	}
 }
 

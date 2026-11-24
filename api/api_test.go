@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,15 +91,12 @@ const testPlatform = "windows/amd64"
 
 // releaseView mirrors one entry of GET /api/admin/releases.
 type releaseView struct {
-	Platform    string `json:"platform"`
-	AppVersion  string `json:"app_version"`
-	AppURL      string `json:"app_url"`
-	AppHash     string `json:"app_hash"`
-	AppSHA256   string `json:"app_sha256"`
-	AppNotes    string `json:"app_notes"`
-	AppSource   string `json:"app_source"`
-	AppFileName string `json:"app_file_name"`
-	AppSize     int64  `json:"app_size"`
+	Platform   string `json:"platform"`
+	AppVersion string `json:"app_version"`
+	AppURL     string `json:"app_url"`
+	AppHash    string `json:"app_hash"`
+	AppSHA256  string `json:"app_sha256"`
+	AppNotes   string `json:"app_notes"`
 }
 
 // releasesResponse mirrors GET /api/admin/releases.
@@ -489,20 +485,6 @@ func TestNonceReplayIsRejected(t *testing.T) {
 	}
 }
 
-// publishUpload saves a release through the upload mode and returns it.
-func publishUpload(t *testing.T, env *testenv.Env, platform, version, notes, defaultTOML string, file []byte) releaseView {
-	t.Helper()
-	res, data := uploadRelease(t, env, platform, version, notes, defaultTOML, file)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("upload release = %d, want 200: %s", res.StatusCode, data)
-	}
-	var out releasesResponse
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("decode releases: %v", err)
-	}
-	return out.releaseOf(platform)
-}
-
 // putReleases saves through the admin API and returns the response.
 func putReleases(t *testing.T, env *testenv.Env, fields map[string]string) releasesResponse {
 	t.Helper()
@@ -517,44 +499,15 @@ func putReleases(t *testing.T, env *testenv.Env, fields map[string]string) relea
 	return out
 }
 
-// uploadRelease sends the multipart upload mode. A nil file omits the file part.
-func uploadRelease(t *testing.T, env *testenv.Env, platform, version, notes, defaultTOML string, file []byte) (*http.Response, []byte) {
+// publishExternal points the platform at a served package and returns its view.
+func publishExternal(t *testing.T, env *testenv.Env, platform, version, notes string, pkg []byte) releaseView {
 	t.Helper()
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	if err := mw.WriteField("platform", platform); err != nil {
-		t.Fatalf("write platform: %v", err)
-	}
-	if err := mw.WriteField("app_version", version); err != nil {
-		t.Fatalf("write app_version: %v", err)
-	}
-	if err := mw.WriteField("app_notes", notes); err != nil {
-		t.Fatalf("write app_notes: %v", err)
-	}
-	if defaultTOML != "" {
-		if err := mw.WriteField("default_toml", defaultTOML); err != nil {
-			t.Fatalf("write default_toml: %v", err)
-		}
-	}
-	if file != nil {
-		part, err := mw.CreateFormFile("file", "mesh-client.tar.zst")
-		if err != nil {
-			t.Fatalf("create file part: %v", err)
-		}
-		if _, err := part.Write(file); err != nil {
-			t.Fatalf("write file part: %v", err)
-		}
-	}
-	if err := mw.Close(); err != nil {
-		t.Fatalf("close multipart writer: %v", err)
-	}
-	req, err := http.NewRequest("PUT", env.Server.URL+"/api/admin/releases", &buf)
-	if err != nil {
-		t.Fatalf("build upload request: %v", err)
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	env.Authorize(req)
-	return env.Send(req)
+	return putReleases(t, env, map[string]string{
+		"platform":    platform,
+		"app_version": version,
+		"app_url":     fileServer(t, pkg),
+		"app_notes":   notes,
+	}).releaseOf(platform)
 }
 
 func heartbeat(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appHash string) (*http.Response, []byte) {
@@ -570,7 +523,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 
 	// Publish a build so app_hash has a value to compare against.
 	build := releasePkg(t, []byte("client build one"))
-	release := publishUpload(t, env, testPlatform, "2026.11.24-4", "修复窄屏布局", "", build)
+	release := publishExternal(t, env, testPlatform, "2026.11.24-4", "修复窄屏布局", build)
 	sum := sha256.Sum256(build)
 	wantSHA := hex.EncodeToString(sum[:])
 
@@ -595,7 +548,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("app-only heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}
 	got := decode(data)
-	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: env.Server.URL + release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA}
+	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA}
 	if got.ConfigHash != "" || got.AppUpdate == nil || *got.AppUpdate != wantUpdate {
 		t.Fatalf("app-only heartbeat = %+v, want only app_update %+v", got, wantUpdate)
 	}
@@ -656,11 +609,11 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 
 	// Publishing another build flips app_hash and the update comes back.
-	next := publishUpload(t, env, testPlatform, "2026.11.25-1", "", "", releasePkg(t, []byte("client build two")))
+	next := publishExternal(t, env, testPlatform, "2026.11.25-1", "", releasePkg(t, []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppHash)
 	got = decode(data)
-	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != env.Server.URL+next.AppURL || got.ConfigHash != "" {
-		t.Fatalf("heartbeat after release = %d %+v, want only app_update %q", res.StatusCode, got, env.Server.URL+next.AppURL)
+	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
+		t.Fatalf("heartbeat after release = %d %+v, want only app_update %q", res.StatusCode, got, next.AppURL)
 	}
 }
 
@@ -670,7 +623,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishUpload(t, env, testPlatform, "2026.11.24-4", "", "", releasePkg(t, []byte("client build one")))
+	release := publishExternal(t, env, testPlatform, "2026.11.24-4", "", releasePkg(t, []byte("client build one")))
 
 	summary := func() deviceSummary {
 		t.Helper()
@@ -881,7 +834,7 @@ func TestReleaseRoundTrip(t *testing.T) {
 	pkgSum := sha256.Sum256(externalPkg)
 	wantPkg := hex.EncodeToString(pkgSum[:])
 	if saved.DefaultTOML != toml || got.AppVersion != "0.3.0" || got.AppURL != rawURL ||
-		got.AppNotes != "修复窄屏布局" || got.AppSource != "url" || got.AppHash != wantPkg[:16] ||
+		got.AppNotes != "修复窄屏布局" || got.AppHash != wantPkg[:16] ||
 		got.AppSHA256 != wantPkg {
 		t.Fatalf("save response = %+v, want hash %s / %s", saved, wantPkg[:16], wantPkg)
 	}
@@ -946,9 +899,9 @@ func TestReleaseRejectsIncompletePublish(t *testing.T) {
 		t.Fatalf("non-http url = %d: %s", res.StatusCode, data)
 	}
 
-	// A URL the server cannot read is rejected: use the upload mode instead.
+	// A URL the server cannot read is rejected.
 	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0", "app_url": "http://127.0.0.1:1/mesh-client.tar.zst"})
-	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "上传") {
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "无法读取 app_url") {
 		t.Fatalf("unreachable url = %d: %s", res.StatusCode, data)
 	}
 
@@ -991,121 +944,5 @@ ipv4 = "10.126.126.9/24"`
 	}
 	if device.ConfigTOML != custom || device.ConfigHash != core.Hash(custom) {
 		t.Fatalf("new device config = %q/%q, want the saved template", device.ConfigTOML, device.ConfigHash)
-	}
-}
-
-func TestUploadReleaseMode(t *testing.T) {
-	env := testenv.New(t)
-	const version = "2026.11.24-3"
-	const toml = `hostname = "uploaded"`
-	file := releasePkg(t, []byte{0x4d, 0x5a, 0x90, 0x00, 0xff, 0x7f, 0x0a, 0x01})
-
-	res, data := uploadRelease(t, env, testPlatform, version, "首个上传版本", toml, file)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("upload = %d, want 200: %s", res.StatusCode, data)
-	}
-	var saved releasesResponse
-	if err := json.Unmarshal(data, &saved); err != nil {
-		t.Fatalf("decode upload response: %v", err)
-	}
-	pkgSum := sha256.Sum256(file)
-	pkgFull := hex.EncodeToString(pkgSum[:])
-	name := "windows-amd64-" + version + "-mesh-client.tar.zst"
-	want := releaseView{
-		Platform:    testPlatform,
-		AppVersion:  version,
-		AppURL:      "/api/updates/" + name,
-		AppNotes:    "首个上传版本",
-		AppSource:   "upload",
-		AppFileName: name,
-		AppSize:     int64(len(file)),
-		AppHash:     pkgFull[:16],
-		AppSHA256:   pkgFull,
-	}
-	if got := saved.releaseOf(testPlatform); got != want || saved.DefaultTOML != toml {
-		t.Fatalf("upload response = %+v, want %+v", saved, want)
-	}
-
-	// The stored configuration reads back the same way.
-	res, data = env.Do("GET", "/api/admin/releases", nil)
-	var got releasesResponse
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("decode releases: %v", err)
-	}
-	if got.releaseOf(testPlatform) != want || got.DefaultTOML != toml {
-		t.Fatalf("GET releases = %+v, want %+v", got, want)
-	}
-
-	// The hosted file is downloadable without the admin cookie.
-	download := func(path string) []byte {
-		t.Helper()
-		anonymous := &http.Client{Transport: env.Server.Client().Transport, Timeout: 5 * time.Second}
-		res, err := anonymous.Get(env.Server.URL + path)
-		if err != nil {
-			t.Fatalf("download %s: %v", path, err)
-		}
-		defer res.Body.Close()
-		body, err := io.ReadAll(res.Body)
-		if err != nil {
-			t.Fatalf("read download: %v", err)
-		}
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("download %s = %d: %s", path, res.StatusCode, body)
-		}
-		if ct := res.Header.Get("Content-Type"); ct != "application/octet-stream" {
-			t.Fatalf("download content-type = %q", ct)
-		}
-		return body
-	}
-	if body := download(want.AppURL); !bytes.Equal(body, file) {
-		t.Fatalf("download body = %x, want %x", body, file)
-	}
-
-	// Re-uploading the same version replaces the hosted file.
-	second := releasePkg(t, []byte("second build of the same version"))
-	if res, data = uploadRelease(t, env, testPlatform, version, "", "", second); res.StatusCode != http.StatusOK {
-		t.Fatalf("re-upload = %d: %s", res.StatusCode, data)
-	}
-	if body := download(want.AppURL); !bytes.Equal(body, second) {
-		t.Fatalf("re-uploaded download = %q, want %q", body, second)
-	}
-	secondSum := sha256.Sum256(second)
-	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.SHA256 != hex.EncodeToString(secondSum[:]) {
-		t.Fatalf("re-uploaded release = %+v, found %v, %v", stored, found, err)
-	}
-
-	// Names that try to leave DATA_DIR/updates/ are refused.
-	for _, path := range []string{
-		"/api/updates/..%2Fstate.json",
-		"/api/updates/..%5Cstate.json",
-		"/api/updates/missing.tar.zst",
-	} {
-		res, data := env.Do("GET", path, nil)
-		if res.StatusCode != http.StatusNotFound {
-			t.Fatalf("GET %s = %d, want 404: %s", path, res.StatusCode, data)
-		}
-	}
-
-	// Rejected uploads leave the release untouched.
-	if res, data = uploadRelease(t, env, testPlatform, version, "", "", nil); res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "请选择更新包") {
-		t.Fatalf("upload without file = %d: %s", res.StatusCode, data)
-	}
-	if res, data = uploadRelease(t, env, testPlatform, "2026/11/24", "", "", file); res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "app_version") {
-		t.Fatalf("upload with unsafe version = %d: %s", res.StatusCode, data)
-	}
-	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Size != int64(len(second)) {
-		t.Fatalf("release changed after rejected uploads: %+v, found %v, %v", stored, found, err)
-	}
-
-	// Switching to an external URL drops the hosted-file fields and hashes the
-	// remote package instead.
-	externalPkg := releasePkg(t, []byte("external build"))
-	externalURL := fileServer(t, externalPkg)
-	switched := putReleases(t, env, map[string]string{"platform": testPlatform, "app_version": version, "app_url": externalURL})
-	extSum := sha256.Sum256(externalPkg)
-	extFull := hex.EncodeToString(extSum[:])
-	if r := switched.releaseOf(testPlatform); r.AppSource != "url" || r.AppFileName != "" || r.AppSize != 0 ||
-		r.AppHash != extFull[:16] || r.AppSHA256 != extFull {
-		t.Fatalf("switched release = %+v", switched)
 	}
 }

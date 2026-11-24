@@ -34,13 +34,10 @@ type legacyDeviceFixture struct {
 }
 
 type legacySettingsFixture struct {
-	AppVersion  string `json:"app_version"`
-	AppURL      string `json:"app_url"`
-	AppHash     string `json:"app_hash"`
-	AppNotes    string `json:"app_notes"`
-	AppSource   string `json:"app_source"`
-	AppFileName string `json:"app_file_name"`
-	AppSize     int64  `json:"app_size"`
+	AppVersion string `json:"app_version"`
+	AppURL     string `json:"app_url"`
+	AppHash    string `json:"app_hash"`
+	AppNotes   string `json:"app_notes"`
 }
 
 const (
@@ -84,13 +81,10 @@ func legacyFixtureState() legacyFixture {
 			},
 		},
 		Settings: &legacySettingsFixture{
-			AppVersion:  "2026.11.24-3",
-			AppURL:      "/api/updates/2026.11.24-3-mesh-client.exe",
-			AppHash:     "2495008aed91e3bf",
-			AppNotes:    "修复窄屏布局",
-			AppSource:   "upload",
-			AppFileName: "2026.11.24-3-mesh-client.exe",
-			AppSize:     6807712,
+			AppVersion: "2026.11.24-3",
+			AppURL:     "https://example.com/2026.11.24-3-mesh-client.tar.zst",
+			AppHash:    "2495008aed91e3bf",
+			AppNotes:   "修复窄屏布局",
 		},
 	}
 }
@@ -154,7 +148,7 @@ func TestLegacyStateIsImportedOnce(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Release(windows/amd64) = found %v, %v", found, err)
 	}
-	if release.Version != "2026.11.24-3" || release.Hash != "2495008aed91e3bf" || release.Size != 6807712 {
+	if release.Version != "2026.11.24-3" || release.Hash != "2495008aed91e3bf" || release.URL != "https://example.com/2026.11.24-3-mesh-client.tar.zst" {
 		t.Fatalf("release not imported: %+v", release)
 	}
 	if err := instance.Close(); err != nil {

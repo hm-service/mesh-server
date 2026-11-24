@@ -131,11 +131,17 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "PUT", "/api/devices/{id}", s.admin(s.handleUpdateDevice))
 	s.route(mux, "DELETE", "/api/devices/{id}", s.admin(s.handleDeleteDevice))
 	s.route(mux, "POST", "/api/devices/{id}/token", s.admin(s.handleIssueToken))
+	s.route(mux, "PUT", "/api/devices/{id}/group", s.admin(s.handleSetDeviceGroup))
+	s.route(mux, "PUT", "/api/layout", s.admin(s.handleDeviceLayout))
+	// Device groups and the layout the console saves after a drag.
+	s.route(mux, "GET", "/api/groups", s.admin(s.handleListGroups))
+	s.route(mux, "POST", "/api/groups", s.admin(s.handleCreateGroup))
+	s.route(mux, "PUT", "/api/groups/{id}", s.admin(s.handleUpdateGroup))
+	s.route(mux, "DELETE", "/api/groups/{id}", s.admin(s.handleDeleteGroup))
 	s.route(mux, "GET", "/api/admin/releases", s.admin(s.handleListReleases))
 	s.route(mux, "PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
 	s.route(mux, "DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
-	// Public download and the device-facing API signed by the device key.
-	s.route(mux, "GET", "/api/updates/{file}", s.withGate(s.apiGate, s.handleDownloadUpdate))
+	// Device-facing API signed by the device key.
 	s.route(mux, "POST", "/api/register", s.withGate(s.apiGate, s.handleRegister))
 	s.route(mux, "POST", "/api/heartbeat", s.withGate(s.apiGate, s.handleHeartbeat))
 	// Console pages and their assets.

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from "vue";
 import { api, ApiError, type ReleaseView, type ReleasesPayload } from "../api";
-import { formatMB } from "../format";
 
 const props = defineProps<{ releases: ReleasesPayload | null }>();
 const emit = defineEmits<{
@@ -14,11 +13,9 @@ const emit = defineEmits<{
 const KNOWN = ["windows/amd64", "linux/amd64"];
 
 interface Draft {
-  mode: "upload" | "url";
   version: string;
   url: string;
   notes: string;
-  file: File | null;
   busy: boolean;
   error: string;
   hint: string;
@@ -40,11 +37,9 @@ function releaseOf(platform: string): ReleaseView | null {
 function reset(platform: string): Draft {
   const value = releaseOf(platform);
   drafts[platform] = {
-    mode: value?.app_source === "url" ? "url" : "upload",
     version: value?.app_version ?? "",
-    url: value?.app_source === "url" ? value.app_url : "",
+    url: value?.app_url ?? "",
     notes: value?.app_notes ?? "",
-    file: null,
     busy: false,
     error: "",
     hint: "",
@@ -63,16 +58,10 @@ watch(
 function stateLine(platform: string): string {
   const value = releaseOf(platform);
   if (!value || !value.app_version) return "尚未发布";
-  const parts = [value.app_source === "url" ? "外部地址" : "上传", value.app_version];
-  if (value.app_source !== "url") parts.push(formatMB(value.app_size));
+  const parts = [value.app_version];
   if (value.app_hash) parts.push("hash " + value.app_hash);
-  if (value.app_source === "url" && value.app_url) parts.push(value.app_url);
+  if (value.app_url) parts.push(value.app_url);
   return parts.join(" · ");
-}
-
-function onFile(platform: string, event: Event) {
-  const input = event.target as HTMLInputElement;
-  drafts[platform]!.file = input.files && input.files.length > 0 ? input.files[0] : null;
 }
 
 function fail(platform: string, err: unknown) {
@@ -92,35 +81,20 @@ async function save(platform: string) {
     draft.error = "请填写版本号";
     return;
   }
+  const url = draft.url.trim();
+  if (!url) {
+    draft.error = "请填写下载地址";
+    return;
+  }
   draft.busy = true;
-  draft.hint = "";
+  draft.hint = "正在解析远程文件…（服务端下载并计算 hash，最长约 60 秒）";
   try {
-    let saved: ReleasesPayload;
-    if (draft.mode === "upload") {
-      const chosen = draft.file;
-      if (!chosen) {
-        draft.error = "请选择更新包";
-        return;
-      }
-      const form = new FormData();
-      form.append("platform", platform);
-      form.append("app_version", version);
-      form.append("app_notes", draft.notes);
-      form.append("file", chosen, chosen.name);
-      saved = await api.uploadRelease(form);
-    } else {
-      if (!draft.url.trim()) {
-        draft.error = "请填写下载地址";
-        return;
-      }
-      draft.hint = "正在解析远程文件…（服务端下载并计算 hash，最长约 60 秒）";
-      saved = await api.publishRelease({
-        platform,
-        app_version: version,
-        app_url: draft.url.trim(),
-        app_notes: draft.notes,
-      });
-    }
+    const saved = await api.publishRelease({
+      platform,
+      app_version: version,
+      app_url: url,
+      app_notes: draft.notes,
+    });
     emit("saved", saved);
     reset(platform);
     emit("toast", "客户端更新已发布", platform + " " + version, "ok");
@@ -163,10 +137,6 @@ async function remove(platform: string) {
           <span class="desc state" :title="stateLine(platform)">{{ stateLine(platform) }}</span>
         </div>
         <div class="panel-body">
-          <div class="seg">
-            <button type="button" :class="{ on: drafts[platform]!.mode === 'upload' }" @click="drafts[platform]!.mode = 'upload'">上传</button>
-            <button type="button" :class="{ on: drafts[platform]!.mode === 'url' }" @click="drafts[platform]!.mode = 'url'">外部地址</button>
-          </div>
           <div class="row2">
             <div class="field">
               <label :for="platform + '-version'">版本号</label>
@@ -179,11 +149,7 @@ async function remove(platform: string) {
                 autocomplete="off"
               />
             </div>
-            <div v-if="drafts[platform]!.mode === 'upload'" class="field">
-              <label :for="platform + '-file'">更新包</label>
-              <input :id="platform + '-file'" type="file" accept=".zst,.tar.zst" @change="onFile(platform, $event)" />
-            </div>
-            <div v-else class="field">
+            <div class="field">
               <label :for="platform + '-url'">下载地址</label>
               <input
                 :id="platform + '-url'"
@@ -202,7 +168,7 @@ async function remove(platform: string) {
           <div v-if="drafts[platform]!.error" class="err">{{ drafts[platform]!.error }}</div>
           <div class="actions">
             <button class="primary" type="button" :disabled="drafts[platform]!.busy" @click="save(platform)">
-              {{ drafts[platform]!.busy ? (drafts[platform]!.mode === "upload" ? "上传中…" : "解析中…") : "保存" }}
+              {{ drafts[platform]!.busy ? "解析中…" : "保存" }}
             </button>
             <button v-if="releaseOf(platform)" class="danger" type="button" :disabled="drafts[platform]!.busy" @click="remove(platform)">
               清除该平台

@@ -1,12 +1,9 @@
 package app
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,13 +40,10 @@ type legacyDevice struct {
 }
 
 type legacySettings struct {
-	AppVersion  string `json:"app_version"`
-	AppURL      string `json:"app_url"`
-	AppHash     string `json:"app_hash"`
-	AppNotes    string `json:"app_notes"`
-	AppSource   string `json:"app_source"`
-	AppFileName string `json:"app_file_name"`
-	AppSize     int64  `json:"app_size"`
+	AppVersion string `json:"app_version"`
+	AppURL     string `json:"app_url"`
+	AppHash    string `json:"app_hash"`
+	AppNotes   string `json:"app_notes"`
 }
 
 // importLegacyState copies DATA_DIR/state.json into SQLite. It runs on every
@@ -107,9 +101,6 @@ func (a *App) importLegacyState() error {
 			URL:      st.Settings.AppURL,
 			Hash:     st.Settings.AppHash,
 			Notes:    st.Settings.AppNotes,
-			Source:   st.Settings.AppSource,
-			FileName: st.Settings.AppFileName,
-			Size:     st.Settings.AppSize,
 		})
 		if err != nil {
 			return fmt.Errorf("import settings of %s: %w", path, err)
@@ -123,39 +114,5 @@ func (a *App) importLegacyState() error {
 		"invalid", skipped,
 		"release", importedRelease,
 	)
-	return nil
-}
-
-// backfillReleaseDigest fills app_sha256 for releases published before the full
-// digest was stored, so clients can verify downloads after the upgrade.
-func (a *App) backfillReleaseDigest() error {
-	releases, err := a.database.Releases()
-	if err != nil {
-		return err
-	}
-	for _, stored := range releases {
-		if stored.SHA256 != "" || stored.Source != SettingSourceUpload || stored.FileName == "" {
-			continue
-		}
-		file, err := os.Open(filepath.Join(a.updatesDir(), stored.FileName))
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Warn("published release file is missing, cannot store its digest", "file", stored.FileName)
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("open release file: %w", err)
-		}
-		sum := sha256.New()
-		_, err = io.Copy(sum, file)
-		file.Close()
-		if err != nil {
-			return fmt.Errorf("hash release file: %w", err)
-		}
-		stored.SHA256 = hex.EncodeToString(sum.Sum(nil))
-		if err := a.database.SetRelease(stored); err != nil {
-			return err
-		}
-		slog.Info("release digest backfilled", "platform", stored.Platform, "version", stored.Version)
-	}
 	return nil
 }

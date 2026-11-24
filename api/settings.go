@@ -3,7 +3,6 @@ package api
 import (
 	"errors"
 	"log/slog"
-	"mime"
 	"net/http"
 	"strings"
 
@@ -14,15 +13,12 @@ import (
 
 // releaseView is one platform's published build in the admin payload.
 type releaseView struct {
-	Platform    string `json:"platform"`
-	AppVersion  string `json:"app_version"`
-	AppURL      string `json:"app_url"`
-	AppHash     string `json:"app_hash"`
-	AppSHA256   string `json:"app_sha256"`
-	AppNotes    string `json:"app_notes"`
-	AppSource   string `json:"app_source"`
-	AppFileName string `json:"app_file_name"`
-	AppSize     int64  `json:"app_size"`
+	Platform   string `json:"platform"`
+	AppVersion string `json:"app_version"`
+	AppURL     string `json:"app_url"`
+	AppHash    string `json:"app_hash"`
+	AppSHA256  string `json:"app_sha256"`
+	AppNotes   string `json:"app_notes"`
 }
 
 // releasesResponse is the admin view of the release table plus the template.
@@ -42,15 +38,12 @@ type releaseInput struct {
 
 func toView(r db.Release) releaseView {
 	return releaseView{
-		Platform:    r.Platform,
-		AppVersion:  r.Version,
-		AppURL:      r.URL,
-		AppHash:     r.Hash,
-		AppSHA256:   r.SHA256,
-		AppNotes:    r.Notes,
-		AppSource:   r.Source,
-		AppFileName: r.FileName,
-		AppSize:     r.Size,
+		Platform:   r.Platform,
+		AppVersion: r.Version,
+		AppURL:     r.URL,
+		AppHash:    r.Hash,
+		AppSHA256:  r.SHA256,
+		AppNotes:   r.Notes,
 	}
 }
 
@@ -84,17 +77,9 @@ func (s *Server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 	s.writeReleases(w)
 }
 
-// handlePublishRelease dispatches the two release modes: multipart upload and
-// external URL. Both may carry a new default template.
+// handlePublishRelease points one platform at an external download URL and may
+// carry a new default template.
 func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
-	if contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && contentType == "multipart/form-data" {
-		s.publishFromUpload(w, r)
-		return
-	}
-	s.publishFromJSON(w, r)
-}
-
-func (s *Server) publishFromJSON(w http.ResponseWriter, r *http.Request) {
 	var req releaseInput
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", "请求内容不合法")
@@ -130,43 +115,6 @@ func (s *Server) publishFromJSON(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusInternalServerError, "internal")
 			return
 		}
-	}
-	s.writeReleases(w)
-}
-
-func (s *Server) publishFromUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, app.MaxUploadBytes+app.UploadHeadroom)
-	if err := r.ParseMultipartForm(8 << 20); err != nil {
-		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			httpx.WriteErrorDetail(w, http.StatusBadRequest, "file_too_large", "更新包不能超过 200MB")
-			return
-		}
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", "请求必须是 multipart/form-data")
-		return
-	}
-	if r.MultipartForm != nil {
-		defer func() { _ = r.MultipartForm.RemoveAll() }()
-	}
-	platform := strings.TrimSpace(r.FormValue("platform"))
-	version := strings.TrimSpace(r.FormValue("app_version"))
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "请选择更新包")
-		return
-	}
-	defer file.Close()
-	if header.Size > app.MaxUploadBytes {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "file_too_large", "更新包不能超过 200MB")
-		return
-	}
-	if _, err := s.app.PublishUpload(platform, version, r.FormValue("app_notes"), file); err != nil {
-		s.writeReleaseError(w, "publish upload", err)
-		return
-	}
-	if err := s.app.SaveDefaultTOML(r.FormValue("default_toml")); err != nil {
-		s.logger.Error("write default template", "error", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "internal")
-		return
 	}
 	s.writeReleases(w)
 }

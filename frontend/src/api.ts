@@ -11,8 +11,24 @@ export interface DeviceSummary {
   config_state: "current" | "stale";
   app_state: "current" | "stale";
   app_version: string;
+  group_id: number;
+  position: number;
   created_at: number;
   last_seen_at: number;
+}
+
+/** GroupView 是设备分组：position 决定分组在控制台里的先后。 */
+export interface GroupView {
+  id: number;
+  name: string;
+  position: number;
+}
+
+/** DevicePlacement 是一次拖拽结束后某台设备的新归属与新位置。 */
+export interface DevicePlacement {
+  id: string;
+  group_id: number;
+  position: number;
 }
 
 export interface DeviceDetail extends DeviceSummary {
@@ -31,9 +47,6 @@ export interface ReleaseView {
   app_hash: string;
   app_sha256: string;
   app_notes: string;
-  app_source: string;
-  app_file_name: string;
-  app_size: number;
 }
 
 /** ReleasesPayload 是管理端看到的全部平台发布状态，外加默认模板。 */
@@ -75,6 +88,7 @@ function describe(status: number, code: string): string {
   if (code === "device_conflict") return "该设备 ID 已绑定其它公钥";
   if (code === "invalid_token") return "令牌无效或已过期";
   if (code === "not_found") return "设备不存在";
+  if (code === "group_not_found") return "分组不存在";
   if (code === "busy") return "服务繁忙，请稍后重试";
   if (status === 400) return "请求内容不合法";
   return "请求失败（HTTP " + status + "）";
@@ -178,6 +192,24 @@ export const api = {
   issueToken(id: string): Promise<{ token: string }> {
     return jsonRequest<{ token: string }>("POST", "/api/devices/" + encodeURIComponent(id) + "/token");
   },
+  setDeviceGroup(id: string, groupId: number | null): Promise<void> {
+    return jsonRequest<void>("PUT", "/api/devices/" + encodeURIComponent(id) + "/group", { group_id: groupId });
+  },
+  saveLayout(devices: DevicePlacement[]): Promise<void> {
+    return jsonRequest<void>("PUT", "/api/layout", { devices });
+  },
+  listGroups(): Promise<GroupView[]> {
+    return jsonRequest<GroupView[]>("GET", "/api/groups");
+  },
+  createGroup(name: string): Promise<GroupView> {
+    return jsonRequest<GroupView>("POST", "/api/groups", { name });
+  },
+  updateGroup(id: number, patch: { name?: string; position?: number }): Promise<GroupView> {
+    return jsonRequest<GroupView>("PUT", "/api/groups/" + id, patch);
+  },
+  deleteGroup(id: number): Promise<void> {
+    return jsonRequest<void>("DELETE", "/api/groups/" + id);
+  },
   template(): Promise<{ toml: string }> {
     return jsonRequest<{ toml: string }>("GET", "/api/template");
   },
@@ -190,9 +222,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
     });
-  },
-  uploadRelease(form: FormData): Promise<ReleasesPayload> {
-    return releasesRequest("/api/admin/releases", { method: "PUT", body: form });
   },
   deleteRelease(platform: string): Promise<ReleasesPayload> {
     return releasesRequest("/api/admin/releases/" + platform, { method: "DELETE" });

@@ -29,7 +29,15 @@ CREATE TABLE IF NOT EXISTS device (
     last_seen_at     INTEGER NOT NULL DEFAULT 0,
     last_ip          TEXT    NOT NULL DEFAULT '',
     last_config_hash TEXT    NOT NULL DEFAULT '',
-    last_app_hash    TEXT    NOT NULL DEFAULT ''
+    last_app_hash    TEXT    NOT NULL DEFAULT '',
+    group_id         INTEGER NOT NULL DEFAULT 0,
+    position         INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS device_group (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT    NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS device_legacy_id ON device (legacy_id) WHERE legacy_id <> '';
@@ -42,10 +50,7 @@ CREATE TABLE IF NOT EXISTS release (
     url       TEXT    NOT NULL DEFAULT '',
     hash      TEXT    NOT NULL DEFAULT '',
     sha256    TEXT    NOT NULL DEFAULT '',
-    notes     TEXT    NOT NULL DEFAULT '',
-    source    TEXT    NOT NULL DEFAULT '',
-    file_name TEXT    NOT NULL DEFAULT '',
-    size      INTEGER NOT NULL DEFAULT 0
+    notes     TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS setting (
@@ -54,10 +59,7 @@ CREATE TABLE IF NOT EXISTS setting (
     app_url       TEXT    NOT NULL DEFAULT '',
     app_hash      TEXT    NOT NULL DEFAULT '',
     app_sha256    TEXT    NOT NULL DEFAULT '',
-    app_notes     TEXT    NOT NULL DEFAULT '',
-    app_source    TEXT    NOT NULL DEFAULT '',
-    app_file_name TEXT    NOT NULL DEFAULT '',
-    app_size      INTEGER NOT NULL DEFAULT 0
+    app_notes     TEXT    NOT NULL DEFAULT ''
 );
 `
 
@@ -110,6 +112,12 @@ func (d *DB) createSchema() error {
 	// Columns added after the table first shipped: SQLite has no
 	// ADD COLUMN IF NOT EXISTS, so they are checked one by one.
 	if err := d.ensureColumn("device", "last_platform", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := d.ensureColumn("device", "group_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.ensureColumn("device", "position", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil

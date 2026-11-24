@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { api, ApiError, type ReleasesPayload, type DeviceSummary } from "./api";
+import { api, ApiError, type DeviceSummary, type GroupView, type ReleasesPayload } from "./api";
 import ConfigView from "./components/ConfigView.vue";
 import DeviceDialog from "./components/DeviceDialog.vue";
 import DevicesView from "./components/DevicesView.vue";
@@ -17,6 +17,7 @@ const POLL_MS = 5000;
 const page = ref<Page>("devices");
 const authed = ref(false);
 const devices = ref<DeviceSummary[]>([]);
+const groups = ref<GroupView[]>([]);
 const releases = ref<ReleasesPayload | null>(null);
 const dialog = ref<Dialog>(null);
 const toast = ref<Toast | null>(null);
@@ -60,13 +61,16 @@ function stopPolling() {
 function handleUnauthorized() {
   stopPolling();
   dialog.value = null;
+  groups.value = [];
   releases.value = null;
   authed.value = false;
 }
 
 async function loadDevices() {
   try {
-    devices.value = await api.listDevices();
+    const [nextDevices, nextGroups] = await Promise.all([api.listDevices(), api.listGroups()]);
+    devices.value = nextDevices;
+    groups.value = nextGroups;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       handleUnauthorized();
@@ -203,9 +207,12 @@ onBeforeUnmount(() => {
         <DevicesView
           v-if="page === 'devices'"
           :devices="devices"
+          :groups="groups"
           @open="openDevice"
           @create="dialog = { kind: 'new' }"
           @refresh="refreshDevices"
+          @toast="showToast"
+          @unauthorized="handleUnauthorized"
         />
         <ConfigView
           v-else-if="page === 'config'"

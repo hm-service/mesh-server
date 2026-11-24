@@ -16,18 +16,15 @@ type Release struct {
 	Hash     string
 	SHA256   string
 	Notes    string
-	Source   string
-	FileName string
-	Size     int64
 }
 
-const releaseColumns = "platform, version, url, hash, sha256, notes, source, file_name, size"
+const releaseColumns = "platform, version, url, hash, sha256, notes"
 
 // Release returns the published build for platform.
 func (d *DB) Release(platform string) (Release, bool, error) {
 	var r Release
 	err := d.conn.QueryRow("SELECT "+releaseColumns+" FROM release WHERE platform = ?", platform).
-		Scan(&r.Platform, &r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes, &r.Source, &r.FileName, &r.Size)
+		Scan(&r.Platform, &r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Release{}, false, nil
 	}
@@ -47,7 +44,7 @@ func (d *DB) Releases() ([]Release, error) {
 	out := make([]Release, 0, 4)
 	for rows.Next() {
 		var r Release
-		if err := rows.Scan(&r.Platform, &r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes, &r.Source, &r.FileName, &r.Size); err != nil {
+		if err := rows.Scan(&r.Platform, &r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes); err != nil {
 			return nil, fmt.Errorf("scan release: %w", err)
 		}
 		out = append(out, r)
@@ -57,11 +54,10 @@ func (d *DB) Releases() ([]Release, error) {
 
 // SetRelease inserts or replaces the build of its platform.
 func (d *DB) SetRelease(r Release) error {
-	_, err := d.conn.Exec("INSERT INTO release ("+releaseColumns+") VALUES (?,?,?,?,?,?,?,?,?) "+
+	_, err := d.conn.Exec("INSERT INTO release ("+releaseColumns+") VALUES (?,?,?,?,?,?) "+
 		"ON CONFLICT(platform) DO UPDATE SET version=excluded.version, url=excluded.url, "+
-		"hash=excluded.hash, sha256=excluded.sha256, notes=excluded.notes, source=excluded.source, "+
-		"file_name=excluded.file_name, size=excluded.size",
-		r.Platform, r.Version, r.URL, r.Hash, r.SHA256, r.Notes, r.Source, r.FileName, r.Size)
+		"hash=excluded.hash, sha256=excluded.sha256, notes=excluded.notes",
+		r.Platform, r.Version, r.URL, r.Hash, r.SHA256, r.Notes)
 	if err != nil {
 		return fmt.Errorf("set release: %w", err)
 	}
@@ -106,9 +102,9 @@ func (d *DB) ImportLegacyRelease(platform string) (bool, error) {
 		return false, nil
 	}
 	var r Release
-	err := d.conn.QueryRow("SELECT app_version, app_url, app_hash, app_sha256, app_notes, " +
-		"app_source, app_file_name, app_size FROM setting ORDER BY id LIMIT 1").
-		Scan(&r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes, &r.Source, &r.FileName, &r.Size)
+	err := d.conn.QueryRow("SELECT app_version, app_url, app_hash, app_sha256, app_notes "+
+		"FROM setting ORDER BY id LIMIT 1").
+		Scan(&r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

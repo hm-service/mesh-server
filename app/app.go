@@ -17,9 +17,8 @@ import (
 )
 
 const (
-	databaseName   = "mesh.db"
-	templateName   = "peer.default.toml"
-	updatesDirName = "updates"
+	databaseName = "mesh.db"
+	templateName = "peer.default.toml"
 )
 
 // Options carries the injectable parts of the environment.
@@ -28,7 +27,7 @@ type Options struct {
 	Now func() time.Time
 }
 
-// App owns DATA_DIR: the SQLite database, peer.default.toml and updates/.
+// App owns DATA_DIR: the SQLite database and peer.default.toml.
 // Nothing outside DATA_DIR is state, and DATA_DIR holds no configuration.
 type App struct {
 	dataDir   string
@@ -73,10 +72,6 @@ func Open(dataDir string, opts Options) (*App, error) {
 	} else if imported {
 		slog.Info("legacy release imported", "platform", releaseDefaultPlatform)
 	}
-	if err := a.backfillReleaseDigest(); err != nil {
-		database.Close()
-		return nil, err
-	}
 	if purged, err := a.database.PurgeExpiredTokens(a.now().Unix()); err != nil {
 		database.Close()
 		return nil, err
@@ -118,10 +113,6 @@ func (a *App) Probe(ctx context.Context) error {
 
 func (a *App) templatePath() string {
 	return filepath.Join(a.dataDir, templateName)
-}
-
-func (a *App) updatesDir() string {
-	return filepath.Join(a.dataDir, updatesDirName)
 }
 
 // purgeLoop clears expired registration tokens in the background.

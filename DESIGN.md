@@ -20,7 +20,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | --- | --- |
 | 设备列表 | 设备卡片（在线状态、配置同步状态、客户端同步状态、最后心跳），排序与「显示详情」开关，新建与详情对话框 |
 | 配置 | 默认 EasyTier 模板（写回 `DATA_DIR/peer.default.toml`） |
-| 客户端更新 | 上传或外部地址发布客户端，展示当前发布的版本、hash 与体积 |
+| 客户端更新 | 按平台用外部地址发布客户端，展示当前发布的版本、hash 与地址 |
 
 鉴权只有 `AUTH_TOKEN` 一种形态：登录页提交它，换回一个 24 小时的无状态 Bearer 凭证；没有跳过登录的开关。
 
@@ -36,7 +36,6 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | POST | `/api/devices/{id}/token` | Bearer |
 | GET/PUT | `/api/admin/releases` | Bearer |
 | DELETE | `/api/admin/releases/{platform...}` | Bearer |
-| GET | `/api/updates/{file}` | 无 |
 | POST | `/api/register` | token 或设备签名（在请求体里） |
 | POST | `/api/heartbeat` | 设备签名（在请求体里） |
 
@@ -51,7 +50,6 @@ DATA_DIR/
   mesh.db              SQLite（WAL、synchronous=FULL）
   mesh.db-wal / -shm
   peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600）
-  updates/             上传的客户端二进制（0700）
   server.log           JSON 行日志，4MB 高水位裁剪到 2MB（0600）
   state.json           旧版 JSON 状态库，只读保留，不再写入
 ```
@@ -86,14 +84,11 @@ CREATE TABLE setting (
     app_url       TEXT NOT NULL DEFAULT '',
     app_hash      TEXT NOT NULL DEFAULT '', -- 16 位，客户端比对
     app_sha256    TEXT NOT NULL DEFAULT '', -- 完整摘要，客户端校验下载
-    app_notes     TEXT NOT NULL DEFAULT '',
-    app_source    TEXT NOT NULL DEFAULT '', -- upload / url
-    app_file_name TEXT NOT NULL DEFAULT '',
-    app_size      INTEGER NOT NULL DEFAULT 0
+    app_notes     TEXT NOT NULL DEFAULT ''
 );
 ```
 
-`setting` 只有一行；`SetSettings` 覆盖它，`ImportSettings` 只在表空时插入。
+`setting` 只有一行，仅用于把旧版单条设置迁进 `release`：启动时在 `release` 为空的情况下读取一次，之后不再写入。
 
 ## 5. 旧数据迁移
 
@@ -102,7 +97,7 @@ CREATE TABLE setting (
 - 设备以 `legacy_id = state.json 的 id` 写入，配合唯一索引与 `INSERT ... ON CONFLICT DO NOTHING`，重复启动不会重复插入；
 - 已存在的行一律跳过，所以迁移之后再在管理页改过的设备不会被旧文件覆盖；
 - `config_hash` 原样保留（历史上的值可能是 16 位，也可能是 64 位完整摘要），不做重新计算；
-- 设置只在 `setting` 为空时导入一次；
+- 旧的单条设置（`state.json` 的 `settings` 或旧 `setting` 表）只在 `release` 为空时导入 `windows/amd64` 一行；
 - `state.json` 本身保留在原处，作为回滚材料。
 
 ## 6. 安全模型
@@ -114,7 +109,7 @@ CREATE TABLE setting (
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
 | 发布包 | `app_hash`（16 位）用于判定，`app_sha256`（完整）用于下载后校验 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
-| 输入 | JSON 请求体 1MiB 上限，上传 200MB 上限，设备数 200 上限，版本号/文件名白名单 |
+| 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |
 | 响应头 | `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options`、严格 `Content-Security-Policy` |
 | 并发 | `/api/auth`、`/api/*`、静态资源、`/readyz` 各自独立信号量；Argon2id 并发上限 4 |
 

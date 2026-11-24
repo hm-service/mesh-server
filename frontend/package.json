@@ -10,9 +10,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "sortablejs": "^1.15.7",
     "vue": "^3.5.46"
   },
   "devDependencies": {
+    "@types/sortablejs": "^1.15.9",
     "@vitejs/plugin-vue": "^6.0.11",
     "typescript": "6.0.3",
     "vite": "^8.3.8",

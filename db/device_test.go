@@ -154,11 +154,11 @@ func TestReleasePerPlatform(t *testing.T) {
 	if _, found, err := d.Release("windows/amd64"); err != nil || found {
 		t.Fatalf("Release() on empty database = found %v, %v", found, err)
 	}
-	first := Release{Platform: "windows/amd64", Version: "v1", Hash: "h1", SHA256: "s1", Size: 3}
+	first := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1"}
 	if err := d.SetRelease(first); err != nil {
 		t.Fatalf("SetRelease() error: %v", err)
 	}
-	second := Release{Platform: "windows/amd64", Version: "v2", Hash: "h2", SHA256: "s2", Size: 4}
+	second := Release{Platform: "windows/amd64", Version: "v2", URL: "u2", Hash: "h2", SHA256: "s2"}
 	if err := d.SetRelease(second); err != nil {
 		t.Fatalf("SetRelease() second error: %v", err)
 	}

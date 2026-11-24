@@ -27,6 +27,8 @@ var (
 	ErrNotFound = db.ErrNotFound
 	// ErrLimit reports that the device slots are exhausted.
 	ErrLimit = db.ErrLimit
+	// ErrGroupNotFound reports a missing device group.
+	ErrGroupNotFound = db.ErrGroupNotFound
 	// ErrTokenInvalid reports a missing, used or expired registration token.
 	ErrTokenInvalid = errors.New("registration token is not usable")
 	// ErrInvalidInput reports a name or configuration that cannot be stored.
@@ -36,6 +38,66 @@ var (
 // ListDevices returns every device in creation order.
 func (a *App) ListDevices() ([]db.Device, error) {
 	return a.database.List()
+}
+
+// ListGroups returns every device group in display order.
+func (a *App) ListGroups() ([]db.Group, error) {
+	return a.database.ListGroups()
+}
+
+// CreateGroup appends a named group at the end of the group order.
+func (a *App) CreateGroup(name string) (db.Group, error) {
+	name = trimName(name)
+	if name == "" || len([]rune(name)) > MaxNameRunes {
+		return db.Group{}, ErrInvalidInput
+	}
+	return a.database.CreateGroup(name)
+}
+
+// UpdateGroup renames and/or moves a group. Nil fields stay unchanged.
+func (a *App) UpdateGroup(id int64, name *string, position *int64) (db.Group, error) {
+	if name != nil {
+		trimmed := trimName(*name)
+		if trimmed == "" || len([]rune(trimmed)) > MaxNameRunes {
+			return db.Group{}, ErrInvalidInput
+		}
+		name = &trimmed
+	}
+	if position != nil && *position < 0 {
+		return db.Group{}, ErrInvalidInput
+	}
+	return a.database.UpdateGroup(id, name, position)
+}
+
+// DeleteGroup removes a group; its devices fall back to ungrouped.
+func (a *App) DeleteGroup(id int64) error {
+	return a.database.DeleteGroup(id)
+}
+
+// SetDeviceGroup moves one device to groupID, 0 meaning ungrouped.
+func (a *App) SetDeviceGroup(publicID string, groupID int64) error {
+	if publicID == "" || groupID < 0 {
+		return ErrInvalidInput
+	}
+	return a.database.SetDeviceGroup(publicID, groupID)
+}
+
+// SetDeviceLayout saves the group and position of every dragged device at once.
+func (a *App) SetDeviceLayout(items []db.DevicePlacement) error {
+	if len(items) == 0 {
+		return ErrInvalidInput
+	}
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.PublicID == "" || item.GroupID < 0 || item.Position < 0 {
+			return ErrInvalidInput
+		}
+		if _, dup := seen[item.PublicID]; dup {
+			return ErrInvalidInput
+		}
+		seen[item.PublicID] = struct{}{}
+	}
+	return a.database.SetDeviceLayout(items)
 }
 
 // DeviceByID returns the device with the internal public id.

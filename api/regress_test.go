@@ -133,7 +133,11 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 	client := []byte("a whole mesh client binary")
 	file := releasePkg(t, client)
-	release := publishUpload(t, env, testPlatform, "2026.11.24-3", "", "", file)
+	release := putReleases(t, env, map[string]string{
+		"platform":    testPlatform,
+		"app_version": "2026.11.24-3",
+		"app_url":     fileServer(t, file),
+	}).releaseOf(testPlatform)
 
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])

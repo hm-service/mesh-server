@@ -1,5 +1,7 @@
-# 测试网的默认配置。多台设备时 ipv4 必须各自不同（不要用 .0）。
-ipv4 = "10.126.126.2/24"
+# 模板：新设备默认由网络 DHCP 分配地址，多台设备不会撞车。
+dhcp = true
+# 要固定地址就放开下面这行，并换成池子里没人用的地址。
+# ipv4 = "10.126.126.100/24"
 
 [network_identity]
 network_name = "test-net"
@@ -8,6 +10,10 @@ network_secret = "test-secret-2026"
 # 注意：这个段只设置开关，私钥由客户端启动 core 时用 --secure-mode 生成。
 [secure_mode]
 enabled = true
+
+[flags]
+# 加密算法必须全网一致；TOML 里就是这个字段，等价于 --encryption-algorithm。
+encryption_algorithm = "chacha20"
 
 [[peer]]
 uri = "tcp://172.19.230.131:11010"

@@ -47,7 +47,7 @@ async function save() {
       <h1>配置</h1>
       <span class="desc">新建设备对话框的初始内容</span>
     </div>
-    <div class="panel narrow">
+    <div class="panel">
       <div class="panel-head">
         <h2>默认 EasyTier 配置</h2>
         <span class="desc">TOML</span>
@@ -63,3 +63,11 @@ async function save() {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 编辑区居中收窄，高度吃掉视口剩下的部分：TOML 一行都不该靠滚动条看。 */
+.page{display:flex;flex-direction:column;min-height:calc(100vh - 116px)}
+.panel{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%;max-width:1040px;margin:0 auto}
+.panel-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;gap:10px}
+.panel .panel-body textarea.big{flex:1 1 auto;height:auto;min-height:260px}
+</style>

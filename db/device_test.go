@@ -113,72 +113,29 @@ func TestPurgeExpiredTokens(t *testing.T) {
 	}
 }
 
-func TestImportDevicesIsIdempotent(t *testing.T) {
-	d := openTemp(t)
-	legacy := []Device{
-		{PublicID: "d_1", LegacyID: "d_1", Name: "one", DeviceID: "dev-1"},
-		{PublicID: "d_2", LegacyID: "d_2", Name: "two"},
-	}
-	inserted, err := d.ImportDevices(legacy)
-	if err != nil {
-		t.Fatalf("ImportDevices() error: %v", err)
-	}
-	if inserted != 2 {
-		t.Fatalf("first import inserted = %d, want 2", inserted)
-	}
-	// The second run must not duplicate anything, and must not overwrite a row
-	// that has been edited in the meantime.
-	if _, err := d.Update("d_1", func(device *Device) error {
-		device.Name = "edited"
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	inserted, err = d.ImportDevices(legacy)
-	if err != nil {
-		t.Fatalf("second ImportDevices() error: %v", err)
-	}
-	if inserted != 0 {
-		t.Fatalf("second import inserted = %d, want 0", inserted)
-	}
-	if n, err := d.Count(); err != nil || n != 2 {
-		t.Fatalf("Count() = %d, %v; want 2", n, err)
-	}
-	if got, err := d.Get("d_1"); err != nil || got.Name != "edited" {
-		t.Fatalf("edited device = %+v, %v", got, err)
-	}
-}
-
 func TestReleasePerPlatform(t *testing.T) {
 	d := openTemp(t)
 	if _, found, err := d.Release("windows/amd64"); err != nil || found {
 		t.Fatalf("Release() on empty database = found %v, %v", found, err)
 	}
-	first := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1"}
-	if err := d.SetRelease(first); err != nil {
-		t.Fatalf("SetRelease() error: %v", err)
+	first := ClientSlot{Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1"}
+	if err := d.PublishSlots("windows/amd64", &first, nil); err != nil {
+		t.Fatalf("PublishSlots() error: %v", err)
 	}
-	second := Release{Platform: "windows/amd64", Version: "v2", URL: "u2", Hash: "h2", SHA256: "s2"}
-	if err := d.SetRelease(second); err != nil {
-		t.Fatalf("SetRelease() second error: %v", err)
+	second := ClientSlot{Version: "v2", URL: "u2", Hash: "h2", SHA256: "s2"}
+	if err := d.PublishSlots("windows/amd64", &second, nil); err != nil {
+		t.Fatalf("PublishSlots() second error: %v", err)
 	}
 	got, found, err := d.Release("windows/amd64")
-	if err != nil || !found || got != second {
+	if err != nil || !found || got != (Release{Platform: "windows/amd64", Version: "v2", URL: "u2", Hash: "h2", SHA256: "s2"}) {
 		t.Fatalf("Release() = %+v, found %v, %v", got, found, err)
 	}
-	if err := d.SetRelease(Release{Platform: "linux/amd64", Version: "v9"}); err != nil {
-		t.Fatalf("SetRelease() linux error: %v", err)
+	if err := d.PublishSlots("linux/amd64", &ClientSlot{Version: "v9"}, nil); err != nil {
+		t.Fatalf("PublishSlots() linux error: %v", err)
 	}
 	all, err := d.Releases()
 	if err != nil || len(all) != 2 {
 		t.Fatalf("Releases() = %+v, %v; want 2 rows", all, err)
-	}
-	imported, err := d.ImportRelease(Release{Platform: "windows/amd64", Version: "legacy"})
-	if err != nil || imported {
-		t.Fatalf("ImportRelease() over existing release = %v, %v", imported, err)
-	}
-	if got, _, _ := d.Release("windows/amd64"); got.Version != "v2" {
-		t.Fatalf("release overwritten by import: %+v", got)
 	}
 	if err := d.DeleteRelease("linux/amd64"); err != nil {
 		t.Fatalf("DeleteRelease() error: %v", err)
@@ -193,15 +150,15 @@ func TestReleasePerPlatform(t *testing.T) {
 // has its own write and clear path.
 func TestReleaseSlotsAreIndependent(t *testing.T) {
 	d := openTemp(t)
-	client := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1"}
-	if err := d.SetClientRelease(client); err != nil {
-		t.Fatalf("SetClientRelease() error: %v", err)
+	client := ClientSlot{Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1"}
+	if err := d.PublishSlots("windows/amd64", &client, nil); err != nil {
+		t.Fatalf("PublishSlots() client error: %v", err)
 	}
-	if err := d.SetLauncherRelease("windows/amd64", "l1", "lu1", "ls1"); err != nil {
-		t.Fatalf("SetLauncherRelease() error: %v", err)
+	if err := d.PublishSlots("windows/amd64", nil, &LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}); err != nil {
+		t.Fatalf("PublishSlots() launcher error: %v", err)
 	}
-	want := client
-	want.LauncherVersion, want.LauncherURL, want.LauncherSHA256 = "l1", "lu1", "ls1"
+	want := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1",
+		LauncherVersion: "l1", LauncherURL: "lu1", LauncherSHA256: "ls1"}
 	got, found, err := d.Release("windows/amd64")
 	if err != nil || !found || got != want {
 		t.Fatalf("Release() = %+v, found %v, %v; want %+v", got, found, err, want)
@@ -211,18 +168,37 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 	if err := d.ClearLauncher("windows/amd64"); err != nil {
 		t.Fatalf("ClearLauncher() error: %v", err)
 	}
-	if got, found, err = d.Release("windows/amd64"); err != nil || !found || got != client {
-		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want %+v", got, found, err, client)
+	clientOnly := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1"}
+	if got, found, err = d.Release("windows/amd64"); err != nil || !found || got != clientOnly {
+		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want %+v", got, found, err, clientOnly)
 	}
 
 	// A launcher-only row disappears once its slot is cleared.
-	if err := d.SetLauncherRelease("linux/amd64", "l9", "lu9", "ls9"); err != nil {
-		t.Fatalf("SetLauncherRelease() error: %v", err)
+	if err := d.PublishSlots("linux/amd64", nil, &LauncherSlot{Version: "l9", URL: "lu9", SHA256: "ls9"}); err != nil {
+		t.Fatalf("PublishSlots() launcher-only error: %v", err)
 	}
 	if err := d.ClearLauncher("linux/amd64"); err != nil {
 		t.Fatalf("ClearLauncher() error: %v", err)
 	}
 	if _, found, err := d.Release("linux/amd64"); err != nil || found {
 		t.Fatalf("empty row left behind: found %v, %v", found, err)
+	}
+}
+
+// TestPublishSlotsIsAtomic pins that the two slots of one publish land together:
+// the writes share a transaction, so a row can never carry only the second slot.
+func TestPublishSlotsIsAtomic(t *testing.T) {
+	d := openTemp(t)
+	if err := d.PublishSlots("windows/amd64",
+		&ClientSlot{Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1"},
+		&LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}); err != nil {
+		t.Fatalf("PublishSlots() error: %v", err)
+	}
+	got, found, err := d.Release("windows/amd64")
+	if err != nil || !found {
+		t.Fatalf("Release() = found %v, %v", found, err)
+	}
+	if got.Version != "v1" || got.LauncherVersion != "l1" || got.LauncherSHA256 != "ls1" {
+		t.Fatalf("release = %+v, want both slots", got)
 	}
 }

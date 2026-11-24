@@ -298,12 +298,9 @@ func ConfigState(d db.Device) string {
 
 // AppState reports whether the device runs the build published for its platform.
 // With nothing published for that platform there is nothing to update to, so it
-// counts as current.
+// counts as current, even for a device that has never reported a platform
+// (CONTRACT.md 1.4).
 func AppState(d db.Device, r db.Release) string {
-	// 平台未知说明这台设备还没上报过，它不可能已经在跑对应平台的包。
-	if d.LastPlatform == "" {
-		return "stale"
-	}
 	if r.Hash == "" || d.LastAppHash == r.Hash {
 		return "current"
 	}

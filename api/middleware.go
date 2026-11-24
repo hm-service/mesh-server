@@ -86,10 +86,31 @@ func bearerToken(r *http.Request) (string, bool) {
 	return strings.TrimSpace(header[len(prefix):]), true
 }
 
-// methodNotAllowed answers a known path with an unsupported method.
-func methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", "GET, HEAD")
+// methodNotAllowed answers a known path with an unsupported method, naming the
+// methods that path really answers (RFC 9110 15.5.6).
+func (s *Server) methodNotAllowed(w http.ResponseWriter, path string) {
+	w.Header().Set("Allow", allowHeader(s.methods[path]))
 	httpx.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+}
+
+// allowHeader renders the Allow value of one path: the methods registered for it
+// in canonical order, with HEAD next to GET because ServeMux answers a GET route
+// for HEAD too.
+func allowHeader(registered []string) string {
+	known := make(map[string]bool, len(registered))
+	for _, method := range registered {
+		known[method] = true
+	}
+	if known["GET"] {
+		known["HEAD"] = true
+	}
+	ordered := make([]string, 0, len(known))
+	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
+		if known[method] {
+			ordered = append(ordered, method)
+		}
+	}
+	return strings.Join(ordered, ", ")
 }
 
 // handleNotFound is the site-wide fallback.

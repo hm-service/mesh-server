@@ -28,6 +28,24 @@ type Release struct {
 	LauncherSHA256  string
 }
 
+// ClientSlot is the client package slot of one platform: the address clients
+// download from and the digests of the bytes behind it.
+type ClientSlot struct {
+	Version string
+	URL     string
+	Hash    string
+	SHA256  string
+	Notes   string
+}
+
+// LauncherSlot is the launcher slot of one platform. Only the full digest is
+// stored: the client hashes the launcher it already has itself.
+type LauncherSlot struct {
+	Version string
+	URL     string
+	SHA256  string
+}
+
 const releaseColumns = "platform, version, url, hash, sha256, notes, launcher_version, launcher_url, launcher_sha256"
 
 // scanRelease reads one row of releaseColumns.
@@ -68,65 +86,38 @@ func (d *DB) Releases() ([]Release, error) {
 	return out, rows.Err()
 }
 
-// SetRelease inserts or replaces both slots of its platform. Importing legacy
-// data is its only caller: it must not drop a slot the admin already published.
-func (d *DB) SetRelease(r Release) error {
-	_, err := d.conn.Exec("INSERT INTO release ("+releaseColumns+") VALUES (?,?,?,?,?,?,?,?,?) "+
-		"ON CONFLICT(platform) DO UPDATE SET version=excluded.version, url=excluded.url, "+
-		"hash=excluded.hash, sha256=excluded.sha256, notes=excluded.notes, "+
-		"launcher_version=excluded.launcher_version, launcher_url=excluded.launcher_url, "+
-		"launcher_sha256=excluded.launcher_sha256",
-		r.Platform, r.Version, r.URL, r.Hash, r.SHA256, r.Notes,
-		r.LauncherVersion, r.LauncherURL, r.LauncherSHA256)
+// PublishSlots writes the given slots of platform in one transaction, so a
+// request that publishes both of them can never leave one behind: either both
+// slots are stored or neither is. A nil slot keeps what the row already had, and
+// the row is created when the platform is new.
+func (d *DB) PublishSlots(platform string, client *ClientSlot, launcher *LauncherSlot) error {
+	if client == nil && launcher == nil {
+		return nil
+	}
+	tx, err := d.conn.Begin()
 	if err != nil {
-		return fmt.Errorf("set release: %w", err)
+		return fmt.Errorf("begin publish: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("INSERT INTO release (platform) VALUES (?) ON CONFLICT(platform) DO NOTHING", platform); err != nil {
+		return fmt.Errorf("create release row: %w", err)
+	}
+	if client != nil {
+		if _, err := tx.Exec("UPDATE release SET version = ?, url = ?, hash = ?, sha256 = ?, notes = ? WHERE platform = ?",
+			client.Version, client.URL, client.Hash, client.SHA256, client.Notes, platform); err != nil {
+			return fmt.Errorf("publish client slot: %w", err)
+		}
+	}
+	if launcher != nil {
+		if _, err := tx.Exec("UPDATE release SET launcher_version = ?, launcher_url = ?, launcher_sha256 = ? WHERE platform = ?",
+			launcher.Version, launcher.URL, launcher.SHA256, platform); err != nil {
+			return fmt.Errorf("publish launcher slot: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit publish: %w", err)
 	}
 	return nil
-}
-
-// SetClientRelease inserts or replaces only the client package slot of its
-// platform; the launcher slot keeps whatever it already had.
-func (d *DB) SetClientRelease(r Release) error {
-	_, err := d.conn.Exec("INSERT INTO release (platform, version, url, hash, sha256, notes) VALUES (?,?,?,?,?,?) "+
-		"ON CONFLICT(platform) DO UPDATE SET version=excluded.version, url=excluded.url, "+
-		"hash=excluded.hash, sha256=excluded.sha256, notes=excluded.notes",
-		r.Platform, r.Version, r.URL, r.Hash, r.SHA256, r.Notes)
-	if err != nil {
-		return fmt.Errorf("set client release: %w", err)
-	}
-	return nil
-}
-
-// SetLauncherRelease inserts or replaces only the launcher slot of platform; the
-// client package slot keeps whatever it already had.
-func (d *DB) SetLauncherRelease(platform, version, url, sha string) error {
-	_, err := d.conn.Exec("INSERT INTO release (platform, launcher_version, launcher_url, launcher_sha256) VALUES (?,?,?,?) "+
-		"ON CONFLICT(platform) DO UPDATE SET launcher_version=excluded.launcher_version, "+
-		"launcher_url=excluded.launcher_url, launcher_sha256=excluded.launcher_sha256",
-		platform, version, url, sha)
-	if err != nil {
-		return fmt.Errorf("set launcher release: %w", err)
-	}
-	return nil
-}
-
-// ImportRelease stores a release only when its platform has nothing published,
-// so a repeated import never overwrites what the admin saved.
-func (d *DB) ImportRelease(r Release) (bool, error) {
-	if r.Version == "" {
-		return false, nil
-	}
-	existing, found, err := d.Release(r.Platform)
-	if err != nil {
-		return false, err
-	}
-	if found && existing.Version != "" {
-		return false, nil
-	}
-	if err := d.SetRelease(r); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // DeleteRelease removes every slot of platform.
@@ -137,45 +128,24 @@ func (d *DB) DeleteRelease(platform string) error {
 	return nil
 }
 
-// ClearLauncher blanks only the launcher slot of platform. A row whose client
-// package is not published either is dropped: releases only lists what exists.
+// ClearLauncher blanks only the launcher slot of platform, in one transaction:
+// a row whose client package is not published either is dropped, and a launcher
+// published concurrently is never deleted by the drop.
 func (d *DB) ClearLauncher(platform string) error {
-	if _, err := d.conn.Exec("UPDATE release SET launcher_version = '', launcher_url = '', launcher_sha256 = '' "+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin clear launcher: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("UPDATE release SET launcher_version = '', launcher_url = '', launcher_sha256 = '' "+
 		"WHERE platform = ?", platform); err != nil {
 		return fmt.Errorf("clear launcher: %w", err)
 	}
-	if _, err := d.conn.Exec("DELETE FROM release WHERE platform = ? AND version = ''", platform); err != nil {
+	if _, err := tx.Exec("DELETE FROM release WHERE platform = ? AND version = ''", platform); err != nil {
 		return fmt.Errorf("clear launcher: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit clear launcher: %w", err)
+	}
 	return nil
-}
-
-// ImportLegacyRelease moves the pre-platform setting row into release for the
-// given platform, once. A populated release table means this already ran.
-func (d *DB) ImportLegacyRelease(platform string) (bool, error) {
-	var count int
-	if err := d.conn.QueryRow("SELECT COUNT(*) FROM release").Scan(&count); err != nil {
-		return false, fmt.Errorf("count releases: %w", err)
-	}
-	if count > 0 {
-		return false, nil
-	}
-	var r Release
-	err := d.conn.QueryRow("SELECT app_version, app_url, app_hash, app_sha256, app_notes "+
-		"FROM setting ORDER BY id LIMIT 1").
-		Scan(&r.Version, &r.URL, &r.Hash, &r.SHA256, &r.Notes)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read legacy settings: %w", err)
-	}
-	if r.Version == "" {
-		return false, nil
-	}
-	r.Platform = platform
-	if err := d.SetRelease(r); err != nil {
-		return false, err
-	}
-	return true, nil
 }

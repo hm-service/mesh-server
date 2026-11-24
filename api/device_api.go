@@ -77,7 +77,8 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds heartb
 		return db.Device{}, false
 	}
 	now := s.app.Now()
-	if err := core.CheckTimestamp(timestamp, now); err != nil {
+	signedAt, err := core.CheckTimestamp(timestamp, now)
+	if err != nil {
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
 	}
@@ -86,7 +87,7 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds heartb
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
 	}
-	if !s.nonces.Claim(nonce, now) {
+	if !s.nonces.Claim(nonce, now, signedAt) {
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
 	}
@@ -178,7 +179,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // was never used up. Knowing device_id and pubkey is not enough.
 func (s *Server) registerProofValid(device db.Device, req registerRequest, now time.Time) bool {
 	if req.Timestamp != "" && req.Nonce != "" && req.Signature != "" {
-		if err := core.CheckTimestamp(req.Timestamp, now); err != nil {
+		signedAt, err := core.CheckTimestamp(req.Timestamp, now)
+		if err != nil {
 			return false
 		}
 		// 注册请求没有配置与版本信息，签名里这两行留空。
@@ -186,7 +188,7 @@ func (s *Server) registerProofValid(device db.Device, req registerRequest, now t
 		if err := core.VerifySignature(device.Pubkey, req.Signature, []byte(signing)); err != nil {
 			return false
 		}
-		return s.nonces.Claim(req.Nonce, now)
+		return s.nonces.Claim(req.Nonce, now, signedAt)
 	}
 	return s.slotTokenValid(device, req.Token, now)
 }

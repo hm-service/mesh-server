@@ -18,7 +18,6 @@ var (
 // contract of CONTRACT.md 1.1.
 type Device struct {
 	PublicID       string
-	LegacyID       string
 	Name           string
 	DeviceID       string
 	Hostname       string
@@ -37,10 +36,10 @@ type Device struct {
 	Position       int64
 }
 
-const deviceColumns = "public_id, legacy_id, name, device_id, hostname, pubkey, config_toml, config_hash, " +
+const deviceColumns = "public_id, name, device_id, hostname, pubkey, config_toml, config_hash, " +
 	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_hash, last_platform, group_id, position"
 
-const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -48,7 +47,7 @@ type rowScanner interface {
 
 func scanDevice(row rowScanner) (Device, error) {
 	var d Device
-	err := row.Scan(&d.PublicID, &d.LegacyID, &d.Name, &d.DeviceID, &d.Hostname, &d.Pubkey,
+	err := row.Scan(&d.PublicID, &d.Name, &d.DeviceID, &d.Hostname, &d.Pubkey,
 		&d.ConfigTOML, &d.ConfigHash, &d.Token, &d.TokenExpiresAt, &d.CreatedAt, &d.LastSeenAt,
 		&d.LastIP, &d.LastConfigHash, &d.LastAppHash, &d.LastPlatform, &d.GroupID, &d.Position)
 	return d, err
@@ -145,7 +144,7 @@ func (d *DB) Create(dev Device, max int) error {
 	if n >= max {
 		return ErrLimit
 	}
-	// 新设备排在未分组末尾；已有行迁移后 position 都是 0，仍保持创建顺序。
+	// 新设备排在未分组末尾；既有行的 position 都是 0，仍保持创建顺序。
 	if err := tx.QueryRow("SELECT COALESCE(MAX(position), -1) + 1 FROM device WHERE group_id = 0").Scan(&dev.Position); err != nil {
 		return fmt.Errorf("next device position: %w", err)
 	}
@@ -160,7 +159,7 @@ func (d *DB) Create(dev Device, max int) error {
 
 func deviceArgs(dev Device) []any {
 	return []any{
-		dev.PublicID, dev.LegacyID, dev.Name, dev.DeviceID, dev.Hostname, dev.Pubkey,
+		dev.PublicID, dev.Name, dev.DeviceID, dev.Hostname, dev.Pubkey,
 		dev.ConfigTOML, dev.ConfigHash, dev.Token, dev.TokenExpiresAt, dev.CreatedAt,
 		dev.LastSeenAt, dev.LastIP, dev.LastConfigHash, dev.LastAppHash, dev.LastPlatform,
 		dev.GroupID, dev.Position,
@@ -274,30 +273,4 @@ func (d *DB) PurgeExpiredTokens(now int64) (int64, error) {
 		return 0, fmt.Errorf("purge expired tokens: %w", err)
 	}
 	return res.RowsAffected()
-}
-
-// ImportDevices inserts legacy rows, skipping every one that is already there.
-// The legacy_id unique index is what makes repeated imports a no-op.
-func (d *DB) ImportDevices(devices []Device) (int, error) {
-	tx, err := d.conn.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("begin import devices: %w", err)
-	}
-	defer tx.Rollback()
-	inserted := 0
-	for _, dev := range devices {
-		res, err := tx.Exec(insertDevice+" ON CONFLICT DO NOTHING", deviceArgs(dev)...)
-		if err != nil {
-			return 0, fmt.Errorf("import device %s: %w", dev.PublicID, err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("import device %s: %w", dev.PublicID, err)
-		}
-		inserted += int(n)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit import devices: %w", err)
-	}
-	return inserted, nil
 }

@@ -2,7 +2,7 @@
 import { onMounted, ref } from "vue";
 import { api, ApiError } from "../api";
 import { copyText } from "../clipboard";
-import { FALLBACK_TOML, validateToml } from "../format";
+import { validateToml } from "../format";
 
 const emit = defineEmits<{
   close: [];
@@ -14,21 +14,32 @@ const emit = defineEmits<{
 type Tab = "edit" | "detail";
 
 const name = ref("");
-const toml = ref(FALLBACK_TOML);
+const toml = ref("");
 const tab = ref<Tab>("edit");
 const error = ref("");
 const token = ref("");
 const busy = ref(false);
 const locked = ref(false);
+const templateReady = ref(false);
+const templateError = ref("");
 
-onMounted(async () => {
+// 默认模板只有服务端一份：取不到就不让建，否则会写出一份和全网不一致的配置。
+async function loadTemplate() {
+  templateError.value = "";
   try {
-    const result = await api.template();
-    if (toml.value === FALLBACK_TOML && result.toml) toml.value = result.toml;
-  } catch {
-    // 模板只是预填，取不到时用兜底内容。
+    toml.value = (await api.template()).toml;
+    templateReady.value = true;
+  } catch (err) {
+    templateReady.value = false;
+    if (err instanceof ApiError && err.status === 401) {
+      emit("unauthorized");
+      return;
+    }
+    templateError.value = err instanceof ApiError ? err.message : "读取默认模板失败，请重试";
   }
-});
+}
+
+onMounted(loadTemplate);
 
 function showError(text: string, target: Tab) {
   tab.value = target;
@@ -39,6 +50,10 @@ async function submit() {
   if (busy.value || locked.value) return;
   error.value = "";
   const trimmed = name.value.trim();
+  if (!templateReady.value) {
+    showError("还没有读到默认模板，请重试", "edit");
+    return;
+  }
   if (!trimmed) {
     showError("请填写设备名称", "detail");
     return;
@@ -80,7 +95,7 @@ async function copy() {
   <div class="modal" @click.self="emit('close')">
     <div class="dialog wide">
       <h2>新建设备</h2>
-      <div class="sub">直接编辑 EasyTier 配置，保存后生成一次性令牌；设备注册后自动绑定。</div>
+      <div class="sub">配置由控制台的默认模板预填，保存后生成一次性令牌；设备注册后自动绑定。</div>
       <div class="cfg-tabs">
         <button type="button" class="cfg-tab" :class="{ on: tab === 'edit' }" @click="tab = 'edit'">配置</button>
         <button type="button" class="cfg-tab" :class="{ on: tab === 'detail' }" @click="tab = 'detail'">信息</button>
@@ -89,6 +104,10 @@ async function copy() {
         <div class="cfg-pane cfg-pane-edit">
           <div class="cfg-pane-label">EasyTier 配置（TOML）</div>
           <textarea v-model="toml" :disabled="locked" spellcheck="false" />
+          <div v-if="templateError" class="err">
+            {{ templateError }}
+            <button type="button" @click="loadTemplate">重试</button>
+          </div>
         </div>
         <div class="cfg-pane cfg-pane-detail">
           <div class="cfg-pane-label">设备信息</div>
@@ -116,7 +135,7 @@ async function copy() {
       </div>
       <div v-if="error" class="err">{{ error }}</div>
       <div class="actions">
-        <button class="primary" type="button" :disabled="busy || locked" @click="submit">
+        <button class="primary" type="button" :disabled="busy || locked || !templateReady" @click="submit">
           {{ busy ? "生成中…" : locked ? "令牌已生成" : "生成令牌" }}
         </button>
         <button type="button" @click="emit('close')">{{ locked ? "关闭" : "取消" }}</button>

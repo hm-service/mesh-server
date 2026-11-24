@@ -675,8 +675,10 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 		return deviceSummary{}
 	}
 
-	// Nothing reported yet: both states are stale and no hash was recorded.
-	if got := summary(); got.ConfigState != "stale" || got.AppState != "stale" || got.LastConfigHash != "" || got.LastAppHash != "" {
+	// Nothing reported yet: no config hash is recorded, and the platform is
+	// unknown, so nothing is published for it either — CONTRACT.md 1.4 counts
+	// that as current, not stale.
+	if got := summary(); got.ConfigState != "stale" || got.AppState != "current" || got.LastConfigHash != "" || got.LastAppHash != "" {
 		t.Fatalf("before any heartbeat = %+v", got)
 	}
 

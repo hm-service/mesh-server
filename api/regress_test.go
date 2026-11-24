@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"mesh-server/internal/testenv"
 )
@@ -162,6 +164,95 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	}
 	if out.AppUpdate == nil || out.AppUpdate.SHA256 != pkgFull {
 		t.Fatalf("app_update = %+v, want sha256 %q", out.AppUpdate, pkgFull)
+	}
+}
+
+// TestPublishRejectsBothSlotsTogether pins that a rejected publish writes
+// nothing. The client slot of the same request was valid and downloaded already;
+// before the two slots shared one transaction it was stored anyway and every
+// device of that platform started receiving an update the admin never saw
+// confirmed.
+func TestPublishRejectsBothSlotsTogether(t *testing.T) {
+	env := testenv.New(t)
+	file := releasePkg(t, []byte("a whole mesh client binary"))
+	res, body := env.Do("PUT", "/api/admin/releases", map[string]string{
+		"platform":         testPlatform,
+		"app_version":      "2026.11.25-1",
+		"app_url":          fileServer(t, file),
+		"launcher_version": "2026.11.25-9",
+		"launcher_url":     "http://127.0.0.1:1/mesh.exe",
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("publish = %d, want 400: %s", res.StatusCode, body)
+	}
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("a rejected publish stored a slot: found %v, %v", found, err)
+	}
+}
+
+// TestAllowNamesRegisteredMethods pins the Allow header of the 405 fallback: it
+// used to be the constant "GET, HEAD" for every path, which told a client that
+// GET /api/auth is supported when only POST is.
+func TestAllowNamesRegisteredMethods(t *testing.T) {
+	env := testenv.New(t)
+	cases := []struct {
+		method string
+		path   string
+		want   string
+	}{
+		{"GET", "/api/auth", "POST"},
+		{"POST", "/api/admin/releases", "GET, HEAD, PUT"},
+		{"DELETE", "/api/devices", "GET, HEAD, POST"},
+		{"GET", "/api/layout", "PUT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			res, body := env.Do(tc.method, tc.path, nil)
+			if res.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s = %d, want 405: %s", tc.method, tc.path, res.StatusCode, body)
+			}
+			if allow := res.Header.Get("Allow"); allow != tc.want {
+				t.Fatalf("Allow = %q, want %q", allow, tc.want)
+			}
+		})
+	}
+}
+
+// TestDeviceGateDoesNotStarveAdmin pins that the device surface has its own
+// concurrency gate: one unauthenticated request that never sends its body must
+// not turn the console API into 503 busy.
+func TestDeviceGateDoesNotStarveAdmin(t *testing.T) {
+	env := testenv.New(t, testenv.WithAPIConcurrency(1))
+
+	body, writer := io.Pipe()
+	defer writer.Close()
+	req, err := http.NewRequest(http.MethodPost, env.Server.URL+"/api/heartbeat", body)
+	if err != nil {
+		t.Fatalf("build heartbeat request: %v", err)
+	}
+	req.ContentLength = 128
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		res, err := env.Client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, res.Body)
+			res.Body.Close()
+		}
+	}()
+	// Give the handler time to take its gate slot and block in ReadBody.
+	time.Sleep(200 * time.Millisecond)
+
+	res, data := env.Do("GET", "/api/devices", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/devices while a device request is stuck = %d: %s", res.StatusCode, data)
+	}
+
+	writer.Close()
+	select {
+	case <-sent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled device request did not end")
 	}
 }
 

@@ -116,15 +116,11 @@ async function decode<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
     let code = "";
-    let message = "";
     try {
-      const payload = JSON.parse(text) as { code?: string; message?: string };
-      code = payload.code ?? "";
-      message = payload.message ?? "";
+      code = (JSON.parse(text) as { code?: string }).code ?? "";
     } catch {
       code = "";
     }
-    if (message) throw new ApiError(res.status, code);
     throw new ApiError(res.status, code);
   }
   if (res.status === 204) return undefined as T;

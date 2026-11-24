@@ -37,6 +37,11 @@ const (
 	memoryLimit = 128 << 20
 	// shutdownTimeout bounds how long in-flight requests may finish.
 	shutdownTimeout = 5 * time.Second
+	// readHeaderTimeout, readTimeout and idleTimeout bound how long one
+	// connection may hold a request slot; a device body is at most 1MiB.
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 15 * time.Second
+	idleTimeout       = 60 * time.Second
 	// purgeInterval is how often expired registration tokens are cleared.
 	purgeInterval = time.Minute
 )
@@ -108,12 +113,15 @@ func run() int {
 		MaxAuthConcurrency:   conf.maxAuth,
 		MaxAPIConcurrency:    conf.maxAPI,
 		MaxStaticConcurrency: conf.maxStatic,
-		MinAuthDelay:         time.Second,
 	}).Handler()
 	server := &http.Server{
-		Addr:              listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+		Addr:    listen,
+		Handler: handler,
+		// A request that stops mid-body must not hold a concurrency slot: the
+		// read deadline bounds every unauthenticated upload as well.
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 
 	serveErr := make(chan error, 1)

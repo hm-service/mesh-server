@@ -50,9 +50,10 @@ func (c *Clock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 type Option func(*config)
 
 type config struct {
-	login       bool
-	logger      *slog.Logger
-	readyzToken string
+	login          bool
+	logger         *slog.Logger
+	readyzToken    string
+	apiConcurrency int
 }
 
 // WithReadyzToken protects /readyz the way a deployment does.
@@ -65,6 +66,11 @@ func WithoutLogin() Option {
 	return func(c *config) { c.login = false }
 }
 
+// WithAPIConcurrency shrinks the API gates, so a test can fill one of them.
+func WithAPIConcurrency(n int) Option {
+	return func(c *config) { c.apiConcurrency = n }
+}
+
 // New builds the environment and logs the admin in.
 func New(t *testing.T, options ...Option) *Env {
 	t.Helper()
@@ -74,7 +80,12 @@ func New(t *testing.T, options ...Option) *Env {
 	}
 	dir := t.TempDir()
 	clock := &Clock{t: time.Unix(1_732_400_000, 0)}
-	instance, err := app.Open(dir, app.Options{Now: clock.Now})
+	instance, err := app.Open(dir, app.Options{
+		Now: clock.Now,
+		// The publish tests serve packages from an httptest server on loopback,
+		// which the hardened download client refuses by design.
+		FetchClient: &http.Client{Timeout: 10 * time.Second},
+	})
 	if err != nil {
 		t.Fatalf("open app: %v", err)
 	}
@@ -88,12 +99,14 @@ func New(t *testing.T, options ...Option) *Env {
 		t.Fatalf("hash AUTH_TOKEN: %v", err)
 	}
 	handler := api.New(api.Options{
-		App:          instance,
-		Logger:       cfg.logger,
-		ReadyzToken:  cfg.readyzToken,
-		TokenHash:    hash,
-		SessionKey:   sessionKey,
-		MinAuthDelay: 0,
+		App:         instance,
+		Logger:      cfg.logger,
+		ReadyzToken: cfg.readyzToken,
+		TokenHash:   hash,
+		SessionKey:  sessionKey,
+		// The floor is part of the login path; only the wait is skipped here.
+		Sleep:             func(time.Duration) {},
+		MaxAPIConcurrency: cfg.apiConcurrency,
 	}).Handler()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

@@ -41,7 +41,7 @@ func TestCheckTimestamp(t *testing.T) {
 		{"nope", false},
 	}
 	for _, tc := range cases {
-		if err := CheckTimestamp(tc.raw, now); (err == nil) != tc.want {
+		if _, err := CheckTimestamp(tc.raw, now); (err == nil) != tc.want {
 			t.Fatalf("CheckTimestamp(%q) error = %v, want ok=%v", tc.raw, err, tc.want)
 		}
 	}

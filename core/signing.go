@@ -29,20 +29,22 @@ func SigningString(method, path, deviceID, timestamp, nonce, platformID, configH
 	}, "\n")
 }
 
-// CheckTimestamp rejects timestamps outside the allowed window.
-func CheckTimestamp(raw string, now time.Time) error {
+// CheckTimestamp rejects timestamps outside the allowed window and returns the
+// signed moment, which is what the nonce cache must remember the nonce until.
+func CheckTimestamp(raw string, now time.Time) (time.Time, error) {
 	ts, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return fmt.Errorf("%w: not an integer", ErrTimestamp)
+		return time.Time{}, fmt.Errorf("%w: not an integer", ErrTimestamp)
 	}
-	skew := now.Unix() - ts
+	signedAt := time.Unix(ts, 0)
+	skew := now.Sub(signedAt)
 	if skew < 0 {
 		skew = -skew
 	}
-	if skew > int64(ClockSkew/time.Second) {
-		return fmt.Errorf("%w: outside %s", ErrTimestamp, ClockSkew)
+	if skew > ClockSkew {
+		return time.Time{}, fmt.Errorf("%w: outside %s", ErrTimestamp, ClockSkew)
 	}
-	return nil
+	return signedAt, nil
 }
 
 // CheckPubkey reports whether s is base64 of a 32-byte Ed25519 public key.

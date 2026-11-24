@@ -33,34 +33,39 @@ type Options struct {
 	// TrustedProxies are the peers whose forwarding headers are believed. An
 	// empty list trusts nobody, which is the default.
 	TrustedProxies []netip.Prefix
-	// Concurrency gates; zero means the documented default.
+	// Concurrency gates; zero means the documented default. The admin surface
+	// and the device surface each get their own APIConcurrency-sized gate, so a
+	// flood of device requests cannot starve the console.
 	MaxAuthConcurrency   int
 	MaxAPIConcurrency    int
 	MaxStaticConcurrency int
-	// MinAuthDelay is the floor of one login round trip. Zero disables it,
-	// which is what the tests use.
-	MinAuthDelay time.Duration
+	// Sleep is how a login waits out the minimum round trip; tests replace it
+	// to keep the test suite fast. Nil sleeps for real.
+	Sleep func(time.Duration)
 }
 
 // Server holds the HTTP state: the token hash, the signing key and the nonce
 // replay cache.
 type Server struct {
-	app          *app.App
-	logger       *slog.Logger
-	static       fs.FS
-	index        []byte
-	readyzToken  string
-	proxies      []netip.Prefix
-	authGate     *httpx.Gate
-	apiGate      *httpx.Gate
-	staticGate   *httpx.Gate
-	readyzGate   *httpx.Gate
-	tokenHash    *core.TokenHash
-	sessionKey   []byte
-	nonces       *core.NonceCache
-	minAuthDelay time.Duration
-	// fallbacks records the paths whose 405 fallback is already registered.
+	app         *app.App
+	logger      *slog.Logger
+	static      fs.FS
+	index       []byte
+	readyzToken string
+	proxies     []netip.Prefix
+	authGate    *httpx.Gate
+	apiGate     *httpx.Gate
+	deviceGate  *httpx.Gate
+	staticGate  *httpx.Gate
+	readyzGate  *httpx.Gate
+	tokenHash   *core.TokenHash
+	sessionKey  []byte
+	nonces      *core.NonceCache
+	sleep       func(time.Duration)
+	// fallbacks records the paths whose 405 fallback is already registered;
+	// methods records the methods each path answers, for the Allow header.
 	fallbacks map[string]struct{}
+	methods   map[string][]string
 }
 
 // New returns a Server with fresh session and nonce state.
@@ -69,21 +74,27 @@ func New(opts Options) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	apiSlots := orDefault(opts.MaxAPIConcurrency, 128)
 	s := &Server{
-		app:          opts.App,
-		logger:       logger,
-		static:       opts.Static,
-		readyzToken:  opts.ReadyzToken,
-		proxies:      opts.TrustedProxies,
-		authGate:     httpx.NewGate(orDefault(opts.MaxAuthConcurrency, 32)),
-		apiGate:      httpx.NewGate(orDefault(opts.MaxAPIConcurrency, 128)),
-		staticGate:   httpx.NewGate(orDefault(opts.MaxStaticConcurrency, 64)),
-		readyzGate:   httpx.NewGate(4),
-		tokenHash:    opts.TokenHash,
-		sessionKey:   opts.SessionKey,
-		nonces:       core.NewNonceCache(core.ClockSkew),
-		minAuthDelay: opts.MinAuthDelay,
-		fallbacks:    make(map[string]struct{}),
+		app:         opts.App,
+		logger:      logger,
+		static:      opts.Static,
+		readyzToken: opts.ReadyzToken,
+		proxies:     opts.TrustedProxies,
+		authGate:    httpx.NewGate(orDefault(opts.MaxAuthConcurrency, 32)),
+		apiGate:     httpx.NewGate(apiSlots),
+		deviceGate:  httpx.NewGate(apiSlots),
+		staticGate:  httpx.NewGate(orDefault(opts.MaxStaticConcurrency, 64)),
+		readyzGate:  httpx.NewGate(4),
+		tokenHash:   opts.TokenHash,
+		sessionKey:  opts.SessionKey,
+		nonces:      core.NewNonceCache(core.ClockSkew),
+		sleep:       opts.Sleep,
+		fallbacks:   make(map[string]struct{}),
+		methods:     make(map[string][]string),
+	}
+	if s.sleep == nil {
+		s.sleep = time.Sleep
 	}
 	if len(s.sessionKey) == 0 {
 		key, err := core.RandomBytes(core.SessionKeyBytes)
@@ -142,8 +153,8 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
 	s.route(mux, "DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
 	// Device-facing API signed by the device key.
-	s.route(mux, "POST", "/api/register", s.withGate(s.apiGate, s.handleRegister))
-	s.route(mux, "POST", "/api/heartbeat", s.withGate(s.apiGate, s.handleHeartbeat))
+	s.route(mux, "POST", "/api/register", s.withGate(s.deviceGate, s.handleRegister))
+	s.route(mux, "POST", "/api/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
 	// Console pages and their assets.
 	s.route(mux, "GET", "/admin", s.withGate(s.staticGate, s.handleIndex))
 	s.route(mux, "GET", "/admin/{path...}", s.withGate(s.staticGate, s.handleAsset))
@@ -153,15 +164,19 @@ func (s *Server) Handler() http.Handler {
 }
 
 // route registers one method and, on the same path, the fallback that answers
-// 405 instead of letting the site-wide 404 shadow it.
+// 405 instead of letting the site-wide 404 shadow it. The methods registered for
+// a path are collected here so the fallback can name them in Allow.
 func (s *Server) route(mux *http.ServeMux, method, path string, h http.HandlerFunc) {
 	mux.HandleFunc(method+" "+path, h)
+	s.methods[path] = append(s.methods[path], method)
 	// Several methods share one path, so the fallback may only be registered once.
 	if _, done := s.fallbacks[path]; done {
 		return
 	}
 	s.fallbacks[path] = struct{}{}
-	mux.HandleFunc(path, methodNotAllowed)
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		s.methodNotAllowed(w, path)
+	})
 }
 
 // admin guards an endpoint with the bearer credential.

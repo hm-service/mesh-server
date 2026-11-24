@@ -182,7 +182,9 @@ func TestDeviceLayoutPersists(t *testing.T) {
 }
 
 // TestOpenMigratesExistingDatabase proves that a database created before groups
-// existed gains the columns and the table without losing its devices.
+// existed gains the columns and the table without losing its devices, and that
+// the leftovers of the removed JSON import (device.legacy_id and the setting
+// table) are dropped.
 func TestOpenMigratesExistingDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mesh.db")
 	conn, err := sql.Open("sqlite", path)
@@ -211,9 +213,25 @@ func TestOpenMigratesExistingDatabase(t *testing.T) {
 		conn.Close()
 		t.Fatalf("create old schema: %v", err)
 	}
+	const oldSetting = `CREATE TABLE setting (
+	    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	    app_version   TEXT    NOT NULL DEFAULT '',
+	    app_url       TEXT    NOT NULL DEFAULT '',
+	    app_hash      TEXT    NOT NULL DEFAULT '',
+	    app_sha256    TEXT    NOT NULL DEFAULT '',
+	    app_notes     TEXT    NOT NULL DEFAULT ''
+	)`
+	if _, err := conn.Exec(oldSetting); err != nil {
+		conn.Close()
+		t.Fatalf("create old setting table: %v", err)
+	}
 	if _, err := conn.Exec("INSERT INTO device (public_id, name) VALUES ('d_old', '旧设备')"); err != nil {
 		conn.Close()
 		t.Fatalf("insert old device: %v", err)
+	}
+	if _, err := conn.Exec("INSERT INTO setting (app_version) VALUES ('0.1.0')"); err != nil {
+		conn.Close()
+		t.Fatalf("insert old setting: %v", err)
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close old database: %v", err)
@@ -234,5 +252,15 @@ func TestOpenMigratesExistingDatabase(t *testing.T) {
 	}
 	if err := d.SetDeviceGroup("d_old", group.ID); err != nil {
 		t.Fatalf("SetDeviceGroup() on migrated database error: %v", err)
+	}
+	if found, err := d.hasColumn("device", "legacy_id"); err != nil || found {
+		t.Fatalf("device.legacy_id survived the migration: found %v, %v", found, err)
+	}
+	var settings int
+	if err := d.conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'setting'").Scan(&settings); err != nil {
+		t.Fatalf("inspect old setting table: %v", err)
+	}
+	if settings != 0 {
+		t.Fatal("the setting table survived the migration")
 	}
 }

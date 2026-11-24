@@ -20,15 +20,28 @@ func NewNonceCache(ttl time.Duration) *NonceCache {
 
 // Claim records nonce and reports whether it was unused. Expired entries are
 // swept opportunistically, so no background goroutine is needed.
-func (c *NonceCache) Claim(nonce string, now time.Time) bool {
+//
+// The entry expires ttl after the later of now and signedAt: a signature whose
+// timestamp lies in the future is accepted until signedAt+ttl, so remembering
+// the nonce for ttl after it was seen would let the same signature in again
+// inside its own window.
+func (c *NonceCache) Claim(nonce string, now, signedAt time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sweepLocked(now)
 	if expires, ok := c.seen[nonce]; ok && expires.After(now) {
 		return false
 	}
-	c.seen[nonce] = now.Add(c.ttl)
+	c.seen[nonce] = later(now, signedAt).Add(c.ttl)
 	return true
+}
+
+// later returns the later of a and b.
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 func (c *NonceCache) sweepLocked(now time.Time) {

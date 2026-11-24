@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -26,14 +29,12 @@ const (
 	// releaseHashLen is the length of the truncated sha256 clients compare.
 	releaseHashLen = 16
 
-	maxAppURLRunes   = 2048
-	maxAppNotesRunes = 2000
-	fetchTimeout     = 60 * time.Second
+	maxAppURLRunes    = 2048
+	maxAppNotesRunes  = 2000
+	fetchTimeout      = 60 * time.Second
+	fetchDialTimeout  = 10 * time.Second
+	maxFetchRedirects = 5
 )
-
-// releaseDefaultPlatform is where legacy data lands: the platform dimension was
-// added after the control plane had only ever published a Windows client.
-const releaseDefaultPlatform = "windows/amd64"
 
 // platformPattern accepts the GOOS/GOARCH keys clients report.
 var platformPattern = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+$`)
@@ -82,14 +83,6 @@ func (a *App) DefaultTOMLFile() (string, error) {
 	return string(raw), nil
 }
 
-// SaveDefaultTOML stores the default template when text is not blank.
-func (a *App) SaveDefaultTOML(text string) error {
-	if isBlank(text) {
-		return nil
-	}
-	return WriteFileAtomic(a.templatePath(), []byte(text))
-}
-
 // Releases returns every published platform.
 func (a *App) Releases() ([]db.Release, error) {
 	return a.database.Releases()
@@ -101,50 +94,97 @@ func (a *App) Release(platform string) (db.Release, bool, error) {
 	return a.database.Release(platform)
 }
 
-// SetClientExternal points the client package slot of one platform at an
-// external download URL. The package is fetched once so hash and sha256 describe
-// the bytes clients will download; the launcher slot is left alone.
-func (a *App) SetClientExternal(platform, version, rawURL, notes string) error {
-	if !ValidPlatform(platform) {
-		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
-	}
-	next := db.Release{
-		Platform: platform,
-		Version:  strings.TrimSpace(version),
-		URL:      strings.TrimSpace(rawURL),
-		Notes:    strings.TrimSpace(notes),
-	}
-	if err := validateSlot("app", next.Version, next.URL); err != nil {
-		return err
-	}
-	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
-		return invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
-	}
-	hash, sha, err := fetchDigest(next.URL)
-	if err != nil {
-		return invalid("无法读取 app_url 指向的文件：%v", err)
-	}
-	next.Hash, next.SHA256 = hash, sha
-	return a.database.SetClientRelease(next)
+// PublishInput is one admin publish request: zero or more slots of one platform
+// plus an optional new default template.
+type PublishInput struct {
+	Platform    string
+	Client      *db.ClientSlot
+	Launcher    *db.LauncherSlot
+	DefaultTOML *string
 }
 
-// SetLauncherExternal points the launcher slot of one platform at an external
-// download URL. Only the full digest is stored: the client hashes the launcher
-// it already has itself, so there is no short hash for it to report back.
-func (a *App) SetLauncherExternal(platform, version, rawURL string) error {
-	if !ValidPlatform(platform) {
-		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+// Publish stores one admin publish request. Every slot is validated and
+// downloaded first, so a rejected request has written nothing; the slots are
+// then committed in one transaction, and the template is staged next to its
+// destination and renamed after that. A request that publishes both slots of a
+// platform therefore never leaves one of them behind on failure.
+func (a *App) Publish(in PublishInput) error {
+	var (
+		client   *db.ClientSlot
+		launcher *db.LauncherSlot
+	)
+	if in.Client != nil {
+		if !ValidPlatform(in.Platform) {
+			return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+		}
+		prepared, err := a.prepareClientSlot(*in.Client)
+		if err != nil {
+			return err
+		}
+		client = &prepared
 	}
-	version = strings.TrimSpace(version)
-	rawURL = strings.TrimSpace(rawURL)
-	if err := validateSlot("launcher", version, rawURL); err != nil {
-		return err
+	if in.Launcher != nil {
+		if !ValidPlatform(in.Platform) {
+			return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+		}
+		prepared, err := a.prepareLauncherSlot(*in.Launcher)
+		if err != nil {
+			return err
+		}
+		launcher = &prepared
 	}
-	_, sha, err := fetchDigest(rawURL)
+	var staged *stagedFile
+	if in.DefaultTOML != nil && !isBlank(*in.DefaultTOML) {
+		var err error
+		staged, err = stageFile(a.templatePath(), []byte(*in.DefaultTOML))
+		if err != nil {
+			return err
+		}
+		defer staged.Abort()
+	}
+	if client != nil || launcher != nil {
+		if err := a.database.PublishSlots(in.Platform, client, launcher); err != nil {
+			return err
+		}
+	}
+	return staged.Commit()
+}
+
+// prepareClientSlot validates one client package slot and computes the digests
+// of the bytes clients will download. It writes nothing.
+func (a *App) prepareClientSlot(slot db.ClientSlot) (db.ClientSlot, error) {
+	next := db.ClientSlot{
+		Version: strings.TrimSpace(slot.Version),
+		URL:     strings.TrimSpace(slot.URL),
+		Notes:   strings.TrimSpace(slot.Notes),
+	}
+	if err := validateSlot("app", next.Version, next.URL); err != nil {
+		return db.ClientSlot{}, err
+	}
+	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
+		return db.ClientSlot{}, invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
+	}
+	hash, sha, err := a.fetchDigest(next.URL)
 	if err != nil {
-		return invalid("无法读取 launcher_url 指向的文件：%v", err)
+		return db.ClientSlot{}, invalid("无法读取 app_url 指向的文件：%v", err)
 	}
-	return a.database.SetLauncherRelease(platform, version, rawURL, sha)
+	next.Hash, next.SHA256 = hash, sha
+	return next, nil
+}
+
+// prepareLauncherSlot validates one launcher slot and computes the digest of the
+// file clients will download. It writes nothing.
+func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error) {
+	next := db.LauncherSlot{Version: strings.TrimSpace(slot.Version), URL: strings.TrimSpace(slot.URL)}
+	if err := validateSlot("launcher", next.Version, next.URL); err != nil {
+		return db.LauncherSlot{}, err
+	}
+	_, sha, err := a.fetchDigest(next.URL)
+	if err != nil {
+		return db.LauncherSlot{}, invalid("无法读取 launcher_url 指向的文件：%v", err)
+	}
+	next.SHA256 = sha
+	return next, nil
 }
 
 // ClearRelease removes every slot published for platform.
@@ -186,11 +226,48 @@ func validateSlot(slot, version, rawURL string) error {
 	return nil
 }
 
+// newFetchClient is the client that downloads a published package. It follows a
+// bounded number of redirects, uses no proxy, and refuses to connect to an
+// address inside the host or the local network: the control plane must not
+// become an HTTP client for whatever the admin form is pointed at.
+func newFetchClient() *http.Client {
+	dialer := &net.Dialer{Timeout: fetchDialTimeout, Control: checkDialAddress}
+	return &http.Client{
+		Timeout: fetchTimeout,
+		Transport: &http.Transport{
+			DialContext:           dialer.DialContext,
+			TLSHandshakeTimeout:   fetchDialTimeout,
+			ResponseHeaderTimeout: fetchTimeout,
+		},
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= maxFetchRedirects {
+				return fmt.Errorf("超过 %d 次重定向", maxFetchRedirects)
+			}
+			return nil
+		},
+	}
+}
+
+// checkDialAddress rejects a dial whose resolved address is not a public unicast
+// address. net.Dialer calls it for every connection attempt, so a redirect to an
+// internal address is refused as well.
+func checkDialAddress(_, address string, _ syscall.RawConn) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return fmt.Errorf("无法识别的连接地址 %q: %w", address, err)
+	}
+	addr := addrPort.Addr().Unmap()
+	if !addr.IsValid() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
+		return fmt.Errorf("拒绝连接非公网地址 %s", addr)
+	}
+	return nil
+}
+
 // fetchDigest downloads rawURL and returns the shortened and full sha256 of the
 // bytes clients will download.
-func fetchDigest(rawURL string) (hash, sha string, err error) {
-	client := &http.Client{Timeout: fetchTimeout}
-	res, err := client.Get(rawURL)
+func (a *App) fetchDigest(rawURL string) (hash, sha string, err error) {
+	res, err := a.fetch.Get(rawURL)
 	if err != nil {
 		return "", "", err
 	}

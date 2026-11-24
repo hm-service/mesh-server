@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +26,10 @@ const (
 type Options struct {
 	// Now is the clock used for tokens, timestamps and status; tests replace it.
 	Now func() time.Time
+	// FetchClient downloads a published package so its digests can be computed.
+	// Nil selects the hardened client, which refuses loopback and private
+	// addresses; tests that publish from a local server pass their own.
+	FetchClient *http.Client
 }
 
 // App owns DATA_DIR: the SQLite database and peer.default.toml.
@@ -33,6 +38,7 @@ type App struct {
 	dataDir   string
 	database  *db.DB
 	now       func() time.Time
+	fetch     *http.Client
 	revokedMu sync.Mutex
 	revoked   map[string]struct{}
 }
@@ -56,21 +62,14 @@ func Open(dataDir string, opts Options) (*App, error) {
 		dataDir:  dataDir,
 		database: database,
 		now:      opts.Now,
+		fetch:    opts.FetchClient,
 		revoked:  make(map[string]struct{}),
 	}
 	if a.now == nil {
 		a.now = time.Now
 	}
-	if err := a.importLegacyState(); err != nil {
-		database.Close()
-		return nil, err
-	}
-	// 平台维度是后加的：旧的单条设置搬进 release 表的 Windows 行。
-	if imported, err := a.database.ImportLegacyRelease(releaseDefaultPlatform); err != nil {
-		database.Close()
-		return nil, err
-	} else if imported {
-		slog.Info("legacy release imported", "platform", releaseDefaultPlatform)
+	if a.fetch == nil {
+		a.fetch = newFetchClient()
 	}
 	if purged, err := a.database.PurgeExpiredTokens(a.now().Unix()); err != nil {
 		database.Close()
@@ -85,9 +84,6 @@ func Open(dataDir string, opts Options) (*App, error) {
 func (a *App) Close() error {
 	return a.database.Close()
 }
-
-// DataDir is the single state directory.
-func (a *App) DataDir() string { return a.dataDir }
 
 // Now is the application clock.
 func (a *App) Now() time.Time { return a.now() }

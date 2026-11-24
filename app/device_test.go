@@ -205,6 +205,16 @@ func TestDerivedStates(t *testing.T) {
 	if got := AppState(device, dbRelease("", "")); got != "current" {
 		t.Fatalf("app state without a release = %q, want current", got)
 	}
+	// 没有发布时，连平台都还没上报的设备也算 current：不存在可更新到的版本。
+	unknown := device
+	unknown.LastPlatform = ""
+	unknown.LastAppHash = ""
+	if got := AppState(unknown, dbRelease("", "")); got != "current" {
+		t.Fatalf("app state of a device without a platform and no release = %q, want current", got)
+	}
+	if got := AppState(unknown, dbRelease("v1", "aaaa")); got != "stale" {
+		t.Fatalf("app state of a device without a platform = %q, want stale", got)
+	}
 	if got := ReleaseVersion(dbRelease("", "")); got != "" {
 		t.Fatalf("release version without a release = %q, want empty", got)
 	}

@@ -1,21 +1,5 @@
 import type { DeviceSummary } from "./api";
 
-export const FALLBACK_TOML = [
-  "# 测试网的默认配置。多台设备时 ipv4 必须各自不同（不要用 .0）。",
-  'ipv4 = "10.126.126.2/24"',
-  "",
-  "[network_identity]",
-  'network_name = "test-net"',
-  'network_secret = "test-secret-2026"',
-  "",
-  "# 注意：这个段只设置开关，私钥由客户端启动 core 时用 --secure-mode 生成。",
-  "[secure_mode]",
-  "enabled = true",
-  "",
-  "[[peer]]",
-  'uri = "tcp://172.19.230.131:11010"',
-].join("\n");
-
 /** 拦截最常见的一类配置错误：把网段当成节点地址填进 ipv4。 */
 export function validateToml(text: string): string | null {
   const match = /^\s*ipv4\s*=\s*"([^"]*)"/m.exec(text);
@@ -32,12 +16,6 @@ export function statusText(status: string): string {
   if (status === "online") return "在线";
   if (status === "pending") return "待注册";
   return "离线";
-}
-
-export function statusRank(status: string): number {
-  if (status === "online") return 0;
-  if (status === "pending") return 1;
-  return 2;
 }
 
 export function statusClass(status: string): string {

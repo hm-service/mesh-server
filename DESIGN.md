@@ -41,6 +41,10 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | GET/POST | `/api/devices` | Bearer |
 | GET/PUT/DELETE | `/api/devices/{id}` | Bearer |
 | POST | `/api/devices/{id}/token` | Bearer |
+| PUT | `/api/devices/{id}/group` | Bearer |
+| PUT | `/api/layout` | Bearer |
+| GET/POST | `/api/groups` | Bearer |
+| PUT/DELETE | `/api/groups/{id}` | Bearer |
 | GET/PUT | `/api/admin/releases` | Bearer |
 | DELETE | `/api/admin/releases/{platform...}`（`?slot=launcher` 只清启动器槽位） | Bearer |
 | POST | `/api/register` | token 或设备签名（在请求体里） |
@@ -58,8 +62,9 @@ DATA_DIR/
   mesh.db-wal / -shm
   peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600）
   server.log           JSON 行日志，4MB 高水位裁剪到 2MB（0600）
-  state.json           旧版 JSON 状态库，只读保留，不再写入
-```
+`
+
+其它文件（例如旧版本留下的 `state.json`）既不读也不写。
 
 表结构（`db/db.go` 是唯一的 SQL 位置；每张表都有与业务无关的自增主键）：
 
@@ -67,23 +72,30 @@ DATA_DIR/
 CREATE TABLE device (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     public_id        TEXT NOT NULL UNIQUE,   -- 内部短 id d_xxxxxx，管理页与路由用
-    legacy_id        TEXT NOT NULL DEFAULT '', -- 迁移时 state.json 的 id，幂等依据
     name             TEXT NOT NULL DEFAULT '',
     device_id        TEXT NOT NULL DEFAULT '', -- 客户端生成的身份，未注册为空
     hostname         TEXT NOT NULL DEFAULT '',
     pubkey           TEXT NOT NULL DEFAULT '', -- base64(ed25519 公钥)
     config_toml      TEXT NOT NULL DEFAULT '',
-    config_hash      TEXT NOT NULL DEFAULT '', -- 心跳比对用；迁移数据按原样保留
+    config_hash      TEXT NOT NULL DEFAULT '', -- 心跳比对用
     token            TEXT NOT NULL DEFAULT '', -- 一次性注册令牌，用后清空
     token_expires_at INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL DEFAULT 0,
     last_seen_at     INTEGER NOT NULL DEFAULT 0,
     last_ip          TEXT NOT NULL DEFAULT '',
     last_config_hash TEXT NOT NULL DEFAULT '', -- 最近一次心跳上报
-    last_app_hash    TEXT NOT NULL DEFAULT ''
+    last_app_hash    TEXT NOT NULL DEFAULT '',
+    last_platform    TEXT NOT NULL DEFAULT '', -- 最近一次心跳上报的 GOOS/GOARCH
+    group_id         INTEGER NOT NULL DEFAULT 0, -- 0 表示未分组
+    position         INTEGER NOT NULL DEFAULT 0  -- 组内排序，0 起
 );
-CREATE UNIQUE INDEX device_legacy_id ON device (legacy_id) WHERE legacy_id <> '';
 CREATE UNIQUE INDEX device_device_id ON device (device_id) WHERE device_id <> '';
+
+CREATE TABLE device_group (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+);
 
 CREATE TABLE release (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,45 +109,28 @@ CREATE TABLE release (
     launcher_url     TEXT NOT NULL DEFAULT '',
     launcher_sha256  TEXT NOT NULL DEFAULT ''     -- 启动器完整摘要，客户端自己比对
 );
-
-CREATE TABLE setting (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_version   TEXT NOT NULL DEFAULT '',
-    app_url       TEXT NOT NULL DEFAULT '',
-    app_hash      TEXT NOT NULL DEFAULT '', -- 16 位，客户端比对
-    app_sha256    TEXT NOT NULL DEFAULT '', -- 完整摘要，客户端校验下载
-    app_notes     TEXT NOT NULL DEFAULT ''
-);
 ```
 
-`release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。
+`release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
 
-`setting` 只有一行，仅用于把旧版单条设置迁进 `release`：启动时在 `release` 为空的情况下读取一次，之后不再写入。
+表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
 
-## 5. 旧数据迁移
-
-`app/migrate.go` 在每次启动时读 `DATA_DIR/state.json`（只读，不删除、不改写），把设备与设置导入 SQLite：
-
-- 设备以 `legacy_id = state.json 的 id` 写入，配合唯一索引与 `INSERT ... ON CONFLICT DO NOTHING`，重复启动不会重复插入；
-- 已存在的行一律跳过，所以迁移之后再在管理页改过的设备不会被旧文件覆盖；
-- `config_hash` 原样保留（历史上的值可能是 16 位，也可能是 64 位完整摘要），不做重新计算；
-- 旧的单条设置（`state.json` 的 `settings` 或旧 `setting` 表）只在 `release` 为空时导入 `windows/amd64` 一行；
-- `state.json` 本身保留在原处，作为回滚材料。
-
-## 6. 安全模型
+## 5. 安全模型
 
 | 面 | 机制 |
 | --- | --- |
-| 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长 |
+| 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长（`api` 包内常量，不提供关闭开关） |
 | 设备面 | Ed25519 请求签名（`MESH1` 五行原文）+ 300 秒时间窗 + nonce 重放缓存 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
 | 发布包 | 客户端包：`app_hash`（16 位）用于判定，`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
+| 发布下载 | 服务端下载发布地址时拒绝回环、私网、链路本地、组播与未指定地址（`net.Dialer.Control` 逐个连接校验），最多 5 次重定向且每一跳重新校验，不走代理 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |
 | 响应头 | `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options`、严格 `Content-Security-Policy` |
-| 并发 | `/api/auth`、`/api/*`、静态资源、`/readyz` 各自独立信号量；Argon2id 并发上限 4 |
+| 并发 | `/api/auth`、管理面 `/api/*`、设备面 `/api/register` 与 `/api/heartbeat`、静态资源、`/readyz` 各自独立信号量（管理面与设备面互不挤占）；Argon2id 并发上限 4 |
+| 超时 | 连接读请求头 10 秒、读整个请求 15 秒、空闲 60 秒；发布包下载 60 秒 |
 
-## 7. 环境变量与 Secrets
+## 6. 环境变量与 Secrets
 
 | 变量 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -145,7 +140,7 @@ CREATE TABLE setting (
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
 | `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |
-| `MAX_API_CONCURRENCY` | 否 | 128 | `/api/*` 并发上限 |
+| `MAX_API_CONCURRENCY` | 否 | 128 | 管理面与设备面各自的上限 |
 | `MAX_STATIC_CONCURRENCY` | 否 | 64 | 静态资源并发上限 |
 | `AUTH_TOKEN` | 是 | — | 管理台唯一凭证，`^[A-Za-z0-9_]{16,128}$`；启动时哈希，明文读完即从环境表移除 |
 | `SESSION_SIGNING_KEY` | 否 | 随机 | Bearer 的 HMAC 密钥，`^[A-Za-z0-9_]{32,128}$`；轮换它等于吊销全部已发凭证 |
@@ -154,7 +149,7 @@ CREATE TABLE setting (
 
 数值型变量解析失败或越界时直接拒绝启动，退出码 1。
 
-## 8. 日志与生命周期
+## 7. 日志与生命周期
 
 - 日志是 JSON 行，同时写 stdout 与 `DATA_DIR/server.log`；每条访问日志带 `client_ip`、`method`、`path`、`status`、`duration_ms`、`timestamp`；`/livez` 不记；
 - 启动成功后打印 `server started`，停止时依次打印 `shutdown signal received`、`server shutdown`；

@@ -9,6 +9,11 @@ import (
 	"mesh-server/httpx"
 )
 
+// minAuthDelay is the floor of one login round trip. It is not configurable: a
+// caller that could switch it off would lose the timing defence and the rate
+// limit it provides, while tests only need to replace the wait itself.
+const minAuthDelay = time.Second
+
 // authJitter is the extra random delay added on top of the auth floor.
 const authJitter = 200 * time.Millisecond
 
@@ -54,12 +59,9 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 // holdAuthFloor keeps a credential exchange from answering faster than the
 // documented floor, so the response time does not tell which branch was taken.
 func (s *Server) holdAuthFloor(start time.Time) {
-	if s.minAuthDelay <= 0 {
-		return
-	}
-	floor := s.minAuthDelay + rand.N(authJitter)
+	floor := minAuthDelay + rand.N(authJitter)
 	if elapsed := time.Since(start); elapsed < floor {
-		time.Sleep(floor - elapsed)
+		s.sleep(floor - elapsed)
 	}
 }
 

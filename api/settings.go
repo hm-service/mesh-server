@@ -112,28 +112,22 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "platform 不能为空")
 		return
 	}
+	publish := app.PublishInput{Platform: platform, DefaultTOML: req.DefaultTOML}
 	if client {
 		notes := ""
 		if req.AppNotes != nil {
 			notes = *req.AppNotes
 		}
-		if err := s.app.SetClientExternal(platform, *req.AppVersion, *req.AppURL, notes); err != nil {
-			s.writeReleaseError(w, "publish client release", err)
-			return
-		}
+		publish.Client = &db.ClientSlot{Version: *req.AppVersion, URL: *req.AppURL, Notes: notes}
 	}
 	if launcher {
-		if err := s.app.SetLauncherExternal(platform, *req.LauncherVersion, *req.LauncherURL); err != nil {
-			s.writeReleaseError(w, "publish launcher release", err)
-			return
-		}
+		publish.Launcher = &db.LauncherSlot{Version: *req.LauncherVersion, URL: *req.LauncherURL}
 	}
-	if req.DefaultTOML != nil {
-		if err := s.app.SaveDefaultTOML(*req.DefaultTOML); err != nil {
-			s.logger.Error("write default template", "error", err)
-			httpx.WriteError(w, http.StatusInternalServerError, "internal")
-			return
-		}
+	// One call for both slots and the template: a rejected request has written
+	// nothing, so the admin never sees a 400 for a half-applied publish.
+	if err := s.app.Publish(publish); err != nil {
+		s.writeReleaseError(w, "publish release", err)
+		return
 	}
 	s.writeReleases(w)
 }

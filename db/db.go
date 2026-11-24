@@ -16,7 +16,6 @@ const schema = `
 CREATE TABLE IF NOT EXISTS device (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     public_id        TEXT    NOT NULL UNIQUE,
-    legacy_id        TEXT    NOT NULL DEFAULT '',
     name             TEXT    NOT NULL DEFAULT '',
     device_id        TEXT    NOT NULL DEFAULT '',
     hostname         TEXT    NOT NULL DEFAULT '',
@@ -40,7 +39,6 @@ CREATE TABLE IF NOT EXISTS device_group (
     position INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS device_legacy_id ON device (legacy_id) WHERE legacy_id <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS device_device_id ON device (device_id) WHERE device_id <> '';
 
 CREATE TABLE IF NOT EXISTS release (
@@ -54,15 +52,6 @@ CREATE TABLE IF NOT EXISTS release (
     launcher_version TEXT    NOT NULL DEFAULT '',
     launcher_url     TEXT    NOT NULL DEFAULT '',
     launcher_sha256  TEXT    NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS setting (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_version   TEXT    NOT NULL DEFAULT '',
-    app_url       TEXT    NOT NULL DEFAULT '',
-    app_hash      TEXT    NOT NULL DEFAULT '',
-    app_sha256    TEXT    NOT NULL DEFAULT '',
-    app_notes     TEXT    NOT NULL DEFAULT ''
 );
 `
 
@@ -132,36 +121,36 @@ func (d *DB) createSchema() error {
 	if err := d.ensureColumn("release", "launcher_sha256", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	return d.dropLegacySchema()
+}
+
+// dropLegacySchema removes what the pre-SQLite import needed. The import is
+// gone, so the column, its unique index and the settings table would only keep
+// their old rows alive without a reader.
+func (d *DB) dropLegacySchema() error {
+	if _, err := d.conn.Exec("DROP INDEX IF EXISTS device_legacy_id"); err != nil {
+		return fmt.Errorf("drop device_legacy_id: %w", err)
+	}
+	found, err := d.hasColumn("device", "legacy_id")
+	if err != nil {
+		return err
+	}
+	if found {
+		if _, err := d.conn.Exec("ALTER TABLE device DROP COLUMN legacy_id"); err != nil {
+			return fmt.Errorf("drop device.legacy_id: %w", err)
+		}
+	}
+	if _, err := d.conn.Exec("DROP TABLE IF EXISTS setting"); err != nil {
+		return fmt.Errorf("drop setting: %w", err)
+	}
 	return nil
 }
 
 // ensureColumn adds column to table when the table does not have it yet.
-// The connection pool holds a single connection, so the PRAGMA rows must be
-// closed before the ALTER runs or it would wait forever.
 func (d *DB) ensureColumn(table, column, decl string) error {
-	rows, err := d.conn.Query("PRAGMA table_info(" + table + ")")
+	found, err := d.hasColumn(table, column)
 	if err != nil {
-		return fmt.Errorf("inspect %s: %w", table, err)
-	}
-	found := false
-	for rows.Next() {
-		var (
-			cid, notNull, pk int
-			name, ctype      string
-			dflt             any
-		)
-		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-			rows.Close()
-			return fmt.Errorf("inspect %s: %w", table, err)
-		}
-		if name == column {
-			found = true
-		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return fmt.Errorf("inspect %s: %w", table, err)
+		return err
 	}
 	if found {
 		return nil
@@ -170,6 +159,34 @@ func (d *DB) ensureColumn(table, column, decl string) error {
 		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
+}
+
+// hasColumn reports whether table has column. The connection pool holds a single
+// connection, so the PRAGMA rows must be closed before any ALTER runs.
+func (d *DB) hasColumn(table, column string) (bool, error) {
+	rows, err := d.conn.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var (
+			cid, notNull, pk int
+			name, ctype      string
+			dflt             any
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("inspect %s: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect %s: %w", table, err)
+	}
+	return found, nil
 }
 
 // Probe proves that the file is readable and writable by writing to and

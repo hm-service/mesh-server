@@ -17,19 +17,6 @@ data:
 
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-    name: mesh-server-secrets
-type: Opaque
-stringData:
-    # 管理台唯一凭证：在 /admin 登录页输入，启动时用 Argon2id 哈希后丢弃明文
-    AUTH_TOKEN: "ScQZUYHUpwetgM1viWJqRQIlhHVJ6RHj"
-    # 签发 Bearer 的 HMAC 密钥；轮换它等于让所有已发出的凭证失效
-    SESSION_SIGNING_KEY: "ejQc2qAPOD2fT6n7KK7JONXduwFxorZ8"
-    READYZ_TOKEN: "g5A89dVWQE4EcsbAl7Tyq9sxh4Ysf353"
-
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
     name: mesh-server-data
@@ -60,6 +47,8 @@ spec:
           securityContext:
               allowPrivilegeEscalation: false
 
+          # Secret 单独存一份、不入库：k8s.mesh-server.secret.yaml 与本文件
+          # 用 cat 拼成一份清单再 play。
           envFrom:
               - configMapRef:
                     name: mesh-server-env
@@ -94,7 +83,7 @@ spec:
 
           readinessProbe:
               httpGet:
-                  path: /readyz?token=g5A89dVWQE4EcsbAl7Tyq9sxh4Ysf353
+                  path: /readyz
                   port: http
               initialDelaySeconds: 5
               periodSeconds: 30

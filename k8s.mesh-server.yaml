@@ -83,7 +83,8 @@ spec:
 
           readinessProbe:
               httpGet:
-                  path: /readyz
+                  # 探针会写数据库，必须带令牌；真值由部署时渲染，见 DESIGN.md 部署段。
+                  path: /readyz?token=__READYZ_TOKEN__
                   port: http
               initialDelaySeconds: 5
               periodSeconds: 30

@@ -5,11 +5,18 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 
 ## 1. 部署
 
-- 部署：`k8s.mesh-server.yaml` 由 `podman kube play` 起一个 Pod，宿主机 `~/service/` 下的 justfile 统一管理；`AUTH_TOKEN` 与 `SESSION_SIGNING_KEY` 只放在 `k8s.mesh-server.secret.yaml`（不入库），play 前与主清单拼成一份：`cat k8s.mesh-server.yaml k8s.mesh-server.secret.yaml > k8s.mesh-server.deploy.yaml`；镜像在目标机本地构建（`Dockerfile.runtime` + 交叉编译好的 `linux/amd64` 二进制），不依赖镜像仓库；
+- 部署：`k8s.mesh-server.deploy.yaml` 由 `podman kube play` 起一个 Pod，宿主机 `~/service/` 下的 justfile 统一管理；`AUTH_TOKEN`、`SESSION_SIGNING_KEY`、`READYZ_TOKEN` 只放在 `k8s.mesh-server.secret.yaml`（不入库），主清单里的探针令牌写成占位符 `__READYZ_TOKEN__`，部署前渲染：
+
+  ```sh
+  R=$(sed -n 's/^ *READYZ_TOKEN: "\([^"]*\)".*/\1/p' k8s.mesh-server.secret.yaml)
+  { cat k8s.mesh-server.yaml k8s.mesh-server.secret.yaml; } | sed "s/__READYZ_TOKEN__/$R/" > k8s.mesh-server.deploy.yaml
+  ```
+
+  镜像在目标机本地构建（`Dockerfile.runtime` + 交叉编译好的 `linux/amd64` 二进制），不依赖镜像仓库；
 - 从源码出发布镜像用 `Dockerfile`（多阶段，`ghcr.io/hm-service/mesh-server:<yyyy-MM-dd>` 与 `latest`，`linux/amd64` + `linux/arm64`）；
 - 容器只跑一个二进制，根文件系统可只读，唯一可写路径是 `DATA_DIR`（默认 `/data`）；
 - 应用不做 TLS，反向代理负责终止 TLS、限速与域名；应用只认 `HOST`/`X-Forwarded-Proto` 与可信反代传来的客户端地址；
-- 探针：`/livez` 恒 200；`/readyz` 校验 `DATA_DIR` 权限（0700）并往 SQLite 写删 `__probe` 表，失败返回 503；`READYZ_TOKEN` 为空时不做鉴权，当前部署不设置它。
+- 探针：`/livez` 恒 200；`/readyz` 校验 `DATA_DIR` 权限（0700）并往 SQLite 写删 `__probe` 表，失败返回 503；`READYZ_TOKEN` 为空时不做鉴权，但探针会写 `__probe` 表，部署里必须设置，否则谁都能触发写入。
 
 ## 2. 页面
 

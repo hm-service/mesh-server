@@ -109,7 +109,10 @@ async function jsonRequest<T>(method: string, path: string, body?: unknown): Pro
 
 /** 设置类请求的 400 会带 message，直接展示比通用文案有用。 */
 async function settingsRequest(init: RequestInit): Promise<ConsoleSettings> {
-  const res = await fetch("/api/admin/settings", init);
+  // fetch 不会自动带 Bearer，设置类请求也必须显式附上凭证。
+  const headers = new Headers(init.headers);
+  for (const [name, value] of Object.entries(authHeaders())) headers.set(name, value);
+  const res = await fetch("/api/admin/settings", { ...init, headers });
   if (res.status === 401) {
     clearCredential();
     throw new ApiError(401, "unauthorized");

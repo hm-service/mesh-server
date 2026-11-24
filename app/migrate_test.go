@@ -150,12 +150,12 @@ func TestLegacyStateIsImportedOnce(t *testing.T) {
 	if second.LastConfigHash != "ccccccccdddddddd" || second.LastAppHash != "eeeeeeeeffffffff" {
 		t.Fatalf("reported hashes lost: %+v", second)
 	}
-	settings, err := instance.Settings()
-	if err != nil {
-		t.Fatalf("Settings() error: %v", err)
+	release, found, err := instance.Release("windows/amd64")
+	if err != nil || !found {
+		t.Fatalf("Release(windows/amd64) = found %v, %v", found, err)
 	}
-	if settings.AppVersion != "2026.11.24-3" || settings.AppHash != "2495008aed91e3bf" || settings.AppSize != 6807712 {
-		t.Fatalf("settings not imported: %+v", settings)
+	if release.Version != "2026.11.24-3" || release.Hash != "2495008aed91e3bf" || release.Size != 6807712 {
+		t.Fatalf("release not imported: %+v", release)
 	}
 	if err := instance.Close(); err != nil {
 		t.Fatal(err)

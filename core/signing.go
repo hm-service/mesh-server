@@ -2,16 +2,15 @@ package core
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
-// ClockSkew is the accepted distance between X-Timestamp and server time.
+// ClockSkew is the accepted distance between the signed timestamp and server time.
 const ClockSkew = 5 * time.Minute
 
 var (
@@ -19,18 +18,18 @@ var (
 	ErrSignature = errors.New("signature rejected")
 )
 
-// BodyHash returns sha256hex(raw body).
-func BodyHash(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
 // SigningString builds the exact text a device signs (CONTRACT.md 1.3).
-func SigningString(method, path, bodyHash, timestamp, nonce string) string {
-	return "MESH1\n" + method + "\n" + path + "\n" + bodyHash + "\n" + timestamp + "\n" + nonce
+//
+// The fields are joined in a fixed order instead of hashing the JSON body: the
+// heartbeat carries its own signature, so any body-digest scheme would have to
+// strip and re-serialise it on both sides and stay in lockstep forever.
+func SigningString(method, path, deviceID, timestamp, nonce, platformID, configHash, appHash string) string {
+	return strings.Join([]string{
+		"MESH2", method, path, deviceID, timestamp, nonce, platformID, configHash, appHash,
+	}, "\n")
 }
 
-// CheckTimestamp rejects X-Timestamp values outside the allowed window.
+// CheckTimestamp rejects timestamps outside the allowed window.
 func CheckTimestamp(raw string, now time.Time) error {
 	ts, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {

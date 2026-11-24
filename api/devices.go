@@ -23,11 +23,23 @@ type deviceSummary struct {
 	ConfigState    string `json:"config_state"`
 	AppState       string `json:"app_state"`
 	AppVersion     string `json:"app_version"`
+	Platform       string `json:"last_platform"`
 	CreatedAt      int64  `json:"created_at"`
 	LastSeenAt     int64  `json:"last_seen_at"`
 }
 
-func summarize(d db.Device, settings db.Settings, now time.Time) deviceSummary {
+// releaseFor returns the build published for the device's platform; an empty
+// release means that platform has nothing published.
+func releaseFor(releases []db.Release, platform string) db.Release {
+	for _, r := range releases {
+		if r.Platform == platform {
+			return r
+		}
+	}
+	return db.Release{}
+}
+
+func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 	return deviceSummary{
 		ID:             d.PublicID,
 		Name:           d.Name,
@@ -38,8 +50,9 @@ func summarize(d db.Device, settings db.Settings, now time.Time) deviceSummary {
 		LastConfigHash: d.LastConfigHash,
 		LastAppHash:    d.LastAppHash,
 		ConfigState:    app.ConfigState(d),
-		AppState:       app.AppState(d, settings),
-		AppVersion:     app.ReleaseVersion(settings),
+		AppState:       app.AppState(d, release),
+		AppVersion:     app.ReleaseVersion(release),
+		Platform:       d.LastPlatform,
 		CreatedAt:      d.CreatedAt,
 		LastSeenAt:     d.LastSeenAt,
 	}
@@ -66,9 +79,10 @@ type deviceDetail struct {
 	ConfigState    string `json:"config_state"`
 	AppState       string `json:"app_state"`
 	AppVersion     string `json:"app_version"`
+	Platform       string `json:"last_platform"`
 }
 
-func detailOf(d db.Device, settings db.Settings, now time.Time) deviceDetail {
+func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
 	return deviceDetail{
 		ID:             d.PublicID,
 		Name:           d.Name,
@@ -86,8 +100,9 @@ func detailOf(d db.Device, settings db.Settings, now time.Time) deviceDetail {
 		LastAppHash:    d.LastAppHash,
 		Status:         app.DeviceStatus(d, now),
 		ConfigState:    app.ConfigState(d),
-		AppState:       app.AppState(d, settings),
-		AppVersion:     app.ReleaseVersion(settings),
+		AppState:       app.AppState(d, release),
+		AppVersion:     app.ReleaseVersion(release),
+		Platform:       d.LastPlatform,
 	}
 }
 
@@ -98,16 +113,16 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	settings, err := s.app.Settings()
+	releases, err := s.app.Releases()
 	if err != nil {
-		s.logger.Error("read settings", "error", err)
+		s.logger.Error("read releases", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	now := s.app.Now()
 	out := make([]deviceSummary, 0, len(devices))
 	for _, d := range devices {
-		out = append(out, summarize(d, settings, now))
+		out = append(out, summarize(d, releaseFor(releases, d.LastPlatform), now))
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
@@ -160,13 +175,13 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
-	settings, err := s.app.Settings()
+	release, _, err := s.app.Release(device.LastPlatform)
 	if err != nil {
-		s.logger.Error("read settings", "error", err)
+		s.logger.Error("read release", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, detailOf(device, settings, s.app.Now()))
+	httpx.WriteJSON(w, http.StatusOK, detailOf(device, release, s.app.Now()))
 }
 
 func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {

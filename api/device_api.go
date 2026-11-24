@@ -36,14 +36,36 @@ type configResponse struct {
 	ConfigHash string `json:"config_hash"`
 }
 
-// deviceAuth verifies the CONTRACT.md 1.3 headers for body and returns the
-// device. On failure it has already written a 401 response and never reveals
-// which check failed.
-func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, body []byte) (db.Device, bool) {
-	deviceID := strings.TrimSpace(r.Header.Get("X-Device-Id"))
-	timestamp := strings.TrimSpace(r.Header.Get("X-Timestamp"))
-	nonce := strings.TrimSpace(r.Header.Get("X-Nonce"))
-	signature := strings.TrimSpace(r.Header.Get("X-Signature"))
+// deviceCredentials 是一次设备请求携带的身份凭据。GET 类请求放在请求头里，
+// 心跳放在请求体里——那里还有业务字段，放一起比再塞四个 X- 头干净。
+type deviceCredentials struct {
+	DeviceID   string `json:"deviceId"`
+	Timestamp  string `json:"timestamp"`
+	Nonce      string `json:"nonce"`
+	Signature  string `json:"signature"`
+	Platform   string `json:"platform"`
+	ConfigHash string `json:"configHash"`
+	AppHash    string `json:"appHash"`
+}
+
+// credentialsFromHeader reads the header form used by body-less requests.
+func credentialsFromHeader(r *http.Request) deviceCredentials {
+	return deviceCredentials{
+		DeviceID:  strings.TrimSpace(r.Header.Get("X-Device-Id")),
+		Timestamp: strings.TrimSpace(r.Header.Get("X-Timestamp")),
+		Nonce:     strings.TrimSpace(r.Header.Get("X-Nonce")),
+		Signature: strings.TrimSpace(r.Header.Get("X-Signature")),
+		Platform:  strings.TrimSpace(r.Header.Get("X-Platform")),
+	}
+}
+
+// deviceAuth verifies a signed request and returns the device. On failure it
+// has already written a 401 response and never reveals which check failed.
+func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds deviceCredentials) (db.Device, bool) {
+	deviceID := creds.DeviceID
+	timestamp := creds.Timestamp
+	nonce := creds.Nonce
+	signature := creds.Signature
 	if deviceID == "" || timestamp == "" || nonce == "" || signature == "" {
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
@@ -67,7 +89,7 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, body []byte)
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
 	}
-	signing := core.SigningString(r.Method, r.URL.Path, core.BodyHash(body), timestamp, nonce)
+	signing := core.SigningString(r.Method, r.URL.Path, deviceID, timestamp, nonce, creds.Platform, creds.ConfigHash, creds.AppHash)
 	if err := core.VerifySignature(device.Pubkey, signature, []byte(signing)); err != nil {
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
@@ -117,7 +139,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bound {
-		if !s.registerProofValid(r, body, existing, req.Token, now) {
+		if !s.registerProofValid(r, existing, req.Token, now) {
 			httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 			return
 		}
@@ -162,20 +184,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // registerProofValid reports whether the caller proved it owns the bound slot.
 // A request signature with the bound key counts, and so does a valid
 // registration token for the same slot. Knowing device_id and pubkey does not.
-func (s *Server) registerProofValid(r *http.Request, body []byte, device db.Device, token string, now time.Time) bool {
-	deviceID := strings.TrimSpace(r.Header.Get("X-Device-Id"))
-	timestamp := strings.TrimSpace(r.Header.Get("X-Timestamp"))
-	nonce := strings.TrimSpace(r.Header.Get("X-Nonce"))
-	signature := strings.TrimSpace(r.Header.Get("X-Signature"))
-	if deviceID != "" && deviceID == device.DeviceID && timestamp != "" && nonce != "" && signature != "" {
-		if err := core.CheckTimestamp(timestamp, now); err != nil {
+func (s *Server) registerProofValid(r *http.Request, device db.Device, token string, now time.Time) bool {
+	creds := credentialsFromHeader(r)
+	if creds.DeviceID != "" && creds.DeviceID == device.DeviceID && creds.Timestamp != "" && creds.Nonce != "" && creds.Signature != "" {
+		if err := core.CheckTimestamp(creds.Timestamp, now); err != nil {
 			return false
 		}
-		signing := core.SigningString(r.Method, r.URL.Path, core.BodyHash(body), timestamp, nonce)
-		if err := core.VerifySignature(device.Pubkey, signature, []byte(signing)); err != nil {
+		signing := core.SigningString(r.Method, r.URL.Path, creds.DeviceID, creds.Timestamp, creds.Nonce, creds.Platform, "", "")
+		if err := core.VerifySignature(device.Pubkey, creds.Signature, []byte(signing)); err != nil {
 			return false
 		}
-		return s.nonces.Claim(nonce, now)
+		return s.nonces.Claim(creds.Nonce, now)
 	}
 	if token == "" {
 		return false
@@ -189,12 +208,7 @@ func (s *Server) registerProofValid(r *http.Request, body []byte, device db.Devi
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	body, err := httpx.ReadBody(w, r)
-	if err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
-		return
-	}
-	device, ok := s.deviceAuth(w, r, body)
+	device, ok := s.deviceAuth(w, r, credentialsFromHeader(r))
 	if !ok {
 		return
 	}
@@ -204,10 +218,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-type heartbeatRequest struct {
-	ConfigHash string `json:"config_hash"`
-	AppHash    string `json:"app_hash"`
-}
+// heartbeatRequest 与 deviceCredentials 同构：心跳把认证字段和业务字段放在
+// 同一个请求体里。
+type heartbeatRequest = deviceCredentials
 
 // updateInfo points a client at the published build. Version only labels the
 // update in the client UI; app_hash decides that one exists, and sha256 lets the
@@ -231,26 +244,27 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
-	device, ok := s.deviceAuth(w, r, body)
-	if !ok {
-		return
-	}
 	var req heartbeatRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
-	if err := s.app.RecordHeartbeat(device.PublicID, req.ConfigHash, req.AppHash); err != nil {
+	device, ok := s.deviceAuth(w, r, req)
+	if !ok {
+		return
+	}
+	if err := s.app.RecordHeartbeat(device.PublicID, req.ConfigHash, req.AppHash, req.Platform); err != nil {
 		s.logger.Error("record heartbeat", "id", device.PublicID, "error", err)
 	}
-	settings, err := s.app.Settings()
+	// 更新包按平台发布：Linux 与 Windows 不会互相覆盖。
+	release, _, err := s.app.Release(req.Platform)
 	if err != nil {
-		s.logger.Error("read settings", "error", err)
+		s.logger.Error("read release", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	configChanged := req.ConfigHash != device.ConfigHash
-	appChanged := settings.AppHash != "" && req.AppHash != settings.AppHash
+	appChanged := release.Hash != "" && req.AppHash != release.Hash
 	if !configChanged && !appChanged {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -261,10 +275,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if appChanged {
 		resp.AppUpdate = &updateInfo{
-			Version: settings.AppVersion,
-			URL:     settings.AppURL,
-			Notes:   settings.AppNotes,
-			SHA256:  settings.AppSHA256,
+			Version: release.Version,
+			URL:     absoluteURL(r, release.URL),
+			Notes:   release.Notes,
+			SHA256:  release.SHA256,
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { api, ApiError, type ConsoleSettings, type DeviceSummary } from "./api";
+import { api, ApiError, type ReleasesPayload, type DeviceSummary } from "./api";
 import ConfigView from "./components/ConfigView.vue";
 import DeviceDialog from "./components/DeviceDialog.vue";
 import DevicesView from "./components/DevicesView.vue";
@@ -17,7 +17,7 @@ const POLL_MS = 5000;
 const page = ref<Page>("devices");
 const authed = ref(false);
 const devices = ref<DeviceSummary[]>([]);
-const settings = ref<ConsoleSettings | null>(null);
+const releases = ref<ReleasesPayload | null>(null);
 const dialog = ref<Dialog>(null);
 const toast = ref<Toast | null>(null);
 const loginError = ref("");
@@ -60,7 +60,7 @@ function stopPolling() {
 function handleUnauthorized() {
   stopPolling();
   dialog.value = null;
-  settings.value = null;
+  releases.value = null;
   authed.value = false;
 }
 
@@ -76,9 +76,9 @@ async function loadDevices() {
   }
 }
 
-async function loadSettings() {
+async function loadReleases() {
   try {
-    settings.value = await api.getSettings();
+    releases.value = await api.getReleases();
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) handleUnauthorized();
   }
@@ -93,7 +93,7 @@ async function login(token: string) {
     authed.value = true;
     page.value = "devices";
     startPolling();
-    void loadSettings();
+    void loadReleases();
   } catch (err) {
     loginError.value = err instanceof ApiError && err.status === 401 ? "访问令牌错误" : err instanceof Error ? err.message : "登录失败";
   } finally {
@@ -122,8 +122,8 @@ function onCreated() {
   void loadDevices().catch(() => {});
 }
 
-function onSaved(next: ConsoleSettings) {
-  settings.value = next;
+function onSaved(next: ReleasesPayload) {
+  releases.value = next;
 }
 
 function onEscape(event: KeyboardEvent) {
@@ -136,7 +136,7 @@ onMounted(async () => {
     await loadDevices();
     authed.value = true;
     startPolling();
-    void loadSettings();
+    void loadReleases();
   } catch {
     authed.value = false;
   }
@@ -209,14 +209,14 @@ onBeforeUnmount(() => {
         />
         <ConfigView
           v-else-if="page === 'config'"
-          :settings="settings"
+          :releases="releases"
           @saved="onSaved"
           @toast="showToast"
           @unauthorized="handleUnauthorized"
         />
         <UpdatesView
           v-else
-          :settings="settings"
+          :releases="releases"
           @saved="onSaved"
           @toast="showToast"
           @unauthorized="handleUnauthorized"

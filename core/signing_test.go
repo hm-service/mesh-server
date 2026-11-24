@@ -10,13 +10,16 @@ import (
 )
 
 func TestSigningStringShape(t *testing.T) {
-	got := SigningString("POST", "/api/heartbeat", BodyHash([]byte("{}")), "1732400000", "abc")
+	got := SigningString("POST", "/api/heartbeat", "dev", "1732400000", "abc", "windows/amd64", "cfg", "app")
 	lines := strings.Split(got, "\n")
-	if len(lines) != 6 || lines[0] != "MESH1" || lines[1] != "POST" || lines[2] != "/api/heartbeat" {
+	want := []string{"MESH2", "POST", "/api/heartbeat", "dev", "1732400000", "abc", "windows/amd64", "cfg", "app"}
+	if len(lines) != len(want) {
 		t.Fatalf("SigningString() = %q", got)
 	}
-	if lines[3] != BodyHash([]byte("{}")) || lines[4] != "1732400000" || lines[5] != "abc" {
-		t.Fatalf("SigningString() = %q", got)
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q", i, lines[i], want[i])
+		}
 	}
 	if strings.HasSuffix(got, "\n") {
 		t.Fatal("the signing text must not end with a newline")
@@ -49,7 +52,7 @@ func TestVerifySignatureRejectsGarbage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg := []byte("MESH1\nGET\n/api/config\nhash\n1\nnonce")
+	msg := []byte(SigningString("GET", "/api/config", "dev", "1", "nonce", "linux/amd64", "", ""))
 	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, msg))
 	if err := VerifySignature(base64.StdEncoding.EncodeToString(pub), sig, msg); err != nil {
 		t.Fatalf("valid signature rejected: %v", err)

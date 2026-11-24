@@ -8,14 +8,13 @@ import (
 	"strings"
 
 	"mesh-server/app"
+	"mesh-server/db"
 	"mesh-server/httpx"
 )
 
-// settingsResponse is the admin view of the control-plane configuration.
-// app_sha256 is the full digest of the published build; app_hash stays the
-// 16-character value clients compare.
-type settingsResponse struct {
-	DefaultTOML string `json:"default_toml"`
+// releaseView is one platform's published build in the admin payload.
+type releaseView struct {
+	Platform    string `json:"platform"`
 	AppVersion  string `json:"app_version"`
 	AppURL      string `json:"app_url"`
 	AppHash     string `json:"app_hash"`
@@ -26,72 +25,103 @@ type settingsResponse struct {
 	AppSize     int64  `json:"app_size"`
 }
 
-// settingsInput updates only the fields present in a JSON body.
-type settingsInput struct {
-	DefaultTOML *string `json:"default_toml"`
+// releasesResponse is the admin view of the release table plus the template.
+type releasesResponse struct {
+	DefaultTOML string        `json:"default_toml"`
+	Releases    []releaseView `json:"releases"`
+}
+
+// releaseInput updates one platform through a JSON body.
+type releaseInput struct {
+	Platform    *string `json:"platform"`
 	AppVersion  *string `json:"app_version"`
 	AppURL      *string `json:"app_url"`
 	AppNotes    *string `json:"app_notes"`
+	DefaultTOML *string `json:"default_toml"`
 }
 
-func (s *Server) settingsSnapshot() (settingsResponse, error) {
-	defaultTOML, err := s.app.DefaultTOMLFile()
-	if err != nil {
-		return settingsResponse{}, err
+func toView(r db.Release) releaseView {
+	return releaseView{
+		Platform:    r.Platform,
+		AppVersion:  r.Version,
+		AppURL:      r.URL,
+		AppHash:     r.Hash,
+		AppSHA256:   r.SHA256,
+		AppNotes:    r.Notes,
+		AppSource:   r.Source,
+		AppFileName: r.FileName,
+		AppSize:     r.Size,
 	}
-	stored, err := s.app.Settings()
-	if err != nil {
-		return settingsResponse{}, err
-	}
-	return settingsResponse{
-		DefaultTOML: defaultTOML,
-		AppVersion:  stored.AppVersion,
-		AppURL:      stored.AppURL,
-		AppHash:     stored.AppHash,
-		AppSHA256:   stored.AppSHA256,
-		AppNotes:    stored.AppNotes,
-		AppSource:   stored.AppSource,
-		AppFileName: stored.AppFileName,
-		AppSize:     stored.AppSize,
-	}, nil
 }
 
-func (s *Server) writeSettings(w http.ResponseWriter) {
-	out, err := s.settingsSnapshot()
+func (s *Server) releasesSnapshot() (releasesResponse, error) {
+	toml, err := s.app.DefaultTOMLFile()
 	if err != nil {
-		s.logger.Error("read settings", "error", err)
+		return releasesResponse{}, err
+	}
+	list, err := s.app.Releases()
+	if err != nil {
+		return releasesResponse{}, err
+	}
+	out := releasesResponse{DefaultTOML: toml, Releases: make([]releaseView, 0, len(list))}
+	for _, r := range list {
+		out.Releases = append(out.Releases, toView(r))
+	}
+	return out, nil
+}
+
+func (s *Server) writeReleases(w http.ResponseWriter) {
+	out, err := s.releasesSnapshot()
+	if err != nil {
+		s.logger.Error("read releases", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	s.writeSettings(w)
+func (s *Server) handleListReleases(w http.ResponseWriter, r *http.Request) {
+	s.writeReleases(w)
 }
 
-// handleUpdateSettings dispatches the two release modes: multipart upload and
+// handlePublishRelease dispatches the two release modes: multipart upload and
 // external URL. Both may carry a new default template.
-func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	if contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && contentType == "multipart/form-data" {
-		s.updateSettingsFromUpload(w, r)
+		s.publishFromUpload(w, r)
 		return
 	}
-	s.updateSettingsFromJSON(w, r)
+	s.publishFromJSON(w, r)
 }
 
-func (s *Server) updateSettingsFromJSON(w http.ResponseWriter, r *http.Request) {
-	var req settingsInput
+func (s *Server) publishFromJSON(w http.ResponseWriter, r *http.Request) {
+	var req releaseInput
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", "请求内容不合法")
 		return
 	}
-	if _, err := s.app.ApplySettingsPatch(app.SettingsPatch{
-		AppVersion: req.AppVersion,
-		AppURL:     req.AppURL,
-		AppNotes:   req.AppNotes,
-	}); err != nil {
-		s.writeSettingsError(w, "update settings", err)
+	platform := ""
+	if req.Platform != nil {
+		platform = strings.TrimSpace(*req.Platform)
+	}
+	switch {
+	case req.AppURL != nil && req.AppVersion != nil:
+		if platform == "" {
+			httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "platform 不能为空")
+			return
+		}
+		notes := ""
+		if req.AppNotes != nil {
+			notes = *req.AppNotes
+		}
+		if _, err := s.app.SetExternal(platform, *req.AppVersion, *req.AppURL, notes); err != nil {
+			s.writeReleaseError(w, "publish external release", err)
+			return
+		}
+	case req.AppVersion == nil && req.AppURL == nil:
+		// Only the template is being edited; keep the releases as they are.
+	default:
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "app_version 与 app_url 必须同时给出")
 		return
 	}
 	if req.DefaultTOML != nil {
@@ -101,14 +131,14 @@ func (s *Server) updateSettingsFromJSON(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	s.writeSettings(w)
+	s.writeReleases(w)
 }
 
-func (s *Server) updateSettingsFromUpload(w http.ResponseWriter, r *http.Request) {
+func (s *Server) publishFromUpload(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, app.MaxUploadBytes+app.UploadHeadroom)
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-			httpx.WriteErrorDetail(w, http.StatusBadRequest, "file_too_large", "客户端文件不能超过 200MB")
+			httpx.WriteErrorDetail(w, http.StatusBadRequest, "file_too_large", "更新包不能超过 200MB")
 			return
 		}
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", "请求必须是 multipart/form-data")
@@ -117,27 +147,20 @@ func (s *Server) updateSettingsFromUpload(w http.ResponseWriter, r *http.Request
 	if r.MultipartForm != nil {
 		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
-	if mode := strings.TrimSpace(r.FormValue("mode")); mode != "" && mode != app.SettingSourceUpload {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "mode 必须是 upload")
-		return
-	}
+	platform := strings.TrimSpace(r.FormValue("platform"))
 	version := strings.TrimSpace(r.FormValue("app_version"))
-	if version == "" {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "app_version 不能为空")
-		return
-	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "请选择客户端 exe")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "请选择更新包")
 		return
 	}
 	defer file.Close()
 	if header.Size > app.MaxUploadBytes {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "file_too_large", "客户端文件不能超过 200MB")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "file_too_large", "更新包不能超过 200MB")
 		return
 	}
-	if _, err := s.app.PublishUpload(version, r.FormValue("app_notes"), file); err != nil {
-		s.writeSettingsError(w, "publish upload", err)
+	if _, err := s.app.PublishUpload(platform, version, r.FormValue("app_notes"), file); err != nil {
+		s.writeReleaseError(w, "publish upload", err)
 		return
 	}
 	if err := s.app.SaveDefaultTOML(r.FormValue("default_toml")); err != nil {
@@ -145,12 +168,21 @@ func (s *Server) updateSettingsFromUpload(w http.ResponseWriter, r *http.Request
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	s.writeSettings(w)
+	s.writeReleases(w)
 }
 
-// writeSettingsError maps a rejected admin input to the documented 400 and
-// anything else to an opaque 500.
-func (s *Server) writeSettingsError(w http.ResponseWriter, operation string, err error) {
+// handleDeleteRelease clears the build published for one platform.
+func (s *Server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
+	platform := strings.TrimSpace(r.PathValue("platform"))
+	if err := s.app.ClearRelease(platform); err != nil {
+		s.writeReleaseError(w, "clear release", err)
+		return
+	}
+	s.writeReleases(w)
+}
+
+// writeReleaseError maps a rejected admin input to 400 and anything else to 500.
+func (s *Server) writeReleaseError(w http.ResponseWriter, operation string, err error) {
 	if invalid, ok := errors.AsType[*app.ValidationError](err); ok {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", invalid.Message)
 		return

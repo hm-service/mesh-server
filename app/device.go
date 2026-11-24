@@ -209,9 +209,9 @@ func (a *App) Touch(publicID, ip string) error {
 	return a.database.Touch(publicID, a.now().Unix(), ip)
 }
 
-// RecordHeartbeat stores the hashes a device reported.
-func (a *App) RecordHeartbeat(publicID, configHash, appHash string) error {
-	return a.database.RecordHeartbeat(publicID, configHash, appHash, a.now().Unix())
+// RecordHeartbeat stores the hashes a device reported together with its platform.
+func (a *App) RecordHeartbeat(publicID, configHash, appHash, platform string) error {
+	return a.database.RecordHeartbeat(publicID, configHash, appHash, platform, a.now().Unix())
 }
 
 // DeviceStatus is derived from last_seen_at; an unregistered slot is pending.
@@ -234,21 +234,26 @@ func ConfigState(d db.Device) string {
 	return "stale"
 }
 
-// AppState reports whether the device runs the published build. With nothing
-// published there is nothing to update to, so it counts as current.
-func AppState(d db.Device, s db.Settings) string {
-	if s.AppHash == "" || d.LastAppHash == s.AppHash {
+// AppState reports whether the device runs the build published for its platform.
+// With nothing published for that platform there is nothing to update to, so it
+// counts as current.
+func AppState(d db.Device, r db.Release) string {
+	// 平台未知说明这台设备还没上报过，它不可能已经在跑对应平台的包。
+	if d.LastPlatform == "" {
+		return "stale"
+	}
+	if r.Hash == "" || d.LastAppHash == r.Hash {
 		return "current"
 	}
 	return "stale"
 }
 
 // ReleaseVersion labels the published build; empty when nothing is published.
-func ReleaseVersion(s db.Settings) string {
-	if s.AppHash == "" {
+func ReleaseVersion(r db.Release) string {
+	if r.Hash == "" {
 		return ""
 	}
-	return s.AppVersion
+	return r.Version
 }
 
 // newDeviceID returns an unused short id. The space is small on purpose: the id

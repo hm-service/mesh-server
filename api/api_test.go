@@ -86,8 +86,12 @@ type heartbeatResponse struct {
 	AppUpdate  *updateInfo `json:"app_update,omitempty"`
 }
 
-type settingsResponse struct {
-	DefaultTOML string `json:"default_toml"`
+// testPlatform is the platform key the tests publish and heartbeat with.
+const testPlatform = "windows/amd64"
+
+// releaseView mirrors one entry of GET /api/admin/releases.
+type releaseView struct {
+	Platform    string `json:"platform"`
 	AppVersion  string `json:"app_version"`
 	AppURL      string `json:"app_url"`
 	AppHash     string `json:"app_hash"`
@@ -98,18 +102,66 @@ type settingsResponse struct {
 	AppSize     int64  `json:"app_size"`
 }
 
-// signedHeaders builds the CONTRACT.md 1.3 headers for one request.
-func signedHeaders(t *testing.T, deviceID string, priv ed25519.PrivateKey, method, path string, body []byte, ts int64, nonce string) map[string]string {
+// releasesResponse mirrors GET /api/admin/releases.
+type releasesResponse struct {
+	DefaultTOML string        `json:"default_toml"`
+	Releases    []releaseView `json:"releases"`
+}
+
+// releaseOf returns the entry of platform, or a zero view when absent.
+func (r releasesResponse) releaseOf(platform string) releaseView {
+	for _, v := range r.Releases {
+		if v.Platform == platform {
+			return v
+		}
+	}
+	return releaseView{}
+}
+
+// signedHeaders builds the signed-header form used by body-less requests.
+func signedHeaders(t *testing.T, deviceID string, priv ed25519.PrivateKey, method, path string, ts int64, nonce string) map[string]string {
+	return signedHeadersFor(t, deviceID, priv, method, path, testPlatform, "", "", ts, nonce)
+}
+
+// signedHeadersFor signs the CONTRACT.md 1.3 fields for one request.
+func signedHeadersFor(t *testing.T, deviceID string, priv ed25519.PrivateKey, method, path, platform, configHash, appHash string, ts int64, nonce string) map[string]string {
 	t.Helper()
-	sum := sha256.Sum256(body)
 	stamp := fmt.Sprintf("%d", ts)
-	msg := core.SigningString(method, path, hex.EncodeToString(sum[:]), stamp, nonce)
+	msg := core.SigningString(method, path, deviceID, stamp, nonce, platform, configHash, appHash)
 	return map[string]string{
 		"X-Device-Id": deviceID,
 		"X-Timestamp": stamp,
 		"X-Nonce":     nonce,
+		"X-Platform":  platform,
 		"X-Signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
 	}
+}
+
+// heartbeatBody builds the signed heartbeat payload for one device.
+func heartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce, configHash, appHash string) []byte {
+	t.Helper()
+	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appHash)
+}
+
+// signedHeartbeatBody is heartbeatBody with every signed field spelled out, so
+// the tampering tests can break exactly one of them.
+func signedHeartbeatBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, platform string, ts int64, nonce, configHash, appHash string) []byte {
+	t.Helper()
+	stamp := fmt.Sprintf("%d", ts)
+	msg := core.SigningString("POST", "/api/heartbeat", deviceID, stamp, nonce, platform, configHash, appHash)
+	body, err := json.Marshal(map[string]string{
+		"deviceId":   deviceID,
+		"timestamp":  stamp,
+		"nonce":      nonce,
+		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
+		"platform":   platform,
+		"configHash": configHash,
+		"appHash":    appHash,
+	})
+	if err != nil {
+		t.Fatalf("marshal heartbeat: %v", err)
+	}
+	return body
 }
 
 func newKeypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -317,7 +369,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	headers := signedHeaders(t, "device-1", priv, "POST", "/api/register", body, env.Clock.Now().Unix(), newNonce(&nonces))
+	headers := signedHeaders(t, "device-1", priv, "POST", "/api/register", env.Clock.Now().Unix(), newNonce(&nonces))
 	res, data := signed(t, env, "POST", "/api/register", body, headers)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed idempotent register = %d: %s", res.StatusCode, data)
@@ -343,7 +395,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	headers = signedHeaders(t, "device-1", priv, "POST", "/api/register", conflictBody, env.Clock.Now().Unix(), newNonce(&nonces))
+	headers = signedHeaders(t, "device-1", priv, "POST", "/api/register", env.Clock.Now().Unix(), newNonce(&nonces))
 	res, data = signed(t, env, "POST", "/api/register", conflictBody, headers)
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("pubkey conflict = %d, want 409: %s", res.StatusCode, data)
@@ -382,40 +434,42 @@ func TestSignatureTampering(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 	now := env.Clock.Now().Unix()
-	body := []byte(fmt.Sprintf(`{"config_hash":%q}`, dev.configHash))
 
-	valid := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/heartbeat", body, now, newNonce(&nonces))
-	res, data := signed(t, env, "POST", "/api/heartbeat", body, valid)
+	// A correctly signed heartbeat passes.
+	body := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
+	res, data := signed(t, env, "POST", "/api/heartbeat", body, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("valid heartbeat = %d, want 204: %s", res.StatusCode, data)
 	}
 
-	// The signed body is replaced after signing.
-	tampered := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/heartbeat", body, now, newNonce(&nonces))
-	res, _ = signed(t, env, "POST", "/api/heartbeat", []byte(`{"config_hash":"tampered"}`), tampered)
+	// Changing a signed field after signing breaks the signature.
+	tampered := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
+	tampered = bytes.Replace(tampered, []byte(dev.configHash), []byte("tampered"), 1)
+	res, _ = signed(t, env, "POST", "/api/heartbeat", tampered, nil)
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("tampered body = %d, want 401", res.StatusCode)
+		t.Fatalf("tampered config hash = %d, want 401", res.StatusCode)
 	}
 
-	// The signature was made for another method and path.
-	wrongPath := signedHeaders(t, dev.deviceID, dev.priv, "GET", "/api/config", nil, now, newNonce(&nonces))
-	res, _ = signed(t, env, "POST", "/api/heartbeat", body, wrongPath)
+	// The platform is part of what was signed.
+	otherPlatform := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
+	otherPlatform = bytes.Replace(otherPlatform, []byte(testPlatform), []byte("linux/arm64"), 1)
+	res, _ = signed(t, env, "POST", "/api/heartbeat", otherPlatform, nil)
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong path signature = %d, want 401", res.StatusCode)
+		t.Fatalf("tampered platform = %d, want 401", res.StatusCode)
 	}
 
 	// Stale and future timestamps are outside the 300s window.
 	for _, ts := range []int64{now - 301, now + 301} {
-		headers := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/heartbeat", body, ts, newNonce(&nonces))
-		res, _ = signed(t, env, "POST", "/api/heartbeat", body, headers)
+		stale := heartbeatBody(t, dev, ts, newNonce(&nonces), dev.configHash, "")
+		res, _ = signed(t, env, "POST", "/api/heartbeat", stale, nil)
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("timestamp %d = %d, want 401", ts, res.StatusCode)
 		}
 	}
 
 	// An unknown device id cannot authenticate even with a valid key.
-	unknown := signedHeaders(t, "dev-unknown", dev.priv, "POST", "/api/heartbeat", body, now, newNonce(&nonces))
-	res, _ = signed(t, env, "POST", "/api/heartbeat", body, unknown)
+	unknown := signedHeartbeatBody(t, "dev-unknown", dev.priv, testPlatform, now, newNonce(&nonces), dev.configHash, "")
+	res, _ = signed(t, env, "POST", "/api/heartbeat", unknown, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unknown device = %d, want 401", res.StatusCode)
 	}
@@ -425,63 +479,61 @@ func TestNonceReplayIsRejected(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	body := []byte(fmt.Sprintf(`{"config_hash":%q}`, dev.configHash))
 	now := env.Clock.Now().Unix()
-	nonce := newNonce(&nonces)
-	headers := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/heartbeat", body, now, nonce)
+	body := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
 
-	res, data := signed(t, env, "POST", "/api/heartbeat", body, headers)
+	res, data := signed(t, env, "POST", "/api/heartbeat", body, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("first request = %d, want 204: %s", res.StatusCode, data)
 	}
-	res, _ = signed(t, env, "POST", "/api/heartbeat", body, headers)
+	res, _ = signed(t, env, "POST", "/api/heartbeat", body, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replayed nonce = %d, want 401", res.StatusCode)
 	}
 
-	// A fresh nonce for the same body is accepted.
-	headers = signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/heartbeat", body, now, newNonce(&nonces))
-	res, _ = signed(t, env, "POST", "/api/heartbeat", body, headers)
+	// A fresh nonce for the same hashes is accepted.
+	fresh := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
+	res, _ = signed(t, env, "POST", "/api/heartbeat", fresh, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("fresh nonce = %d, want 204", res.StatusCode)
 	}
 }
 
-// publishUpload saves a release through the upload mode and returns the result.
-func publishUpload(t *testing.T, env *testenv.Env, version, notes, defaultTOML string, file []byte) settingsResponse {
+// publishUpload saves a release through the upload mode and returns it.
+func publishUpload(t *testing.T, env *testenv.Env, platform, version, notes, defaultTOML string, file []byte) releaseView {
 	t.Helper()
-	res, data := uploadSettings(t, env, version, notes, defaultTOML, file)
+	res, data := uploadRelease(t, env, platform, version, notes, defaultTOML, file)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("upload settings = %d, want 200: %s", res.StatusCode, data)
+		t.Fatalf("upload release = %d, want 200: %s", res.StatusCode, data)
 	}
-	var out settingsResponse
+	var out releasesResponse
 	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("decode settings: %v", err)
+		t.Fatalf("decode releases: %v", err)
+	}
+	return out.releaseOf(platform)
+}
+
+// putReleases saves through the admin API and returns the response.
+func putReleases(t *testing.T, env *testenv.Env, fields map[string]string) releasesResponse {
+	t.Helper()
+	res, data := env.Do("PUT", "/api/admin/releases", fields)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT releases = %d, want 200: %s", res.StatusCode, data)
+	}
+	var out releasesResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode releases: %v", err)
 	}
 	return out
 }
 
-// putSettings saves settings through the admin API and returns the response.
-func putSettings(t *testing.T, env *testenv.Env, fields map[string]string) settingsResponse {
-	t.Helper()
-	res, data := env.Do("PUT", "/api/admin/settings", fields)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("PUT settings = %d, want 200: %s", res.StatusCode, data)
-	}
-	var out settingsResponse
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("decode settings: %v", err)
-	}
-	return out
-}
-
-// uploadSettings sends the multipart upload mode. A nil file omits the file part.
-func uploadSettings(t *testing.T, env *testenv.Env, version, notes, defaultTOML string, file []byte) (*http.Response, []byte) {
+// uploadRelease sends the multipart upload mode. A nil file omits the file part.
+func uploadRelease(t *testing.T, env *testenv.Env, platform, version, notes, defaultTOML string, file []byte) (*http.Response, []byte) {
 	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	if err := mw.WriteField("mode", "upload"); err != nil {
-		t.Fatalf("write mode: %v", err)
+	if err := mw.WriteField("platform", platform); err != nil {
+		t.Fatalf("write platform: %v", err)
 	}
 	if err := mw.WriteField("app_version", version); err != nil {
 		t.Fatalf("write app_version: %v", err)
@@ -495,7 +547,7 @@ func uploadSettings(t *testing.T, env *testenv.Env, version, notes, defaultTOML 
 		}
 	}
 	if file != nil {
-		part, err := mw.CreateFormFile("file", "mesh-client.zip")
+		part, err := mw.CreateFormFile("file", "mesh-client.tar.zst")
 		if err != nil {
 			t.Fatalf("create file part: %v", err)
 		}
@@ -506,7 +558,7 @@ func uploadSettings(t *testing.T, env *testenv.Env, version, notes, defaultTOML 
 	if err := mw.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
-	req, err := http.NewRequest("PUT", env.Server.URL+"/api/admin/settings", &buf)
+	req, err := http.NewRequest("PUT", env.Server.URL+"/api/admin/releases", &buf)
 	if err != nil {
 		t.Fatalf("build upload request: %v", err)
 	}
@@ -517,9 +569,8 @@ func uploadSettings(t *testing.T, env *testenv.Env, version, notes, defaultTOML 
 
 func heartbeat(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appHash string) (*http.Response, []byte) {
 	t.Helper()
-	body := []byte(fmt.Sprintf(`{"config_hash":%q,"app_hash":%q}`, configHash, appHash))
-	headers := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/heartbeat", body, env.Clock.Now().Unix(), newNonce(nonces))
-	return signed(t, env, "POST", "/api/heartbeat", body, headers)
+	body := heartbeatBody(t, dev, env.Clock.Now().Unix(), newNonce(nonces), configHash, appHash)
+	return signed(t, env, "POST", "/api/heartbeat", body, nil)
 }
 
 func TestHeartbeatSemantics(t *testing.T) {
@@ -529,7 +580,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 
 	// Publish a build so app_hash has a value to compare against.
 	build := releasePkg(t, []byte("client build one"))
-	release := publishUpload(t, env, "2026.11.24-4", "修复窄屏布局", "", build)
+	release := publishUpload(t, env, testPlatform, "2026.11.24-4", "修复窄屏布局", "", build)
 	sum := sha256.Sum256(build)
 	wantSHA := hex.EncodeToString(sum[:])
 
@@ -554,7 +605,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("app-only heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}
 	got := decode(data)
-	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA}
+	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: env.Server.URL + release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA}
 	if got.ConfigHash != "" || got.AppUpdate == nil || *got.AppUpdate != wantUpdate {
 		t.Fatalf("app-only heartbeat = %+v, want only app_update %+v", got, wantUpdate)
 	}
@@ -596,7 +647,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	if updated["config_hash"] != newHash || len(newHash) != 16 {
 		t.Fatalf("update config_hash = %q, want %q with 16 characters", updated["config_hash"], newHash)
 	}
-	headers := signedHeaders(t, dev.deviceID, dev.priv, "GET", "/api/config", nil, env.Clock.Now().Unix(), newNonce(&nonces))
+	headers := signedHeaders(t, dev.deviceID, dev.priv, "GET", "/api/config", env.Clock.Now().Unix(), newNonce(&nonces))
 	res, data = signed(t, env, "GET", "/api/config", nil, headers)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get config = %d, want 200: %s", res.StatusCode, data)
@@ -615,11 +666,11 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 
 	// Publishing another build flips app_hash and the update comes back.
-	next := publishUpload(t, env, "2026.11.25-1", "", "", releasePkg(t, []byte("client build two")))
+	next := publishUpload(t, env, testPlatform, "2026.11.25-1", "", "", releasePkg(t, []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppHash)
 	got = decode(data)
-	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
-		t.Fatalf("heartbeat after release = %d %+v, want only app_update %q", res.StatusCode, got, next.AppURL)
+	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != env.Server.URL+next.AppURL || got.ConfigHash != "" {
+		t.Fatalf("heartbeat after release = %d %+v, want only app_update %q", res.StatusCode, got, env.Server.URL+next.AppURL)
 	}
 }
 
@@ -629,7 +680,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishUpload(t, env, "2026.11.24-4", "", "", releasePkg(t, []byte("client build one")))
+	release := publishUpload(t, env, testPlatform, "2026.11.24-4", "", "", releasePkg(t, []byte("client build one")))
 
 	summary := func() deviceSummary {
 		t.Helper()
@@ -690,7 +741,9 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	}
 
 	// Without a published build there is nothing to update to: still current.
-	putSettings(t, env, map[string]string{"app_version": "", "app_url": ""})
+	if res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform, nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("clear release = %d: %s", res.StatusCode, data)
+	}
 	if got := summary(); got.AppState != "current" || got.AppVersion != "" {
 		t.Fatalf("no release = %+v", got)
 	}
@@ -807,52 +860,52 @@ func TestReissuedTokenReenrollsDevice(t *testing.T) {
 	}
 }
 
-func TestSettingsRoundTrip(t *testing.T) {
+func TestReleaseRoundTrip(t *testing.T) {
 	env := testenv.New(t)
 
-	// No peer.default.toml yet: the template reads as empty, not as the built-in one.
-	res, data := env.Do("GET", "/api/admin/settings", nil)
+	res, data := env.Do("GET", "/api/admin/releases", nil)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("GET settings = %d, want 200: %s", res.StatusCode, data)
+		t.Fatalf("GET releases = %d, want 200: %s", res.StatusCode, data)
 	}
-	var empty settingsResponse
+	var empty releasesResponse
 	if err := json.Unmarshal(data, &empty); err != nil {
-		t.Fatalf("decode settings: %v", err)
+		t.Fatalf("decode releases: %v", err)
 	}
-	if empty.DefaultTOML != "" || empty.AppVersion != "" || empty.AppURL != "" {
-		t.Fatalf("fresh settings = %+v, want all empty", empty)
+	if empty.DefaultTOML != "" || len(empty.Releases) != 0 {
+		t.Fatalf("fresh releases = %+v, want empty", empty)
 	}
 
 	const toml = `hostname = "saved-by-settings"`
-	external := []byte("external mesh client binary")
-	externalPkg := releasePkg(t, external)
-	url := fileServer(t, externalPkg)
-	saved := putSettings(t, env, map[string]string{
+	externalPkg := releasePkg(t, []byte("external mesh client binary"))
+	rawURL := fileServer(t, externalPkg)
+	saved := putReleases(t, env, map[string]string{
+		"platform":     testPlatform,
 		"default_toml": toml,
 		"app_version":  "0.3.0",
-		"app_url":      url,
+		"app_url":      rawURL,
 		"app_notes":    "修复窄屏布局",
 	})
 	// app_hash and app_sha256 both describe the package: the client compares the
 	// package it installed, so a kernel-only change must still read as an update.
+	got := saved.releaseOf(testPlatform)
 	pkgSum := sha256.Sum256(externalPkg)
 	wantPkg := hex.EncodeToString(pkgSum[:])
-	if saved.DefaultTOML != toml || saved.AppVersion != "0.3.0" || saved.AppURL != url ||
-		saved.AppNotes != "修复窄屏布局" || saved.AppSource != "url" || saved.AppHash != wantPkg[:16] ||
-		saved.AppSHA256 != wantPkg {
+	if saved.DefaultTOML != toml || got.AppVersion != "0.3.0" || got.AppURL != rawURL ||
+		got.AppNotes != "修复窄屏布局" || got.AppSource != "url" || got.AppHash != wantPkg[:16] ||
+		got.AppSHA256 != wantPkg {
 		t.Fatalf("save response = %+v, want hash %s / %s", saved, wantPkg[:16], wantPkg)
 	}
 
-	res, data = env.Do("GET", "/api/admin/settings", nil)
-	var got settingsResponse
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("decode settings: %v", err)
+	res, data = env.Do("GET", "/api/admin/releases", nil)
+	var read releasesResponse
+	if err := json.Unmarshal(data, &read); err != nil {
+		t.Fatalf("decode releases: %v", err)
 	}
-	if got != saved {
-		t.Fatalf("GET settings = %+v, want %+v", got, saved)
+	if read.DefaultTOML != toml || read.releaseOf(testPlatform) != got {
+		t.Fatalf("GET releases = %+v, want %+v", read, saved)
 	}
 
-	// The template is a file; the version and URL live in the database.
+	// The template is a file; the release lives in the database.
 	raw, err := os.ReadFile(filepath.Join(env.DataDir, "peer.default.toml"))
 	if err != nil {
 		t.Fatalf("read peer.default.toml: %v", err)
@@ -860,52 +913,59 @@ func TestSettingsRoundTrip(t *testing.T) {
 	if string(raw) != toml {
 		t.Fatalf("peer.default.toml = %q, want %q", raw, toml)
 	}
-	if stored, err := env.App.Settings(); err != nil || stored.AppVersion != "0.3.0" || stored.AppURL != url {
-		t.Fatalf("stored settings = %+v, %v", stored, err)
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Version != "0.3.0" || stored.URL != rawURL {
+		t.Fatalf("stored release = %+v, found %v, %v", stored, found, err)
 	}
 
-	// Omitted fields keep their value.
-	partial := putSettings(t, env, map[string]string{"app_version": "0.4.0"})
-	if partial.AppVersion != "0.4.0" || partial.AppURL != url || partial.DefaultTOML != toml || partial.AppHash != wantPkg[:16] || partial.AppNotes != "修复窄屏布局" {
-		t.Fatalf("partial update = %+v", partial)
+	// Editing only the template keeps the release.
+	revised := putReleases(t, env, map[string]string{"platform": testPlatform, "default_toml": `hostname = "only-template"`})
+	if r := revised.releaseOf(testPlatform); r.AppVersion != "0.3.0" || r.AppHash != wantPkg[:16] {
+		t.Fatalf("template-only save = %+v, want the release kept", revised)
 	}
 
-	// Both empty is allowed and clears the update notification.
-	cleared := putSettings(t, env, map[string]string{"app_version": "", "app_url": ""})
-	if cleared.AppVersion != "" || cleared.AppURL != "" || cleared.AppNotes != "" || cleared.AppSource != "" ||
-		cleared.AppFileName != "" || cleared.AppSize != 0 || cleared.AppHash != "" || cleared.AppSHA256 != "" {
-		t.Fatalf("cleared settings = %+v", cleared)
+	// Deleting clears only that platform.
+	if res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform, nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE release = %d: %s", res.StatusCode, data)
+	}
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("release survived delete: found %v, %v", found, err)
 	}
 }
 
-func TestSettingsRejectIncompleteAppUpdate(t *testing.T) {
+func TestReleaseRejectsIncompletePublish(t *testing.T) {
 	env := testenv.New(t)
 
-	res, data := env.Do("PUT", "/api/admin/settings", map[string]string{"app_version": "0.3.0", "app_url": ""})
+	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0"})
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("version without url = %d, want 400: %s", res.StatusCode, data)
 	}
-	if !strings.Contains(string(data), "invalid_argument") || !strings.Contains(string(data), "app_url 不能为空") {
+	if !strings.Contains(string(data), "invalid_argument") || !strings.Contains(string(data), "同时给出") {
 		t.Fatalf("version without url body = %s", data)
 	}
-	if stored, err := env.App.Settings(); err != nil || stored.AppVersion != "" || stored.AppURL != "" {
-		t.Fatalf("rejected update was stored: %+v, %v", stored, err)
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("rejected publish was stored: found %v, %v", found, err)
 	}
 
-	res, data = env.Do("PUT", "/api/admin/settings", map[string]string{"app_url": "http://example.com/a.exe"})
-	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "app_version 不能为空") {
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_url": "http://example.com/a.tar.zst"})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "同时给出") {
 		t.Fatalf("url without version = %d: %s", res.StatusCode, data)
 	}
 
-	res, data = env.Do("PUT", "/api/admin/settings", map[string]string{"app_version": "0.3.0", "app_url": "ftp://example.com/a.exe"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0", "app_url": "ftp://example.com/a.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "http(s)") {
 		t.Fatalf("non-http url = %d: %s", res.StatusCode, data)
 	}
 
 	// A URL the server cannot read is rejected: use the upload mode instead.
-	res, data = env.Do("PUT", "/api/admin/settings", map[string]string{"app_version": "0.3.0", "app_url": "http://127.0.0.1:1/mesh-client.exe"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0", "app_url": "http://127.0.0.1:1/mesh-client.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "上传") {
 		t.Fatalf("unreachable url = %d: %s", res.StatusCode, data)
+	}
+
+	// The platform key is required.
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"app_version": "0.3.0", "app_url": "http://example.com/a.tar.zst"})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "platform") {
+		t.Fatalf("missing platform = %d: %s", res.StatusCode, data)
 	}
 }
 
@@ -913,7 +973,7 @@ func TestSavedTemplateAppliesToNewDevices(t *testing.T) {
 	env := testenv.New(t)
 	const custom = `hostname = "from-settings"
 ipv4 = "10.126.126.9/24"`
-	putSettings(t, env, map[string]string{"default_toml": custom})
+	putReleases(t, env, map[string]string{"platform": testPlatform, "default_toml": custom})
 
 	// The create dialog prefills from GET /api/template.
 	res, data := env.Do("GET", "/api/template", nil)
@@ -948,22 +1008,21 @@ func TestUploadReleaseMode(t *testing.T) {
 	env := testenv.New(t)
 	const version = "2026.11.24-3"
 	const toml = `hostname = "uploaded"`
-	client := []byte{0x4d, 0x5a, 0x90, 0x00, 0xff, 0x7f, 0x0a, 0x01}
-	file := releasePkg(t, client)
+	file := releasePkg(t, []byte{0x4d, 0x5a, 0x90, 0x00, 0xff, 0x7f, 0x0a, 0x01})
 
-	res, data := uploadSettings(t, env, version, "首个上传版本", toml, file)
+	res, data := uploadRelease(t, env, testPlatform, version, "首个上传版本", toml, file)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("upload = %d, want 200: %s", res.StatusCode, data)
 	}
-	var saved settingsResponse
+	var saved releasesResponse
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatalf("decode upload response: %v", err)
 	}
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])
-	name := version + "-mesh-client.zip"
-	want := settingsResponse{
-		DefaultTOML: toml,
+	name := "windows-amd64-" + version + "-mesh-client.tar.zst"
+	want := releaseView{
+		Platform:    testPlatform,
 		AppVersion:  version,
 		AppURL:      "/api/updates/" + name,
 		AppNotes:    "首个上传版本",
@@ -973,22 +1032,22 @@ func TestUploadReleaseMode(t *testing.T) {
 		AppHash:     pkgFull[:16],
 		AppSHA256:   pkgFull,
 	}
-	if saved != want {
+	if got := saved.releaseOf(testPlatform); got != want || saved.DefaultTOML != toml {
 		t.Fatalf("upload response = %+v, want %+v", saved, want)
 	}
 
 	// The stored configuration reads back the same way.
-	res, data = env.Do("GET", "/api/admin/settings", nil)
-	var got settingsResponse
+	res, data = env.Do("GET", "/api/admin/releases", nil)
+	var got releasesResponse
 	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("decode settings: %v", err)
+		t.Fatalf("decode releases: %v", err)
 	}
-	if got != want {
-		t.Fatalf("GET settings = %+v, want %+v", got, want)
+	if got.releaseOf(testPlatform) != want || got.DefaultTOML != toml {
+		t.Fatalf("GET releases = %+v, want %+v", got, want)
 	}
 
 	// The hosted file is downloadable without the admin cookie.
-	download := func(path string) (string, []byte) {
+	download := func(path string) []byte {
 		t.Helper()
 		anonymous := &http.Client{Transport: env.Server.Client().Transport, Timeout: 5 * time.Second}
 		res, err := anonymous.Get(env.Server.URL + path)
@@ -1006,34 +1065,30 @@ func TestUploadReleaseMode(t *testing.T) {
 		if ct := res.Header.Get("Content-Type"); ct != "application/octet-stream" {
 			t.Fatalf("download content-type = %q", ct)
 		}
-		return path, body
+		return body
 	}
-	if _, body := download(want.AppURL); !bytes.Equal(body, file) {
+	if body := download(want.AppURL); !bytes.Equal(body, file) {
 		t.Fatalf("download body = %x, want %x", body, file)
 	}
 
 	// Re-uploading the same version replaces the hosted file.
 	second := releasePkg(t, []byte("second build of the same version"))
-	if res, data = uploadSettings(t, env, version, "", "", second); res.StatusCode != http.StatusOK {
+	if res, data = uploadRelease(t, env, testPlatform, version, "", "", second); res.StatusCode != http.StatusOK {
 		t.Fatalf("re-upload = %d: %s", res.StatusCode, data)
 	}
-	var replaced settingsResponse
-	if err := json.Unmarshal(data, &replaced); err != nil {
-		t.Fatalf("decode re-upload: %v", err)
-	}
-	if _, body := download(want.AppURL); !bytes.Equal(body, second) {
+	if body := download(want.AppURL); !bytes.Equal(body, second) {
 		t.Fatalf("re-uploaded download = %q, want %q", body, second)
 	}
 	secondSum := sha256.Sum256(second)
-	if replaced.AppSHA256 != hex.EncodeToString(secondSum[:]) {
-		t.Fatalf("re-uploaded sha256 = %q", replaced.AppSHA256)
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.SHA256 != hex.EncodeToString(secondSum[:]) {
+		t.Fatalf("re-uploaded release = %+v, found %v, %v", stored, found, err)
 	}
 
 	// Names that try to leave DATA_DIR/updates/ are refused.
 	for _, path := range []string{
 		"/api/updates/..%2Fstate.json",
 		"/api/updates/..%5Cstate.json",
-		"/api/updates/missing.exe",
+		"/api/updates/missing.tar.zst",
 	} {
 		res, data := env.Do("GET", path, nil)
 		if res.StatusCode != http.StatusNotFound {
@@ -1042,32 +1097,26 @@ func TestUploadReleaseMode(t *testing.T) {
 	}
 
 	// Rejected uploads leave the release untouched.
-	if res, data = uploadSettings(t, env, version, "", "", nil); res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "请选择客户端 exe") {
+	if res, data = uploadRelease(t, env, testPlatform, version, "", "", nil); res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "请选择更新包") {
 		t.Fatalf("upload without file = %d: %s", res.StatusCode, data)
 	}
-	if res, data = uploadSettings(t, env, "2026/11/24", "", "", file); res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "app_version") {
+	if res, data = uploadRelease(t, env, testPlatform, "2026/11/24", "", "", file); res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "app_version") {
 		t.Fatalf("upload with unsafe version = %d: %s", res.StatusCode, data)
 	}
-	if stored, err := env.App.Settings(); err != nil || stored.AppVersion != version || stored.AppSize != int64(len(second)) {
-		t.Fatalf("settings changed after rejected uploads: %+v, %v", stored, err)
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Size != int64(len(second)) {
+		t.Fatalf("release changed after rejected uploads: %+v, found %v, %v", stored, found, err)
 	}
 
-	// Editing only the default template through JSON keeps the hosted release.
-	revised := putSettings(t, env, map[string]string{"default_toml": `hostname = "only-template"`})
-	if revised.AppSource != "upload" || revised.AppFileName != name || revised.AppHash != replaced.AppHash {
-		t.Fatalf("template-only save = %+v, want the upload release kept", revised)
-	}
-
-	// Switching to an external URL clears the hosted-file fields and hashes
-	// the remote package instead.
-	externalClient := []byte("external build")
-	externalPkg := releasePkg(t, externalClient)
+	// Switching to an external URL drops the hosted-file fields and hashes the
+	// remote package instead.
+	externalPkg := releasePkg(t, []byte("external build"))
 	externalURL := fileServer(t, externalPkg)
-	switched := putSettings(t, env, map[string]string{"app_version": version, "app_url": externalURL})
-	extPkgSum := sha256.Sum256(externalPkg)
-	extPkgFull := hex.EncodeToString(extPkgSum[:])
-	if switched.AppSource != "url" || switched.AppFileName != "" || switched.AppSize != 0 ||
-		switched.AppHash != extPkgFull[:16] || switched.AppSHA256 != extPkgFull {
-		t.Fatalf("switched settings = %+v", switched)
+	switched := putReleases(t, env, map[string]string{"platform": testPlatform, "app_version": version, "app_url": externalURL})
+	extSum := sha256.Sum256(externalPkg)
+	extFull := hex.EncodeToString(extSum[:])
+	if r := switched.releaseOf(testPlatform); r.AppSource != "url" || r.AppFileName != "" || r.AppSize != 0 ||
+		r.AppHash != extFull[:16] || r.AppSHA256 != extFull {
+		t.Fatalf("switched release = %+v", switched)
 	}
 }
+

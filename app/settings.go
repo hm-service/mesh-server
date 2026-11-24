@@ -26,17 +26,17 @@ import (
 const (
 	// UpdatesPath is the public download prefix; it is part of CONTRACT.md 1.4.
 	UpdatesPath = "/api/updates/"
-	// releaseSuffix completes the hosted file name from the version.
+	// releaseSuffix completes the hosted file name from platform and version.
 	releaseSuffix = "-mesh-client.tar.zst"
 	// MaxAppVersionRunes bounds the client version string.
 	MaxAppVersionRunes = 64
-	// MaxUploadBytes bounds the uploaded client binary.
+	// MaxUploadBytes bounds the uploaded client package.
 	MaxUploadBytes = 200 << 20
-	// UploadHeadroom covers the multipart envelope around the binary itself.
+	// UploadHeadroom covers the multipart envelope around the package itself.
 	UploadHeadroom = 1 << 20
 	// releaseHashLen is the length of the truncated sha256 clients compare.
 	releaseHashLen = 16
-	// SettingSourceUpload hosts the binary under DATA_DIR/updates/.
+	// SettingSourceUpload hosts the package under DATA_DIR/updates/.
 	SettingSourceUpload = "upload"
 	// SettingSourceURL points clients at an external download URL.
 	SettingSourceURL = "url"
@@ -46,11 +46,18 @@ const (
 	fetchTimeout     = 60 * time.Second
 )
 
-// releaseNamePattern keeps a version usable as a hosted file name.
+// releaseDefaultPlatform is where legacy data lands: the platform dimension was
+// added after the control plane had only ever published a Windows client.
+const releaseDefaultPlatform = "windows/amd64"
+
+// releaseNamePattern keeps a version usable as part of a hosted file name.
 var releaseNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // downloadNamePattern whitelists the names /api/updates/ may serve.
 var downloadNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// platformPattern accepts the GOOS/GOARCH keys clients report.
+var platformPattern = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+$`)
 
 // ValidationError is a rejected admin input carrying the text the page shows.
 type ValidationError struct {
@@ -61,6 +68,11 @@ func (e *ValidationError) Error() string { return e.Message }
 
 func invalid(format string, args ...any) error {
 	return &ValidationError{Message: fmt.Sprintf(format, args...)}
+}
+
+// ValidPlatform reports whether p can key a release row.
+func ValidPlatform(p string) bool {
+	return len(p) <= 64 && platformPattern.MatchString(p)
 }
 
 // TemplateTOML is the EasyTier configuration new devices start from.
@@ -99,110 +111,104 @@ func (a *App) SaveDefaultTOML(text string) error {
 	return WriteFileAtomic(a.templatePath(), []byte(text))
 }
 
-// Settings returns the stored release configuration.
-func (a *App) Settings() (db.Settings, error) {
-	stored, _, err := a.database.GetSettings()
-	return stored, err
+// Releases returns every published platform.
+func (a *App) Releases() ([]db.Release, error) {
+	return a.database.Releases()
 }
 
-// SettingsPatch carries the JSON fields of one admin settings update. A nil
-// field keeps its current value.
-type SettingsPatch struct {
-	AppVersion *string
-	AppURL     *string
-	AppNotes   *string
+// Release returns the build published for platform; found is false when that
+// platform has nothing published.
+func (a *App) Release(platform string) (db.Release, bool, error) {
+	return a.database.Release(platform)
 }
 
-// ApplySettingsPatch merges a JSON settings update and validates the result.
-// An external address is downloaded so app_hash and app_sha256 describe the
-// same bytes the clients will fetch.
-func (a *App) ApplySettingsPatch(p SettingsPatch) (db.Settings, error) {
-	current, err := a.Settings()
-	if err != nil {
-		return db.Settings{}, err
+// PublishUpload stores an uploaded package and makes it the release of platform.
+func (a *App) PublishUpload(platform, version, notes string, src io.Reader) (db.Release, error) {
+	if !ValidPlatform(platform) {
+		return db.Release{}, invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
 	}
-	next := current
-	if p.AppVersion != nil {
-		next.AppVersion = strings.TrimSpace(*p.AppVersion)
-	}
-	if p.AppURL != nil {
-		next.AppURL = strings.TrimSpace(*p.AppURL)
-	}
-	if p.AppNotes != nil {
-		next.AppNotes = strings.TrimSpace(*p.AppNotes)
-	}
-	switch {
-	case p.AppVersion == nil && p.AppURL == nil:
-		// Only the default template is being edited; keep the release as it is.
-	case next.AppVersion == "" && next.AppURL == "":
-		next = db.Settings{}
-	case p.AppURL != nil && next.AppURL != current.AppURL:
-		// A new external address replaces any hosted file.
-		next.AppSource = SettingSourceURL
-		next.AppFileName = ""
-		next.AppSize = 0
-		next.AppSHA256 = ""
-	}
-	if err := validateSettings(next); err != nil {
-		return db.Settings{}, err
-	}
-	if next.AppURL != "" && (next.AppURL != current.AppURL || current.AppHash == "") {
-		hash, sha, err := fetchDigest(next.AppURL)
-		if err != nil {
-			return db.Settings{}, invalid("无法读取 app_url 指向的文件：%v，请改用上传方式", err)
-		}
-		next.AppHash, next.AppSHA256 = hash, sha
-	}
-	if next != current {
-		if err := a.database.SetSettings(next); err != nil {
-			return db.Settings{}, err
-		}
-	}
-	return next, nil
-}
-
-// PublishUpload stores an uploaded client binary and makes it the release.
-func (a *App) PublishUpload(version, notes string, src io.Reader) (db.Settings, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
-		return db.Settings{}, invalid("app_version 不能为空")
+		return db.Release{}, invalid("app_version 不能为空")
 	}
 	if !validReleaseVersion(version) {
-		return db.Settings{}, invalid("app_version 只能包含字母、数字、点、下划线和短横线，且最长 %d 字符", MaxAppVersionRunes)
+		return db.Release{}, invalid("app_version 只能包含字母、数字、点、下划线和短横线，且最长 %d 字符", MaxAppVersionRunes)
 	}
 	if err := os.MkdirAll(a.updatesDir(), 0o700); err != nil {
-		return db.Settings{}, err
+		return db.Release{}, err
 	}
-	name := version + releaseSuffix
+	name := releaseFileName(platform, version)
 	_, sha, size, err := writeReleaseFile(a.updatesDir(), name, src)
 	if err != nil {
-		return db.Settings{}, err
+		return db.Release{}, err
 	}
 	target := filepath.Join(a.updatesDir(), name)
 	// 心跳比对的是整个更新包的摘要：内核一起随包发布，只盯主程序会把
 	// "easytier 换了但客户端没换" 漏掉。
 	if err := checkReleasePackage(target); err != nil {
 		_ = os.Remove(target)
-		return db.Settings{}, invalid("更新包不可用：%v", err)
+		return db.Release{}, invalid("更新包不可用：%v", err)
 	}
-	hash := sha[:releaseHashLen]
-	next := db.Settings{
-		AppVersion:  version,
-		AppURL:      UpdatesPath + name,
-		AppNotes:    strings.TrimSpace(notes),
-		AppSource:   SettingSourceUpload,
-		AppFileName: name,
-		AppSize:     size,
-		AppHash:     hash,
-		AppSHA256:   sha,
+	next := db.Release{
+		Platform: platform,
+		Version:  version,
+		URL:      UpdatesPath + name,
+		Notes:    strings.TrimSpace(notes),
+		Source:   SettingSourceUpload,
+		FileName: name,
+		Size:     size,
+		Hash:     sha[:releaseHashLen],
+		SHA256:   sha,
 	}
-	if err := validateSettings(next); err != nil {
-		return db.Settings{}, err
+	if err := validateRelease(next); err != nil {
+		return db.Release{}, err
 	}
-	if err := a.database.SetSettings(next); err != nil {
-		return db.Settings{}, err
+	if err := a.database.SetRelease(next); err != nil {
+		return db.Release{}, err
 	}
 	return next, nil
+}
+
+// SetExternal points one platform at an external download URL. The package is
+// fetched once so hash and sha256 describe the bytes clients will download.
+func (a *App) SetExternal(platform, version, rawURL, notes string) (db.Release, error) {
+	if !ValidPlatform(platform) {
+		return db.Release{}, invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+	}
+	version = strings.TrimSpace(version)
+	rawURL = strings.TrimSpace(rawURL)
+	next := db.Release{
+		Platform: platform,
+		Version:  version,
+		URL:      rawURL,
+		Notes:    strings.TrimSpace(notes),
+		Source:   SettingSourceURL,
+	}
+	if err := validateRelease(next); err != nil {
+		return db.Release{}, err
+	}
+	hash, sha, err := fetchDigest(rawURL)
+	if err != nil {
+		return db.Release{}, invalid("无法读取 app_url 指向的文件：%v，请改用上传方式", err)
+	}
+	next.Hash, next.SHA256 = hash, sha
+	if err := a.database.SetRelease(next); err != nil {
+		return db.Release{}, err
+	}
+	return next, nil
+}
+
+// ClearRelease removes the build published for platform.
+func (a *App) ClearRelease(platform string) error {
+	if !ValidPlatform(platform) {
+		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+	}
+	return a.database.DeleteRelease(platform)
+}
+
+// releaseFileName 把平台拼进文件名：同一个版本可以同时存在多个平台。
+func releaseFileName(platform, version string) string {
+	return strings.ReplaceAll(platform, "/", "-") + "-" + version + releaseSuffix
 }
 
 // OpenRelease opens a hosted release by file name. Anything outside
@@ -227,46 +233,40 @@ func (a *App) OpenRelease(name string) (*os.File, os.FileInfo, error) {
 	return file, info, nil
 }
 
-// validateSettings enforces "both empty or both set" plus the shape each release
-// mode needs.
-func validateSettings(in db.Settings) error {
-	if in.AppVersion == "" && in.AppURL == "" {
-		return nil
-	}
-	if in.AppVersion == "" {
+// validateRelease enforces the shape each release mode needs.
+func validateRelease(in db.Release) error {
+	if in.Version == "" {
 		return invalid("app_version 不能为空")
 	}
-	if in.AppURL == "" {
+	if in.URL == "" {
 		return invalid("app_url 不能为空")
 	}
-	if utf8.RuneCountInString(in.AppVersion) > MaxAppVersionRunes {
+	if utf8.RuneCountInString(in.Version) > MaxAppVersionRunes {
 		return invalid("app_version 最长 %d 字符", MaxAppVersionRunes)
 	}
-	if utf8.RuneCountInString(in.AppNotes) > maxAppNotesRunes {
+	if utf8.RuneCountInString(in.Notes) > maxAppNotesRunes {
 		return invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
 	}
-	if in.AppSource == SettingSourceUpload {
-		// The version doubles as the hosted file name, so it must be a safe one.
-		if !validReleaseVersion(in.AppVersion) {
+	if in.Source == SettingSourceUpload {
+		if !validReleaseVersion(in.Version) {
 			return invalid("app_version 只能包含字母、数字、点、下划线和短横线，且最长 %d 字符", MaxAppVersionRunes)
 		}
-		if !validDownloadName(in.AppFileName) {
+		if !validDownloadName(in.FileName) {
 			return invalid("app_file_name 不合法")
 		}
 		return nil
 	}
-	if utf8.RuneCountInString(in.AppURL) > maxAppURLRunes {
+	if utf8.RuneCountInString(in.URL) > maxAppURLRunes {
 		return invalid("app_url 最长 %d 字符", maxAppURLRunes)
 	}
-	u, err := url.Parse(in.AppURL)
+	u, err := url.Parse(in.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return invalid("app_url 必须是 http(s) 地址")
 	}
 	return nil
 }
 
-// validReleaseVersion reports whether v can name a hosted file. Versions are
-// otherwise opaque strings; this only keeps the file inside DATA_DIR/updates/.
+// validReleaseVersion reports whether v can name a hosted file.
 func validReleaseVersion(v string) bool {
 	return len(v) <= MaxAppVersionRunes && releaseNamePattern.MatchString(v)
 }
@@ -281,7 +281,7 @@ func validDownloadName(name string) bool {
 }
 
 // writeReleaseFile copies src to dir/name through a temporary file and returns
-// the truncated and the full sha256 of the stored bytes together with their
+// the shortened and the full sha256 of the stored bytes together with their
 // length. Any previous file of that name is replaced; a failed copy keeps it.
 func writeReleaseFile(dir, name string, src io.Reader) (hash, sha string, size int64, err error) {
 	tmp, err := os.CreateTemp(dir, ".upload-*")
@@ -314,10 +314,8 @@ func writeReleaseFile(dir, name string, src io.Reader) (hash, sha string, size i
 	return full[:releaseHashLen], full, size, nil
 }
 
-// fetchDigest downloads rawURL and returns the truncated hash of the client
-// inside it together with the full sha256 of the package. The body is kept only
-// long enough to read the zip: an external release is compared exactly like an
-// uploaded one.
+// fetchDigest downloads rawURL and returns the shortened and full sha256 of the
+// package after checking its structure.
 func fetchDigest(rawURL string) (hash, sha string, err error) {
 	client := &http.Client{Timeout: fetchTimeout}
 	res, err := client.Get(rawURL)
@@ -328,7 +326,7 @@ func fetchDigest(rawURL string) (hash, sha string, err error) {
 	if res.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("HTTP %d", res.StatusCode)
 	}
-	tmp, err := os.CreateTemp("", "release-*.zip")
+	tmp, err := os.CreateTemp("", "release-*.tar.zst")
 	if err != nil {
 		return "", "", err
 	}

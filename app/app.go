@@ -66,6 +66,13 @@ func Open(dataDir string, opts Options) (*App, error) {
 		database.Close()
 		return nil, err
 	}
+	// 平台维度是后加的：旧的单条设置搬进 release 表的 Windows 行。
+	if imported, err := a.database.ImportLegacyRelease(releaseDefaultPlatform); err != nil {
+		database.Close()
+		return nil, err
+	} else if imported {
+		slog.Info("legacy release imported", "platform", releaseDefaultPlatform)
+	}
 	if err := a.backfillReleaseDigest(); err != nil {
 		database.Close()
 		return nil, err

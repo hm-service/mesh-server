@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { api, ApiError, type ConsoleSettings } from "../api";
+import { api, ApiError, type ReleasesPayload } from "../api";
 
-const props = defineProps<{ settings: ConsoleSettings | null }>();
+const props = defineProps<{ releases: ReleasesPayload | null }>();
 const emit = defineEmits<{
-  saved: [settings: ConsoleSettings];
+  saved: [releases: ReleasesPayload];
   toast: [title: string, message: string, kind: "ok" | "err"];
   unauthorized: [];
 }>();
@@ -14,7 +14,7 @@ const error = ref("");
 const busy = ref(false);
 
 watch(
-  () => props.settings,
+  () => props.releases,
   (value) => {
     if (value) toml.value = value.default_toml;
   },
@@ -26,7 +26,7 @@ async function save() {
   error.value = "";
   busy.value = true;
   try {
-    const saved = await api.putSettings({ default_toml: toml.value });
+    const saved = await api.publishRelease({ default_toml: toml.value });
     emit("saved", saved);
     emit("toast", "默认配置已保存", "", "ok");
   } catch (err) {

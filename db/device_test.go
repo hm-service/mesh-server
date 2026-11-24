@@ -149,35 +149,41 @@ func TestImportDevicesIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestSettingsSingleRow(t *testing.T) {
+func TestReleasePerPlatform(t *testing.T) {
 	d := openTemp(t)
-	if _, found, err := d.GetSettings(); err != nil || found {
-		t.Fatalf("GetSettings() on empty database = found %v, %v", found, err)
+	if _, found, err := d.Release("windows/amd64"); err != nil || found {
+		t.Fatalf("Release() on empty database = found %v, %v", found, err)
 	}
-	first := Settings{AppVersion: "v1", AppHash: "h1", AppSHA256: "s1", AppSize: 3}
-	if err := d.SetSettings(first); err != nil {
-		t.Fatalf("SetSettings() error: %v", err)
+	first := Release{Platform: "windows/amd64", Version: "v1", Hash: "h1", SHA256: "s1", Size: 3}
+	if err := d.SetRelease(first); err != nil {
+		t.Fatalf("SetRelease() error: %v", err)
 	}
-	second := Settings{AppVersion: "v2", AppHash: "h2", AppSHA256: "s2", AppSize: 4}
-	if err := d.SetSettings(second); err != nil {
-		t.Fatalf("SetSettings() second error: %v", err)
+	second := Release{Platform: "windows/amd64", Version: "v2", Hash: "h2", SHA256: "s2", Size: 4}
+	if err := d.SetRelease(second); err != nil {
+		t.Fatalf("SetRelease() second error: %v", err)
 	}
-	got, found, err := d.GetSettings()
+	got, found, err := d.Release("windows/amd64")
 	if err != nil || !found || got != second {
-		t.Fatalf("GetSettings() = %+v, found %v, %v", got, found, err)
+		t.Fatalf("Release() = %+v, found %v, %v", got, found, err)
 	}
-	var rows int
-	if err := d.conn.QueryRow("SELECT COUNT(*) FROM setting").Scan(&rows); err != nil {
-		t.Fatal(err)
+	if err := d.SetRelease(Release{Platform: "linux/amd64", Version: "v9"}); err != nil {
+		t.Fatalf("SetRelease() linux error: %v", err)
 	}
-	if rows != 1 {
-		t.Fatalf("setting rows = %d, want 1", rows)
+	all, err := d.Releases()
+	if err != nil || len(all) != 2 {
+		t.Fatalf("Releases() = %+v, %v; want 2 rows", all, err)
 	}
-	imported, err := d.ImportSettings(Settings{AppVersion: "legacy"})
+	imported, err := d.ImportRelease(Release{Platform: "windows/amd64", Version: "legacy"})
 	if err != nil || imported {
-		t.Fatalf("ImportSettings() over existing settings = %v, %v", imported, err)
+		t.Fatalf("ImportRelease() over existing release = %v, %v", imported, err)
 	}
-	if got, _, _ := d.GetSettings(); got.AppVersion != "v2" {
-		t.Fatalf("settings overwritten by import: %+v", got)
+	if got, _, _ := d.Release("windows/amd64"); got.Version != "v2" {
+		t.Fatalf("release overwritten by import: %+v", got)
+	}
+	if err := d.DeleteRelease("linux/amd64"); err != nil {
+		t.Fatalf("DeleteRelease() error: %v", err)
+	}
+	if _, found, _ := d.Release("linux/amd64"); found {
+		t.Fatal("linux release survived DeleteRelease")
 	}
 }

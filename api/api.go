@@ -131,8 +131,9 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "PUT", "/api/devices/{id}", s.admin(s.handleUpdateDevice))
 	s.route(mux, "DELETE", "/api/devices/{id}", s.admin(s.handleDeleteDevice))
 	s.route(mux, "POST", "/api/devices/{id}/token", s.admin(s.handleIssueToken))
-	s.route(mux, "GET", "/api/admin/settings", s.admin(s.handleGetSettings))
-	s.route(mux, "PUT", "/api/admin/settings", s.admin(s.handleUpdateSettings))
+	s.route(mux, "GET", "/api/admin/releases", s.admin(s.handleListReleases))
+	s.route(mux, "PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
+	s.route(mux, "DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
 	// Public download and the device-facing API signed by the device key.
 	s.route(mux, "GET", "/api/updates/{file}", s.withGate(s.apiGate, s.handleDownloadUpdate))
 	s.route(mux, "POST", "/api/register", s.withGate(s.apiGate, s.handleRegister))

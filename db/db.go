@@ -35,6 +35,19 @@ CREATE TABLE IF NOT EXISTS device (
 CREATE UNIQUE INDEX IF NOT EXISTS device_legacy_id ON device (legacy_id) WHERE legacy_id <> '';
 CREATE UNIQUE INDEX IF NOT EXISTS device_device_id ON device (device_id) WHERE device_id <> '';
 
+CREATE TABLE IF NOT EXISTS release (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform  TEXT    NOT NULL UNIQUE,
+    version   TEXT    NOT NULL DEFAULT '',
+    url       TEXT    NOT NULL DEFAULT '',
+    hash      TEXT    NOT NULL DEFAULT '',
+    sha256    TEXT    NOT NULL DEFAULT '',
+    notes     TEXT    NOT NULL DEFAULT '',
+    source    TEXT    NOT NULL DEFAULT '',
+    file_name TEXT    NOT NULL DEFAULT '',
+    size      INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS setting (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     app_version   TEXT    NOT NULL DEFAULT '',
@@ -93,6 +106,48 @@ func (d *DB) createSchema() error {
 		if _, err := d.conn.Exec(statement); err != nil {
 			return fmt.Errorf("create schema: %w", err)
 		}
+	}
+	// Columns added after the table first shipped: SQLite has no
+	// ADD COLUMN IF NOT EXISTS, so they are checked one by one.
+	if err := d.ensureColumn("device", "last_platform", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureColumn adds column to table when the table does not have it yet.
+// The connection pool holds a single connection, so the PRAGMA rows must be
+// closed before the ALTER runs or it would wait forever.
+func (d *DB) ensureColumn(table, column, decl string) error {
+	rows, err := d.conn.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid, notNull, pk int
+			name, ctype      string
+			dflt             any
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("inspect %s: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := d.conn.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + decl); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }

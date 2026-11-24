@@ -99,16 +99,17 @@ func (a *App) importLegacyState() error {
 	if err != nil {
 		return fmt.Errorf("import %s: %w", path, err)
 	}
-	importedSettings := false
+	importedRelease := false
 	if st.Settings != nil {
-		importedSettings, err = a.database.ImportSettings(db.Settings{
-			AppVersion:  st.Settings.AppVersion,
-			AppURL:      st.Settings.AppURL,
-			AppHash:     st.Settings.AppHash,
-			AppNotes:    st.Settings.AppNotes,
-			AppSource:   st.Settings.AppSource,
-			AppFileName: st.Settings.AppFileName,
-			AppSize:     st.Settings.AppSize,
+		importedRelease, err = a.database.ImportRelease(db.Release{
+			Platform: releaseDefaultPlatform,
+			Version:  st.Settings.AppVersion,
+			URL:      st.Settings.AppURL,
+			Hash:     st.Settings.AppHash,
+			Notes:    st.Settings.AppNotes,
+			Source:   st.Settings.AppSource,
+			FileName: st.Settings.AppFileName,
+			Size:     st.Settings.AppSize,
 		})
 		if err != nil {
 			return fmt.Errorf("import settings of %s: %w", path, err)
@@ -120,38 +121,41 @@ func (a *App) importLegacyState() error {
 		"inserted", inserted,
 		"skipped", len(devices)-inserted,
 		"invalid", skipped,
-		"settings", importedSettings,
+		"release", importedRelease,
 	)
 	return nil
 }
 
-// backfillReleaseDigest fills app_sha256 for a release published before the full
+// backfillReleaseDigest fills app_sha256 for releases published before the full
 // digest was stored, so clients can verify downloads after the upgrade.
 func (a *App) backfillReleaseDigest() error {
-	stored, found, err := a.database.GetSettings()
-	if err != nil || !found {
-		return err
-	}
-	if stored.AppSHA256 != "" || stored.AppSource != SettingSourceUpload || stored.AppFileName == "" {
-		return nil
-	}
-	file, err := os.Open(filepath.Join(a.updatesDir(), stored.AppFileName))
-	if errors.Is(err, os.ErrNotExist) {
-		slog.Warn("published release file is missing, cannot store its digest", "file", stored.AppFileName)
-		return nil
-	}
+	releases, err := a.database.Releases()
 	if err != nil {
-		return fmt.Errorf("open release file: %w", err)
-	}
-	defer file.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, file); err != nil {
-		return fmt.Errorf("hash release file: %w", err)
-	}
-	stored.AppSHA256 = hex.EncodeToString(sum.Sum(nil))
-	if err := a.database.SetSettings(stored); err != nil {
 		return err
 	}
-	slog.Info("release digest backfilled", "version", stored.AppVersion, "sha256", stored.AppSHA256)
+	for _, stored := range releases {
+		if stored.SHA256 != "" || stored.Source != SettingSourceUpload || stored.FileName == "" {
+			continue
+		}
+		file, err := os.Open(filepath.Join(a.updatesDir(), stored.FileName))
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Warn("published release file is missing, cannot store its digest", "file", stored.FileName)
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("open release file: %w", err)
+		}
+		sum := sha256.New()
+		_, err = io.Copy(sum, file)
+		file.Close()
+		if err != nil {
+			return fmt.Errorf("hash release file: %w", err)
+		}
+		stored.SHA256 = hex.EncodeToString(sum.Sum(nil))
+		if err := a.database.SetRelease(stored); err != nil {
+			return err
+		}
+		slog.Info("release digest backfilled", "platform", stored.Platform, "version", stored.Version)
+	}
 	return nil
 }

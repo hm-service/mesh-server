@@ -23,8 +23,9 @@ export interface DeviceDetail extends DeviceSummary {
   last_ip: string;
 }
 
-export interface ConsoleSettings {
-  default_toml: string;
+/** ReleaseView 是某个平台已发布的客户端更新包。 */
+export interface ReleaseView {
+  platform: string;
   app_version: string;
   app_url: string;
   app_hash: string;
@@ -33,6 +34,12 @@ export interface ConsoleSettings {
   app_source: string;
   app_file_name: string;
   app_size: number;
+}
+
+/** ReleasesPayload 是管理端看到的全部平台发布状态，外加默认模板。 */
+export interface ReleasesPayload {
+  default_toml: string;
+  releases: ReleaseView[];
 }
 
 /** The bearer credential lives in sessionStorage: gone when the tab closes. */
@@ -108,11 +115,11 @@ async function jsonRequest<T>(method: string, path: string, body?: unknown): Pro
 }
 
 /** 设置类请求的 400 会带 message，直接展示比通用文案有用。 */
-async function settingsRequest(init: RequestInit): Promise<ConsoleSettings> {
+async function releasesRequest(path: string, init: RequestInit): Promise<ReleasesPayload> {
   // fetch 不会自动带 Bearer，设置类请求也必须显式附上凭证。
   const headers = new Headers(init.headers);
   for (const [name, value] of Object.entries(authHeaders())) headers.set(name, value);
-  const res = await fetch("/api/admin/settings", { ...init, headers });
+  const res = await fetch(path, { ...init, headers });
   if (res.status === 401) {
     clearCredential();
     throw new ApiError(401, "unauthorized");
@@ -132,7 +139,7 @@ async function settingsRequest(init: RequestInit): Promise<ConsoleSettings> {
     }
     throw new ApiError(res.status, payload.code ?? "");
   }
-  return (await res.json()) as ConsoleSettings;
+  return (await res.json()) as ReleasesPayload;
 }
 
 export const api = {
@@ -174,17 +181,20 @@ export const api = {
   template(): Promise<{ toml: string }> {
     return jsonRequest<{ toml: string }>("GET", "/api/template");
   },
-  getSettings(): Promise<ConsoleSettings> {
-    return settingsRequest({ method: "GET" });
+  getReleases(): Promise<ReleasesPayload> {
+    return releasesRequest("/api/admin/releases", { method: "GET" });
   },
-  putSettings(fields: Record<string, string>): Promise<ConsoleSettings> {
-    return settingsRequest({
+  publishRelease(fields: Record<string, string>): Promise<ReleasesPayload> {
+    return releasesRequest("/api/admin/releases", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
     });
   },
-  uploadRelease(form: FormData): Promise<ConsoleSettings> {
-    return settingsRequest({ method: "PUT", body: form });
+  uploadRelease(form: FormData): Promise<ReleasesPayload> {
+    return releasesRequest("/api/admin/releases", { method: "PUT", body: form });
+  },
+  deleteRelease(platform: string): Promise<ReleasesPayload> {
+    return releasesRequest("/api/admin/releases/" + platform, { method: "DELETE" });
   },
 };

@@ -49,7 +49,7 @@ func TestRegisterIdempotentBranchRequiresCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	headers := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/register", body, env.Clock.Now().Unix(), newNonce(&nonces))
+	headers := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/register", env.Clock.Now().Unix(), newNonce(&nonces))
 	res, data := signed(t, env, "POST", "/api/register", body, headers)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed re-register = %d, want 200: %s", res.StatusCode, data)
@@ -94,8 +94,8 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 		{"PUT", "/api/devices/d_000000"},
 		{"DELETE", "/api/devices/d_000000"},
 		{"POST", "/api/devices/d_000000/token"},
-		{"GET", "/api/admin/settings"},
-		{"PUT", "/api/admin/settings"},
+		{"GET", "/api/admin/releases"},
+		{"PUT", "/api/admin/releases"},
 	}
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -139,7 +139,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 	client := []byte("a whole mesh client binary")
 	file := releasePkg(t, client)
-	release := publishUpload(t, env, "2026.11.24-3", "", "", file)
+	release := publishUpload(t, env, testPlatform, "2026.11.24-3", "", "", file)
 
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])

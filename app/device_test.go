@@ -192,7 +192,8 @@ func TestDerivedStates(t *testing.T) {
 	if got := ConfigState(device); got != "stale" {
 		t.Fatalf("config state = %q, want stale", got)
 	}
-	settings := dbSettings("v1", "aaaa")
+	settings := dbRelease("v1", "aaaa")
+	device.LastPlatform = "windows/amd64"
 	device.LastAppHash = "aaaa"
 	if got := AppState(device, settings); got != "current" {
 		t.Fatalf("app state = %q, want current", got)
@@ -201,10 +202,10 @@ func TestDerivedStates(t *testing.T) {
 	if got := AppState(device, settings); got != "stale" {
 		t.Fatalf("app state = %q, want stale", got)
 	}
-	if got := AppState(device, dbSettings("", "")); got != "current" {
+	if got := AppState(device, dbRelease("", "")); got != "current" {
 		t.Fatalf("app state without a release = %q, want current", got)
 	}
-	if got := ReleaseVersion(dbSettings("", "")); got != "" {
+	if got := ReleaseVersion(dbRelease("", "")); got != "" {
 		t.Fatalf("release version without a release = %q, want empty", got)
 	}
 }
@@ -212,6 +213,6 @@ func dbDevice(publicID, deviceID string, seenAt int64) db.Device {
 	return db.Device{PublicID: publicID, DeviceID: deviceID, LastSeenAt: seenAt}
 }
 
-func dbSettings(version, hash string) db.Settings {
-	return db.Settings{AppVersion: version, AppHash: hash}
+func dbRelease(version, hash string) db.Release {
+	return db.Release{Version: version, Hash: hash}
 }

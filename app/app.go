@@ -28,12 +28,11 @@ type Options struct {
 	Now func() time.Time
 }
 
-// App owns DATA_DIR: the SQLite database, config.json, peer.default.toml and
-// updates/. Nothing outside DATA_DIR is state.
+// App owns DATA_DIR: the SQLite database, peer.default.toml and updates/.
+// Nothing outside DATA_DIR is state, and DATA_DIR holds no configuration.
 type App struct {
 	dataDir   string
 	database  *db.DB
-	config    Config
 	now       func() time.Time
 	revokedMu sync.Mutex
 	revoked   map[string]struct{}
@@ -50,10 +49,6 @@ func Open(dataDir string, opts Options) (*App, error) {
 	if err := os.Chmod(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("tighten data directory: %w", err)
 	}
-	cfg, err := loadOrCreateConfig(dataDir)
-	if err != nil {
-		return nil, err
-	}
 	database, err := db.Open(filepath.Join(dataDir, databaseName))
 	if err != nil {
 		return nil, err
@@ -61,7 +56,6 @@ func Open(dataDir string, opts Options) (*App, error) {
 	a := &App{
 		dataDir:  dataDir,
 		database: database,
-		config:   cfg,
 		now:      opts.Now,
 		revoked:  make(map[string]struct{}),
 	}
@@ -95,9 +89,6 @@ func (a *App) DataDir() string { return a.dataDir }
 
 // Now is the application clock.
 func (a *App) Now() time.Time { return a.now() }
-
-// Config is the persisted listen address.
-func (a *App) Config() Config { return a.config }
 
 // Probe verifies that DATA_DIR has the expected permissions and that the
 // database can be written to and cleaned up again.

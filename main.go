@@ -29,6 +29,9 @@ import (
 const (
 	// defaultDataDir is the container mount point of the state directory.
 	defaultDataDir = "/data"
+	// defaultListen is used when PORT is not set; everything else comes from
+	// HOST and PORT, so DATA_DIR holds no configuration.
+	defaultListen = ":8088"
 	// memoryLimit keeps the process inside the documented budget unless
 	// GOMEMLIMIT says otherwise.
 	memoryLimit = 128 << 20
@@ -82,7 +85,7 @@ func run() int {
 		return 1
 	}
 
-	listen := application.Config().Listen
+	listen := defaultListen
 	if conf.port > 0 {
 		listen = net.JoinHostPort(conf.host, strconv.Itoa(conf.port))
 	}

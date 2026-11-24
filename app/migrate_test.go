@@ -214,18 +214,18 @@ func TestLegacyStateFileIsKept(t *testing.T) {
 	}
 }
 
-// TestLegacyNoAuthFieldIsIgnored pins the removal of no_auth: an old config.json
-// still carries it, and reading it must neither fail the start nor skip auth.
-func TestLegacyNoAuthFieldIsIgnored(t *testing.T) {
+// TestLegacyConfigFileIsIgnored pins that DATA_DIR holds no configuration at
+// all: an old config.json carrying no_auth and password fields is never read.
+func TestLegacyConfigFileIsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	writeLegacyData(t, dir)
 	instance, err := Open(dir, Options{})
 	if err != nil {
-		t.Fatalf("Open() with no_auth in config.json: %v", err)
+		t.Fatalf("Open() with a legacy config.json: %v", err)
 	}
 	defer instance.Close()
-	if instance.Config().Listen != ":8088" {
-		t.Fatalf("listen = %q, want :8088", instance.Config().Listen)
+	if devices, err := instance.ListDevices(); err != nil || len(devices) != 2 {
+		t.Fatalf("devices after migration = %d, %v; want 2", len(devices), err)
 	}
 }
 
@@ -238,8 +238,5 @@ func TestMissingStateFileIsNotAnError(t *testing.T) {
 	defer instance.Close()
 	if devices, err := instance.ListDevices(); err != nil || len(devices) != 0 {
 		t.Fatalf("devices in a fresh directory = %d, %v", len(devices), err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
-		t.Fatalf("config.json not created: %v", err)
 	}
 }

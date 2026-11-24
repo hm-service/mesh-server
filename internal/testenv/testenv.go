@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -76,9 +74,6 @@ func New(t *testing.T, options ...Option) *Env {
 	}
 	dir := t.TempDir()
 	clock := &Clock{t: time.Unix(1_732_400_000, 0)}
-	if err := writeConfig(dir); err != nil {
-		t.Fatalf("write config.json: %v", err)
-	}
 	instance, err := app.Open(dir, app.Options{Now: clock.Now})
 	if err != nil {
 		t.Fatalf("open app: %v", err)
@@ -108,18 +103,6 @@ func New(t *testing.T, options ...Option) *Env {
 		env.Login()
 	}
 	return env
-}
-
-// writeConfig stores the DATA_DIR/config.json a deployment would have.
-func writeConfig(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(map[string]string{"listen": ":8088"})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "config.json"), raw, 0o600)
 }
 
 // Login exchanges AUTH_TOKEN for a bearer credential.

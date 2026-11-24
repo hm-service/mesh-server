@@ -48,7 +48,6 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 
 ```
 DATA_DIR/
-  config.json          监听地址（0600）
   mesh.db              SQLite（WAL、synchronous=FULL）
   mesh.db-wal / -shm
   peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600）
@@ -125,7 +124,7 @@ CREATE TABLE setting (
 | --- | --- | --- | --- |
 | `TZ` | 否 | Asia/Shanghai | 日志与时间格式化时区，非法值拒绝启动 |
 | `HOST` | 否 | 0.0.0.0 | 与 `PORT` 一起决定监听地址 |
-| `PORT` | 否 | 空 | 设置时覆盖 `config.json` 的 `listen`；未设置时用 `listen`（默认 `:8088`） |
+| `PORT` | 否 | `:8088` | 与 `HOST` 一起决定监听地址；未设置时用 `:8088` |
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
 | `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |

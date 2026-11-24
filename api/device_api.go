@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -18,11 +19,18 @@ const (
 	codeRevoked      = "revoked"
 )
 
+// registerRequest is POST /api/register. timestamp、nonce、signature、platform
+// 只有"槽位已经绑定"时才用得上：它们带着本机私钥的签名，证明调用方就是那个
+// 设备。签名覆盖 MESH2\nPOST\n/api/register\n<device_id>\n<timestamp>\n<nonce>\n<platform>\n\n。
 type registerRequest struct {
-	Token    string `json:"token"`
-	DeviceID string `json:"device_id"`
-	Hostname string `json:"hostname"`
-	Pubkey   string `json:"pubkey"`
+	Token     string `json:"token"`
+	DeviceID  string `json:"device_id"`
+	Hostname  string `json:"hostname"`
+	Pubkey    string `json:"pubkey"`
+	Timestamp string `json:"timestamp"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature"`
+	Platform  string `json:"platform"`
 }
 
 type registerResponse struct {
@@ -31,14 +39,9 @@ type registerResponse struct {
 	ConfigHash string `json:"config_hash"`
 }
 
-type configResponse struct {
-	ConfigTOML string `json:"config_toml"`
-	ConfigHash string `json:"config_hash"`
-}
-
-// deviceCredentials 是一次设备请求携带的身份凭据。GET 类请求放在请求头里，
-// 心跳放在请求体里——那里还有业务字段，放一起比再塞四个 X- 头干净。
-type deviceCredentials struct {
+// heartbeatRequest 是心跳请求体：认证字段与业务字段放在同一个 JSON 里，
+// 请求头不承担认证。
+type heartbeatRequest struct {
 	DeviceID   string `json:"deviceId"`
 	Timestamp  string `json:"timestamp"`
 	Nonce      string `json:"nonce"`
@@ -48,20 +51,9 @@ type deviceCredentials struct {
 	AppHash    string `json:"appHash"`
 }
 
-// credentialsFromHeader reads the header form used by body-less requests.
-func credentialsFromHeader(r *http.Request) deviceCredentials {
-	return deviceCredentials{
-		DeviceID:  strings.TrimSpace(r.Header.Get("X-Device-Id")),
-		Timestamp: strings.TrimSpace(r.Header.Get("X-Timestamp")),
-		Nonce:     strings.TrimSpace(r.Header.Get("X-Nonce")),
-		Signature: strings.TrimSpace(r.Header.Get("X-Signature")),
-		Platform:  strings.TrimSpace(r.Header.Get("X-Platform")),
-	}
-}
-
 // deviceAuth verifies a signed request and returns the device. On failure it
 // has already written a 401 response and never reveals which check failed.
-func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds deviceCredentials) (db.Device, bool) {
+func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds heartbeatRequest) (db.Device, bool) {
 	deviceID := creds.DeviceID
 	timestamp := creds.Timestamp
 	nonce := creds.Nonce
@@ -106,8 +98,8 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds device
 
 // handleRegister binds a device identity to a device slot. The idle branch is
 // not credential free: a slot that is already bound only hands out its
-// configuration again to the holder of the bound key or of a fresh registration
-// token, because that configuration carries the network secret.
+// configuration again to the holder of a still valid registration token,
+// because that configuration carries the network secret.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	body, err := httpx.ReadBody(w, r)
 	if err != nil {
@@ -139,7 +131,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bound {
-		if !s.registerProofValid(r, existing, req.Token, now) {
+		if !s.registerProofValid(existing, req, now) {
 			httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 			return
 		}
@@ -182,20 +174,27 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 // registerProofValid reports whether the caller proved it owns the bound slot.
-// A request signature with the bound key counts, and so does a valid
-// registration token for the same slot. Knowing device_id and pubkey does not.
-func (s *Server) registerProofValid(r *http.Request, device db.Device, token string, now time.Time) bool {
-	creds := credentialsFromHeader(r)
-	if creds.DeviceID != "" && creds.DeviceID == device.DeviceID && creds.Timestamp != "" && creds.Nonce != "" && creds.Signature != "" {
-		if err := core.CheckTimestamp(creds.Timestamp, now); err != nil {
+// A signature with the bound key counts, and so does a registration token that
+// was never used up. Knowing device_id and pubkey is not enough.
+func (s *Server) registerProofValid(device db.Device, req registerRequest, now time.Time) bool {
+	if req.Timestamp != "" && req.Nonce != "" && req.Signature != "" {
+		if err := core.CheckTimestamp(req.Timestamp, now); err != nil {
 			return false
 		}
-		signing := core.SigningString(r.Method, r.URL.Path, creds.DeviceID, creds.Timestamp, creds.Nonce, creds.Platform, "", "")
-		if err := core.VerifySignature(device.Pubkey, creds.Signature, []byte(signing)); err != nil {
+		// 注册请求没有配置与版本信息，签名里这两行留空。
+		signing := core.SigningString(http.MethodPost, "/api/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
+		if err := core.VerifySignature(device.Pubkey, req.Signature, []byte(signing)); err != nil {
 			return false
 		}
-		return s.nonces.Claim(creds.Nonce, now)
+		return s.nonces.Claim(req.Nonce, now)
 	}
+	return s.slotTokenValid(device, req.Token, now)
+}
+
+// slotTokenValid reports whether token still proves ownership of this slot. A
+// registration token is single use per device: once bound it stays valid only
+// for the slot it was issued to, until it expires.
+func (s *Server) slotTokenValid(device db.Device, token string, now time.Time) bool {
 	if token == "" {
 		return false
 	}
@@ -206,21 +205,6 @@ func (s *Server) registerProofValid(r *http.Request, device db.Device, token str
 	}
 	return found && pending.PublicID == device.PublicID && pending.TokenExpiresAt > now.Unix()
 }
-
-func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	device, ok := s.deviceAuth(w, r, credentialsFromHeader(r))
-	if !ok {
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, configResponse{
-		ConfigTOML: device.ConfigTOML,
-		ConfigHash: device.ConfigHash,
-	})
-}
-
-// heartbeatRequest 与 deviceCredentials 同构：心跳把认证字段和业务字段放在
-// 同一个请求体里。
-type heartbeatRequest = deviceCredentials
 
 // updateInfo points a client at the published build. Version only labels the
 // update in the client UI; app_hash decides that one exists, and sha256 lets the
@@ -233,8 +217,11 @@ type updateInfo struct {
 }
 
 // heartbeatResponse carries only what changed; 204 means nothing did.
+// ConfigB64 是整份 config.toml 的 base64：配置只有几 KB，随心跳一起回去
+// 就不必让客户端再发一次请求。
 type heartbeatResponse struct {
 	ConfigHash string      `json:"config_hash,omitempty"`
+	ConfigB64  string      `json:"config_b64,omitempty"`
 	AppUpdate  *updateInfo `json:"app_update,omitempty"`
 }
 
@@ -272,6 +259,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	resp := heartbeatResponse{}
 	if configChanged {
 		resp.ConfigHash = device.ConfigHash
+		resp.ConfigB64 = base64.StdEncoding.EncodeToString([]byte(device.ConfigTOML))
 	}
 	if appChanged {
 		resp.AppUpdate = &updateInfo{

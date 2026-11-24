@@ -137,7 +137,6 @@ func (s *Server) Handler() http.Handler {
 	// Public download and the device-facing API signed by the device key.
 	s.route(mux, "GET", "/api/updates/{file}", s.withGate(s.apiGate, s.handleDownloadUpdate))
 	s.route(mux, "POST", "/api/register", s.withGate(s.apiGate, s.handleRegister))
-	s.route(mux, "GET", "/api/config", s.withGate(s.apiGate, s.handleConfig))
 	s.route(mux, "POST", "/api/heartbeat", s.withGate(s.apiGate, s.handleHeartbeat))
 	// Console pages and their assets.
 	s.route(mux, "GET", "/admin", s.withGate(s.staticGate, s.handleIndex))

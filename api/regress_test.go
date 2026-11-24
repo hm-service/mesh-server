@@ -43,14 +43,8 @@ func TestRegisterIdempotentBranchRequiresCredential(t *testing.T) {
 	// The same request with a signature from the bound key still works: the
 	// published client keeps its idempotent re-registration.
 	var nonces int64
-	body, err := json.Marshal(map[string]string{
-		"device_id": dev.deviceID, "hostname": "HOST-laptop", "pubkey": base64.StdEncoding.EncodeToString(pub),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	headers := signedHeaders(t, dev.deviceID, dev.priv, "POST", "/api/register", env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data := signed(t, env, "POST", "/api/register", body, headers)
+	body := signedRegisterBody(t, dev.deviceID, dev.priv, "HOST-laptop", pub, env.Clock.Now().Unix(), newNonce(&nonces))
+	res, data := env.Do("POST", "/api/register", json.RawMessage(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed re-register = %d, want 200: %s", res.StatusCode, data)
 	}

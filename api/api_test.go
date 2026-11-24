@@ -83,6 +83,7 @@ type updateInfo struct {
 
 type heartbeatResponse struct {
 	ConfigHash string      `json:"config_hash,omitempty"`
+	ConfigB64  string      `json:"config_b64,omitempty"`
 	AppUpdate  *updateInfo `json:"app_update,omitempty"`
 }
 
@@ -118,23 +119,25 @@ func (r releasesResponse) releaseOf(platform string) releaseView {
 	return releaseView{}
 }
 
-// signedHeaders builds the signed-header form used by body-less requests.
-func signedHeaders(t *testing.T, deviceID string, priv ed25519.PrivateKey, method, path string, ts int64, nonce string) map[string]string {
-	return signedHeadersFor(t, deviceID, priv, method, path, testPlatform, "", "", ts, nonce)
-}
-
-// signedHeadersFor signs the CONTRACT.md 1.3 fields for one request.
-func signedHeadersFor(t *testing.T, deviceID string, priv ed25519.PrivateKey, method, path, platform, configHash, appHash string, ts int64, nonce string) map[string]string {
+// signedRegisterBody builds POST /api/register carrying a signature from the
+// bound key: that is how an already bound slot proves it is the same device.
+func signedRegisterBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, hostname string, pubkey []byte, ts int64, nonce string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
-	msg := core.SigningString(method, path, deviceID, stamp, nonce, platform, configHash, appHash)
-	return map[string]string{
-		"X-Device-Id": deviceID,
-		"X-Timestamp": stamp,
-		"X-Nonce":     nonce,
-		"X-Platform":  platform,
-		"X-Signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
+	msg := core.SigningString("POST", "/api/register", deviceID, stamp, nonce, testPlatform, "", "")
+	body, err := json.Marshal(map[string]string{
+		"device_id": deviceID,
+		"hostname":  hostname,
+		"pubkey":    base64.StdEncoding.EncodeToString(pubkey),
+		"timestamp": stamp,
+		"nonce":     nonce,
+		"signature": base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
+		"platform":  testPlatform,
+	})
+	if err != nil {
+		t.Fatalf("marshal register: %v", err)
 	}
+	return body
 }
 
 // heartbeatBody builds the signed heartbeat payload for one device.
@@ -342,7 +345,6 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	var nonces int64
 	id, token := createDevice(t, env, "laptop", testTOML)
 	pub, priv := newKeypair(t)
-	pubB64 := base64.StdEncoding.EncodeToString(pub)
 
 	status, data := register(t, env, token, "device-1", "DESKTOP-1", pub)
 	if status != http.StatusOK {
@@ -363,14 +365,8 @@ func TestRegisterIsIdempotent(t *testing.T) {
 
 	// The same device_id and pubkey are idempotent, but only with a valid
 	// credential: the signature is made with the key the slot is bound to.
-	body, err := json.Marshal(map[string]string{
-		"device_id": "device-1", "hostname": "DESKTOP-1", "pubkey": pubB64,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	headers := signedHeaders(t, "device-1", priv, "POST", "/api/register", env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data := signed(t, env, "POST", "/api/register", body, headers)
+	body := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", pub, env.Clock.Now().Unix(), newNonce(&nonces))
+	res, data := env.Do("POST", "/api/register", json.RawMessage(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed idempotent register = %d: %s", res.StatusCode, data)
 	}
@@ -389,14 +385,8 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	if status != http.StatusUnauthorized {
 		t.Fatalf("unsigned conflict attempt = %d, want 401", status)
 	}
-	conflictBody, err := json.Marshal(map[string]string{
-		"device_id": "device-1", "hostname": "DESKTOP-1", "pubkey": base64.StdEncoding.EncodeToString(otherPub),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	headers = signedHeaders(t, "device-1", priv, "POST", "/api/register", env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data = signed(t, env, "POST", "/api/register", conflictBody, headers)
+	conflictBody := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", otherPub, env.Clock.Now().Unix(), newNonce(&nonces))
+	res, data = env.Do("POST", "/api/register", json.RawMessage(conflictBody))
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("pubkey conflict = %d, want 409: %s", res.StatusCode, data)
 	}
@@ -622,6 +612,10 @@ func TestHeartbeatSemantics(t *testing.T) {
 	if got.AppUpdate != nil || got.ConfigHash != dev.configHash {
 		t.Fatalf("config-only heartbeat = %+v, want config_hash %q", got, dev.configHash)
 	}
+	// 整份 config.toml 随心跳一起回去，客户端不必再发一次请求。
+	if raw, err := base64.StdEncoding.DecodeString(got.ConfigB64); err != nil || string(raw) != testTOML {
+		t.Fatalf("config payload = %q (%v), want %q", got.ConfigB64, err, testTOML)
+	}
 	if strings.Contains(string(data), `"app_update"`) {
 		t.Fatalf("config-only heartbeat body = %s, want no app_update", data)
 	}
@@ -633,7 +627,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("full heartbeat = %d %+v, want config_hash and app_update", res.StatusCode, got)
 	}
 
-	// A new config is fetched through GET /api/config with its 16-char hash.
+	// 改配置后，下一次心跳带回来的就是新的一份。
 	const newTOML = `hostname = "laptop"`
 	res, data = env.Do("PUT", "/api/devices/"+dev.internalID, map[string]string{"name": "laptop", "config_toml": newTOML})
 	if res.StatusCode != http.StatusOK {
@@ -647,17 +641,13 @@ func TestHeartbeatSemantics(t *testing.T) {
 	if updated["config_hash"] != newHash || len(newHash) != 16 {
 		t.Fatalf("update config_hash = %q, want %q with 16 characters", updated["config_hash"], newHash)
 	}
-	headers := signedHeaders(t, dev.deviceID, dev.priv, "GET", "/api/config", env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data = signed(t, env, "GET", "/api/config", nil, headers)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("get config = %d, want 200: %s", res.StatusCode, data)
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, release.AppHash)
+	got = decode(data)
+	if res.StatusCode != http.StatusOK || got.ConfigHash != newHash {
+		t.Fatalf("heartbeat after config update = %d %+v, want config_hash %q", res.StatusCode, got, newHash)
 	}
-	var cfg configResponse
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
-	if cfg.ConfigTOML != newTOML || cfg.ConfigHash != newHash {
-		t.Fatalf("config = %+v, want %q/%q", cfg, newTOML, newHash)
+	if raw, err := base64.StdEncoding.DecodeString(got.ConfigB64); err != nil || string(raw) != newTOML {
+		t.Fatalf("new config payload = %q (%v), want %q", got.ConfigB64, err, newTOML)
 	}
 
 	// With the new config and the published build the client is up to date.
@@ -1119,4 +1109,3 @@ func TestUploadReleaseMode(t *testing.T) {
 		t.Fatalf("switched release = %+v", switched)
 	}
 }
-

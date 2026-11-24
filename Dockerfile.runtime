@@ -1,0 +1,13 @@
+# 运行时镜像：linux/amd64 二进制在宿主机交叉编译好再 COPY 进来。
+# 从源码出镜像用 Dockerfile；这里只为 podman kube play 提供本地镜像，
+# 不依赖构建机能拉到 node 与 golang 的镜像。
+FROM docker.io/library/alpine:3
+
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /app
+COPY mesh-server .
+# COPY 保留源文件权限，从 Windows 传上去的二进制没有执行位。
+RUN chmod 0755 /app/mesh-server
+
+CMD ["./mesh-server"]

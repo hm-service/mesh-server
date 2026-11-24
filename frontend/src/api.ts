@@ -39,7 +39,7 @@ export interface DeviceDetail extends DeviceSummary {
   last_ip: string;
 }
 
-/** ReleaseView 是某个平台已发布的客户端更新包。 */
+/** ReleaseView 是某个平台已发布的两个更新包：客户端包与启动器。 */
 export interface ReleaseView {
   platform: string;
   app_version: string;
@@ -47,6 +47,20 @@ export interface ReleaseView {
   app_hash: string;
   app_sha256: string;
   app_notes: string;
+  launcher_version: string;
+  launcher_url: string;
+  launcher_sha256: string;
+}
+
+/** ReleasePublish 是一次发布要写的槽位；每个槽位的版本号与地址必须成对给出。 */
+export interface ReleasePublish {
+  platform?: string;
+  app_version?: string;
+  app_url?: string;
+  app_notes?: string;
+  launcher_version?: string;
+  launcher_url?: string;
+  default_toml?: string;
 }
 
 /** ReleasesPayload 是管理端看到的全部平台发布状态，外加默认模板。 */
@@ -216,14 +230,16 @@ export const api = {
   getReleases(): Promise<ReleasesPayload> {
     return releasesRequest("/api/admin/releases", { method: "GET" });
   },
-  publishRelease(fields: Record<string, string>): Promise<ReleasesPayload> {
+  publishRelease(fields: ReleasePublish): Promise<ReleasesPayload> {
     return releasesRequest("/api/admin/releases", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(fields),
     });
   },
-  deleteRelease(platform: string): Promise<ReleasesPayload> {
-    return releasesRequest("/api/admin/releases/" + platform, { method: "DELETE" });
+  /** slot 不带时清掉该平台的两个槽位，带 "launcher" 时只清启动器。 */
+  deleteRelease(platform: string, slot?: "launcher"): Promise<ReleasesPayload> {
+    const query = slot ? "?slot=" + slot : "";
+    return releasesRequest("/api/admin/releases/" + platform + query, { method: "DELETE" });
   },
 };

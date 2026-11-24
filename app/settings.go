@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	// MaxAppVersionRunes bounds the client version string.
+	// MaxAppVersionRunes bounds the client and launcher version strings.
 	MaxAppVersionRunes = 64
-	// MaxReleaseBytes bounds the package downloaded from app_url.
+	// MaxReleaseBytes bounds the package downloaded from a slot's URL.
 	MaxReleaseBytes = 200 << 20
 	// releaseHashLen is the length of the truncated sha256 clients compare.
 	releaseHashLen = 16
@@ -95,41 +95,59 @@ func (a *App) Releases() ([]db.Release, error) {
 	return a.database.Releases()
 }
 
-// Release returns the build published for platform; found is false when that
+// Release returns the slots published for platform; found is false when that
 // platform has nothing published.
 func (a *App) Release(platform string) (db.Release, bool, error) {
 	return a.database.Release(platform)
 }
 
-// SetExternal points one platform at an external download URL. The package is
-// fetched once so hash and sha256 describe the bytes clients will download.
-func (a *App) SetExternal(platform, version, rawURL, notes string) (db.Release, error) {
+// SetClientExternal points the client package slot of one platform at an
+// external download URL. The package is fetched once so hash and sha256 describe
+// the bytes clients will download; the launcher slot is left alone.
+func (a *App) SetClientExternal(platform, version, rawURL, notes string) error {
 	if !ValidPlatform(platform) {
-		return db.Release{}, invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+	}
+	next := db.Release{
+		Platform: platform,
+		Version:  strings.TrimSpace(version),
+		URL:      strings.TrimSpace(rawURL),
+		Notes:    strings.TrimSpace(notes),
+	}
+	if err := validateSlot("app", next.Version, next.URL); err != nil {
+		return err
+	}
+	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
+		return invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
+	}
+	hash, sha, err := fetchDigest(next.URL)
+	if err != nil {
+		return invalid("无法读取 app_url 指向的文件：%v", err)
+	}
+	next.Hash, next.SHA256 = hash, sha
+	return a.database.SetClientRelease(next)
+}
+
+// SetLauncherExternal points the launcher slot of one platform at an external
+// download URL. Only the full digest is stored: the client hashes the launcher
+// it already has itself, so there is no short hash for it to report back.
+func (a *App) SetLauncherExternal(platform, version, rawURL string) error {
+	if !ValidPlatform(platform) {
+		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
 	}
 	version = strings.TrimSpace(version)
 	rawURL = strings.TrimSpace(rawURL)
-	next := db.Release{
-		Platform: platform,
-		Version:  version,
-		URL:      rawURL,
-		Notes:    strings.TrimSpace(notes),
+	if err := validateSlot("launcher", version, rawURL); err != nil {
+		return err
 	}
-	if err := validateRelease(next); err != nil {
-		return db.Release{}, err
-	}
-	hash, sha, err := fetchDigest(rawURL)
+	_, sha, err := fetchDigest(rawURL)
 	if err != nil {
-		return db.Release{}, invalid("无法读取 app_url 指向的文件：%v", err)
+		return invalid("无法读取 launcher_url 指向的文件：%v", err)
 	}
-	next.Hash, next.SHA256 = hash, sha
-	if err := a.database.SetRelease(next); err != nil {
-		return db.Release{}, err
-	}
-	return next, nil
+	return a.database.SetLauncherRelease(platform, version, rawURL, sha)
 }
 
-// ClearRelease removes the build published for platform.
+// ClearRelease removes every slot published for platform.
 func (a *App) ClearRelease(platform string) error {
 	if !ValidPlatform(platform) {
 		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
@@ -137,26 +155,33 @@ func (a *App) ClearRelease(platform string) error {
 	return a.database.DeleteRelease(platform)
 }
 
-// validateRelease enforces the shape a published release needs.
-func validateRelease(in db.Release) error {
-	if in.Version == "" {
-		return invalid("app_version 不能为空")
+// ClearLauncher removes only the launcher slot published for platform.
+func (a *App) ClearLauncher(platform string) error {
+	if !ValidPlatform(platform) {
+		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
 	}
-	if in.URL == "" {
-		return invalid("app_url 不能为空")
+	return a.database.ClearLauncher(platform)
+}
+
+// validateSlot enforces the shape every published slot needs: a version label
+// and an http(s) download address. The error text names the fields the admin
+// sent, so slot is the field prefix ("app" or "launcher").
+func validateSlot(slot, version, rawURL string) error {
+	if version == "" {
+		return invalid("%s_version 不能为空", slot)
 	}
-	if utf8.RuneCountInString(in.Version) > MaxAppVersionRunes {
-		return invalid("app_version 最长 %d 字符", MaxAppVersionRunes)
+	if rawURL == "" {
+		return invalid("%s_url 不能为空", slot)
 	}
-	if utf8.RuneCountInString(in.Notes) > maxAppNotesRunes {
-		return invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
+	if utf8.RuneCountInString(version) > MaxAppVersionRunes {
+		return invalid("%s_version 最长 %d 字符", slot, MaxAppVersionRunes)
 	}
-	if utf8.RuneCountInString(in.URL) > maxAppURLRunes {
-		return invalid("app_url 最长 %d 字符", maxAppURLRunes)
+	if utf8.RuneCountInString(rawURL) > maxAppURLRunes {
+		return invalid("%s_url 最长 %d 字符", slot, maxAppURLRunes)
 	}
-	u, err := url.Parse(in.URL)
+	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return invalid("app_url 必须是 http(s) 地址")
+		return invalid("%s_url 必须是 http(s) 地址", slot)
 	}
 	return nil
 }

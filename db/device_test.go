@@ -187,3 +187,42 @@ func TestReleasePerPlatform(t *testing.T) {
 		t.Fatal("linux release survived DeleteRelease")
 	}
 }
+
+// TestReleaseSlotsAreIndependent pins the storage contract behind the two
+// published artifacts: the client package and the launcher share a row but each
+// has its own write and clear path.
+func TestReleaseSlotsAreIndependent(t *testing.T) {
+	d := openTemp(t)
+	client := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1"}
+	if err := d.SetClientRelease(client); err != nil {
+		t.Fatalf("SetClientRelease() error: %v", err)
+	}
+	if err := d.SetLauncherRelease("windows/amd64", "l1", "lu1", "ls1"); err != nil {
+		t.Fatalf("SetLauncherRelease() error: %v", err)
+	}
+	want := client
+	want.LauncherVersion, want.LauncherURL, want.LauncherSHA256 = "l1", "lu1", "ls1"
+	got, found, err := d.Release("windows/amd64")
+	if err != nil || !found || got != want {
+		t.Fatalf("Release() = %+v, found %v, %v; want %+v", got, found, err, want)
+	}
+
+	// Clearing the launcher leaves the client package alone.
+	if err := d.ClearLauncher("windows/amd64"); err != nil {
+		t.Fatalf("ClearLauncher() error: %v", err)
+	}
+	if got, found, err = d.Release("windows/amd64"); err != nil || !found || got != client {
+		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want %+v", got, found, err, client)
+	}
+
+	// A launcher-only row disappears once its slot is cleared.
+	if err := d.SetLauncherRelease("linux/amd64", "l9", "lu9", "ls9"); err != nil {
+		t.Fatalf("SetLauncherRelease() error: %v", err)
+	}
+	if err := d.ClearLauncher("linux/amd64"); err != nil {
+		t.Fatalf("ClearLauncher() error: %v", err)
+	}
+	if _, found, err := d.Release("linux/amd64"); err != nil || found {
+		t.Fatalf("empty row left behind: found %v, %v", found, err)
+	}
+}

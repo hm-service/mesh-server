@@ -20,7 +20,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | --- | --- |
 | 设备列表 | 设备卡片（在线状态、配置同步状态、客户端同步状态、最后心跳），排序与「显示详情」开关，新建与详情对话框 |
 | 配置 | 默认 EasyTier 模板（写回 `DATA_DIR/peer.default.toml`） |
-| 客户端更新 | 按平台用外部地址发布客户端，展示当前发布的版本、hash 与地址 |
+| 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址 |
 
 鉴权只有 `AUTH_TOKEN` 一种形态：登录页提交它，换回一个 24 小时的无状态 Bearer 凭证；没有跳过登录的开关。
 
@@ -35,7 +35,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | GET/PUT/DELETE | `/api/devices/{id}` | Bearer |
 | POST | `/api/devices/{id}/token` | Bearer |
 | GET/PUT | `/api/admin/releases` | Bearer |
-| DELETE | `/api/admin/releases/{platform...}` | Bearer |
+| DELETE | `/api/admin/releases/{platform...}`（`?slot=launcher` 只清启动器槽位） | Bearer |
 | POST | `/api/register` | token 或设备签名（在请求体里） |
 | POST | `/api/heartbeat` | 设备签名（在请求体里） |
 
@@ -78,6 +78,19 @@ CREATE TABLE device (
 CREATE UNIQUE INDEX device_legacy_id ON device (legacy_id) WHERE legacy_id <> '';
 CREATE UNIQUE INDEX device_device_id ON device (device_id) WHERE device_id <> '';
 
+CREATE TABLE release (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform         TEXT NOT NULL UNIQUE,        -- GOOS/GOARCH
+    version          TEXT NOT NULL DEFAULT '',    -- 客户端包版本号
+    url              TEXT NOT NULL DEFAULT '',
+    hash             TEXT NOT NULL DEFAULT '',    -- 客户端包 16 位摘要，心跳比对
+    sha256           TEXT NOT NULL DEFAULT '',    -- 客户端包完整摘要，客户端校验下载
+    notes            TEXT NOT NULL DEFAULT '',
+    launcher_version TEXT NOT NULL DEFAULT '',    -- 启动器版本号
+    launcher_url     TEXT NOT NULL DEFAULT '',
+    launcher_sha256  TEXT NOT NULL DEFAULT ''     -- 启动器完整摘要，客户端自己比对
+);
+
 CREATE TABLE setting (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     app_version   TEXT NOT NULL DEFAULT '',
@@ -87,6 +100,8 @@ CREATE TABLE setting (
     app_notes     TEXT NOT NULL DEFAULT ''
 );
 ```
+
+`release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。
 
 `setting` 只有一行，仅用于把旧版单条设置迁进 `release`：启动时在 `release` 为空的情况下读取一次，之后不再写入。
 
@@ -107,7 +122,7 @@ CREATE TABLE setting (
 | 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长 |
 | 设备面 | Ed25519 请求签名（`MESH1` 五行原文）+ 300 秒时间窗 + nonce 重放缓存 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
-| 发布包 | `app_hash`（16 位）用于判定，`app_sha256`（完整）用于下载后校验 |
+| 发布包 | 客户端包：`app_hash`（16 位）用于判定，`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |
 | 响应头 | `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options`、严格 `Content-Security-Policy` |

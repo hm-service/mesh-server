@@ -44,13 +44,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS device_legacy_id ON device (legacy_id) WHERE l
 CREATE UNIQUE INDEX IF NOT EXISTS device_device_id ON device (device_id) WHERE device_id <> '';
 
 CREATE TABLE IF NOT EXISTS release (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform  TEXT    NOT NULL UNIQUE,
-    version   TEXT    NOT NULL DEFAULT '',
-    url       TEXT    NOT NULL DEFAULT '',
-    hash      TEXT    NOT NULL DEFAULT '',
-    sha256    TEXT    NOT NULL DEFAULT '',
-    notes     TEXT    NOT NULL DEFAULT ''
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform         TEXT    NOT NULL UNIQUE,
+    version          TEXT    NOT NULL DEFAULT '',
+    url              TEXT    NOT NULL DEFAULT '',
+    hash             TEXT    NOT NULL DEFAULT '',
+    sha256           TEXT    NOT NULL DEFAULT '',
+    notes            TEXT    NOT NULL DEFAULT '',
+    launcher_version TEXT    NOT NULL DEFAULT '',
+    launcher_url     TEXT    NOT NULL DEFAULT '',
+    launcher_sha256  TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS setting (
@@ -118,6 +121,15 @@ func (d *DB) createSchema() error {
 		return err
 	}
 	if err := d.ensureColumn("device", "position", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := d.ensureColumn("release", "launcher_version", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := d.ensureColumn("release", "launcher_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := d.ensureColumn("release", "launcher_sha256", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil

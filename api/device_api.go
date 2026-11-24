@@ -216,13 +216,37 @@ type updateInfo struct {
 	SHA256  string `json:"sha256,omitempty"`
 }
 
+// launcherInfo points a client at the launcher published for its platform. It
+// rides along with every heartbeat that has a body, not only when it changed:
+// the client hashes the launcher it already has itself, so the server has
+// nothing to compare and cannot tell whether the local copy is current.
+type launcherInfo struct {
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	SHA256  string `json:"sha256"`
+}
+
+// launcherOf is the launcher slot of release as a heartbeat field; nil when the
+// platform has no launcher published.
+func launcherOf(r *http.Request, release db.Release) *launcherInfo {
+	if release.LauncherSHA256 == "" {
+		return nil
+	}
+	return &launcherInfo{
+		Version: release.LauncherVersion,
+		URL:     absoluteURL(r, release.LauncherURL),
+		SHA256:  release.LauncherSHA256,
+	}
+}
+
 // heartbeatResponse carries only what changed; 204 means nothing did.
 // ConfigB64 是整份 config.toml 的 base64：配置只有几 KB，随心跳一起回去
 // 就不必让客户端再发一次请求。
 type heartbeatResponse struct {
-	ConfigHash string      `json:"config_hash,omitempty"`
-	ConfigB64  string      `json:"config_b64,omitempty"`
-	AppUpdate  *updateInfo `json:"app_update,omitempty"`
+	ConfigHash string        `json:"config_hash,omitempty"`
+	ConfigB64  string        `json:"config_b64,omitempty"`
+	AppUpdate  *updateInfo   `json:"app_update,omitempty"`
+	Launcher   *launcherInfo `json:"launcher,omitempty"`
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -252,11 +276,15 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	configChanged := req.ConfigHash != device.ConfigHash
 	appChanged := release.Hash != "" && req.AppHash != release.Hash
-	if !configChanged && !appChanged {
+	// 启动器不参与签名原文，服务端也就无从比较客户端手里那份，所以只要该平台
+	// 配了启动器就每次都带上；客户端自己算本地摘要去比。代价是这种情况没有
+	// 204，三十秒多几十字节。
+	launcher := launcherOf(r, release)
+	if !configChanged && !appChanged && launcher == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	resp := heartbeatResponse{}
+	resp := heartbeatResponse{Launcher: launcher}
 	if configChanged {
 		resp.ConfigHash = device.ConfigHash
 		resp.ConfigB64 = base64.StdEncoding.EncodeToString([]byte(device.ConfigTOML))

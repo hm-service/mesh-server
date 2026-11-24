@@ -80,10 +80,17 @@ type updateInfo struct {
 	SHA256  string `json:"sha256,omitempty"`
 }
 
+type launcherInfo struct {
+	Version string `json:"version"`
+	URL     string `json:"url"`
+	SHA256  string `json:"sha256"`
+}
+
 type heartbeatResponse struct {
-	ConfigHash string      `json:"config_hash,omitempty"`
-	ConfigB64  string      `json:"config_b64,omitempty"`
-	AppUpdate  *updateInfo `json:"app_update,omitempty"`
+	ConfigHash string        `json:"config_hash,omitempty"`
+	ConfigB64  string        `json:"config_b64,omitempty"`
+	AppUpdate  *updateInfo   `json:"app_update,omitempty"`
+	Launcher   *launcherInfo `json:"launcher,omitempty"`
 }
 
 // testPlatform is the platform key the tests publish and heartbeat with.
@@ -91,12 +98,15 @@ const testPlatform = "windows/amd64"
 
 // releaseView mirrors one entry of GET /api/admin/releases.
 type releaseView struct {
-	Platform   string `json:"platform"`
-	AppVersion string `json:"app_version"`
-	AppURL     string `json:"app_url"`
-	AppHash    string `json:"app_hash"`
-	AppSHA256  string `json:"app_sha256"`
-	AppNotes   string `json:"app_notes"`
+	Platform        string `json:"platform"`
+	AppVersion      string `json:"app_version"`
+	AppURL          string `json:"app_url"`
+	AppHash         string `json:"app_hash"`
+	AppSHA256       string `json:"app_sha256"`
+	AppNotes        string `json:"app_notes"`
+	LauncherVersion string `json:"launcher_version"`
+	LauncherURL     string `json:"launcher_url"`
+	LauncherSHA256  string `json:"launcher_sha256"`
 }
 
 // releasesResponse mirrors GET /api/admin/releases.
@@ -323,7 +333,18 @@ func TestCredentialExpires(t *testing.T) {
 func TestTamperedCredentialIsRejected(t *testing.T) {
 	env := testenv.New(t)
 	good := env.Credential()
-	tampered := good[:len(good)-1] + string(good[len(good)-1]^1)
+	// 最后一个 base64url 字符的低位是填充位：改它解码出来的签名可能一个字节都没变，
+	// 所以先解开签名，翻一个真实比特再编码回去。
+	dot := strings.IndexByte(good, '.')
+	if dot < 0 {
+		t.Fatalf("credential %q has no signature part", good)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(good[dot+1:])
+	if err != nil || len(signature) == 0 {
+		t.Fatalf("decode credential signature: %v", err)
+	}
+	signature[0] ^= 0x01
+	tampered := good[:dot+1] + base64.RawURLEncoding.EncodeToString(signature)
 
 	req, err := http.NewRequest("GET", env.Server.URL+"/api/devices", nil)
 	if err != nil {
@@ -507,6 +528,16 @@ func publishExternal(t *testing.T, env *testenv.Env, platform, version, notes st
 		"app_version": version,
 		"app_url":     fileServer(t, pkg),
 		"app_notes":   notes,
+	}).releaseOf(platform)
+}
+
+// publishLauncher points the launcher slot of platform at a served file.
+func publishLauncher(t *testing.T, env *testenv.Env, platform, version string, launcher []byte) releaseView {
+	t.Helper()
+	return putReleases(t, env, map[string]string{
+		"platform":         platform,
+		"launcher_version": version,
+		"launcher_url":     fileServer(t, launcher),
 	}).releaseOf(platform)
 }
 
@@ -872,6 +903,224 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("release survived delete: found %v, %v", found, err)
+	}
+}
+
+// TestReleaseSlotsAreIndependent covers the two artifacts one platform
+// publishes: the launcher is a single file next to the install root, the client
+// package a tar.zst under the version directory. Each slot is published and
+// cleared on its own and neither touches the other.
+func TestReleaseSlotsAreIndependent(t *testing.T) {
+	env := testenv.New(t)
+
+	client := publishExternal(t, env, testPlatform, "2026.11.25-36", "客户端更新", releasePkg(t, []byte("client build")))
+	if client.LauncherVersion != "" || client.LauncherURL != "" || client.LauncherSHA256 != "" {
+		t.Fatalf("publishing the client package also filled the launcher slot: %+v", client)
+	}
+
+	launcherBytes := []byte("launcher binary")
+	launcherSum := sha256.Sum256(launcherBytes)
+	launcherSHA := hex.EncodeToString(launcherSum[:])
+	launcher := publishLauncher(t, env, testPlatform, "2026.11.25-36", launcherBytes)
+	if launcher.LauncherVersion != "2026.11.25-36" || launcher.LauncherURL == "" || launcher.LauncherSHA256 != launcherSHA {
+		t.Fatalf("launcher slot = %+v, want the served url and sha256 %s", launcher, launcherSHA)
+	}
+	// 启动器没有客户端上报的 16 位短 hash，只有完整摘要。
+	if len(launcher.LauncherSHA256) != 64 {
+		t.Fatalf("launcher_sha256 = %q, want 64 characters", launcher.LauncherSHA256)
+	}
+	// The client slot survived the launcher publish untouched.
+	if launcher.AppVersion != client.AppVersion || launcher.AppURL != client.AppURL ||
+		launcher.AppHash != client.AppHash || launcher.AppSHA256 != client.AppSHA256 ||
+		launcher.AppNotes != client.AppNotes {
+		t.Fatalf("launcher publish changed the client slot: %+v, want %+v", launcher, client)
+	}
+
+	// A new client package leaves the launcher slot in place.
+	next := publishExternal(t, env, testPlatform, "2026.11.26-1", "", releasePkg(t, []byte("client build two")))
+	if next.AppVersion != "2026.11.26-1" || next.LauncherVersion != launcher.LauncherVersion ||
+		next.LauncherURL != launcher.LauncherURL || next.LauncherSHA256 != launcher.LauncherSHA256 {
+		t.Fatalf("client publish changed the launcher slot: %+v", next)
+	}
+
+	// Clearing only the launcher keeps the client package published.
+	res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform+"?slot=launcher", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("clear launcher = %d, want 200: %s", res.StatusCode, data)
+	}
+	var afterClear releasesResponse
+	if err := json.Unmarshal(data, &afterClear); err != nil {
+		t.Fatalf("decode releases: %v", err)
+	}
+	cleared := afterClear.releaseOf(testPlatform)
+	if cleared.AppVersion != next.AppVersion || cleared.AppURL != next.AppURL || cleared.AppHash != next.AppHash {
+		t.Fatalf("clearing the launcher dropped the client slot: %+v", cleared)
+	}
+	if cleared.LauncherVersion != "" || cleared.LauncherURL != "" || cleared.LauncherSHA256 != "" {
+		t.Fatalf("launcher slot survived ?slot=launcher: %+v", cleared)
+	}
+}
+
+// TestReleaseSlotsKeepOnlyPublishedRows pins the shape of the admin payload: a
+// platform is listed only while one of its slots has content, and the plain
+// delete takes both slots at once.
+func TestReleaseSlotsKeepOnlyPublishedRows(t *testing.T) {
+	env := testenv.New(t)
+
+	// A platform carrying only a launcher has no client slot.
+	onlyLauncher := publishLauncher(t, env, "linux/amd64", "2026.11.25-36", []byte("launcher"))
+	if onlyLauncher.AppVersion != "" || onlyLauncher.AppHash != "" {
+		t.Fatalf("launcher-only platform = %+v, want an empty client slot", onlyLauncher)
+	}
+	if res, data := env.Do("DELETE", "/api/admin/releases/linux/amd64?slot=launcher", nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("clear launcher = %d: %s", res.StatusCode, data)
+	}
+	if _, found, err := env.App.Release("linux/amd64"); err != nil || found {
+		t.Fatalf("platform with no slots left = found %v, %v; want it gone", found, err)
+	}
+
+	// The plain delete takes both slots of the platform.
+	publishExternal(t, env, testPlatform, "2026.11.25-36", "", releasePkg(t, []byte("client build")))
+	publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher"))
+	res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE release = %d, want 200: %s", res.StatusCode, data)
+	}
+	var after releasesResponse
+	if err := json.Unmarshal(data, &after); err != nil {
+		t.Fatalf("decode releases: %v", err)
+	}
+	if got := after.releaseOf(testPlatform); got != (releaseView{}) {
+		t.Fatalf("both slots should be gone: %+v", got)
+	}
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("release row survived the delete: found %v, %v", found, err)
+	}
+}
+
+func TestLauncherRejectsIncompletePublish(t *testing.T) {
+	env := testenv.New(t)
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "version without url",
+			fields: map[string]string{"platform": testPlatform, "launcher_version": "2026.11.25-36"},
+			want:   "同时给出",
+		},
+		{
+			name:   "url without version",
+			fields: map[string]string{"platform": testPlatform, "launcher_url": "http://example.com/mesh.exe"},
+			want:   "同时给出",
+		},
+		{
+			name:   "non-http url",
+			fields: map[string]string{"platform": testPlatform, "launcher_version": "2026.11.25-36", "launcher_url": "ftp://example.com/mesh.exe"},
+			want:   "http(s)",
+		},
+		{
+			name:   "unreachable url",
+			fields: map[string]string{"platform": testPlatform, "launcher_version": "2026.11.25-36", "launcher_url": "http://127.0.0.1:1/mesh.exe"},
+			want:   "无法读取 launcher_url",
+		},
+		{
+			name:   "missing platform",
+			fields: map[string]string{"launcher_version": "2026.11.25-36", "launcher_url": "http://example.com/mesh.exe"},
+			want:   "platform",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, data := env.Do("PUT", "/api/admin/releases", tc.fields)
+			if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), tc.want) {
+				t.Fatalf("publish = %d: %s, want 400 containing %q", res.StatusCode, data, tc.want)
+			}
+		})
+	}
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("rejected launcher publish was stored: found %v, %v", found, err)
+	}
+
+	// slot only names the launcher slot.
+	res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform+"?slot=app", nil)
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "slot 只能是 launcher") {
+		t.Fatalf("unknown slot = %d: %s", res.StatusCode, data)
+	}
+}
+
+// TestHeartbeatCarriesLauncher pins what the client consumes: the launcher of
+// the platform travels with every heartbeat that has a body, no matter which
+// hash changed, because the server never learns the local launcher digest.
+func TestHeartbeatCarriesLauncher(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+	release := publishExternal(t, env, testPlatform, "2026.11.25-36", "", releasePkg(t, []byte("client build")))
+	launcher := publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher one"))
+	wantLauncher := launcherInfo{Version: "2026.11.25-36", URL: launcher.LauncherURL, SHA256: launcher.LauncherSHA256}
+
+	decode := func(data []byte) heartbeatResponse {
+		t.Helper()
+		var out heartbeatResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode heartbeat: %v", err)
+		}
+		return out
+	}
+
+	// Only the config changed: no app_update, but the launcher still arrives.
+	res, data := heartbeat(t, env, dev, &nonces, "0000000000000000", release.AppHash)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("config-only heartbeat = %d, want 200: %s", res.StatusCode, data)
+	}
+	got := decode(data)
+	if got.AppUpdate != nil {
+		t.Fatalf("config-only heartbeat = %+v, want no app_update", got)
+	}
+	if got.Launcher == nil || *got.Launcher != wantLauncher {
+		t.Fatalf("launcher = %+v, want %+v", got.Launcher, wantLauncher)
+	}
+	if !strings.Contains(string(data), `"launcher"`) {
+		t.Fatalf("heartbeat body = %s, want a launcher field", data)
+	}
+
+	// A client package update carries both fields.
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "0000000000000000")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("app-only heartbeat = %d, want 200: %s", res.StatusCode, data)
+	}
+	got = decode(data)
+	if got.AppUpdate == nil || got.Launcher == nil || got.Launcher.SHA256 != wantLauncher.SHA256 {
+		t.Fatalf("app-only heartbeat = %+v, want app_update and launcher", got)
+	}
+
+	// Nothing changed, but a launcher is published: 200 carrying only the
+	// launcher, because the server cannot tell whether the client already has
+	// that build. The client compares the digest itself.
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, release.AppHash)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("current heartbeat = %d (%s), want 200", res.StatusCode, data)
+	}
+	if got = decode(data); got.ConfigHash != "" || got.AppUpdate != nil || got.Launcher == nil {
+		t.Fatalf("current heartbeat = %+v, want only the launcher", got)
+	}
+
+	// A platform without a launcher omits the field instead of sending empties.
+	if res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform+"?slot=launcher", nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("clear launcher = %d: %s", res.StatusCode, data)
+	}
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "0000000000000000")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("heartbeat after clearing the launcher = %d, want 200: %s", res.StatusCode, data)
+	}
+	if strings.Contains(string(data), `"launcher"`) {
+		t.Fatalf("heartbeat body = %s, want no launcher field", data)
+	}
+	if got = decode(data); got.Launcher != nil {
+		t.Fatalf("launcher = %+v, want nil", got.Launcher)
 	}
 }
 

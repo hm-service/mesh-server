@@ -6,9 +6,11 @@ metadata:
 data:
     TZ: "Asia/Shanghai"
     HOST: "0.0.0.0"
-    PORT: "8088"
+    PORT: "8080"
     DATA_DIR: "/data"
-    TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+    # 回环给探针，10.89.2.0/24 是 apps 网络：nginx-proxy-manager 从这里回源，
+    # 只有它的地址可信，X-Forwarded-For 才会被用来记 client_ip。
+    TRUSTED_PROXIES: "127.0.0.1/32,::1/128,10.89.2.0/24"
     MAX_AUTH_CONCURRENCY: "32"
     MAX_API_CONCURRENCY: "128"
     MAX_STATIC_CONCURRENCY: "64"
@@ -64,11 +66,13 @@ spec:
               - secretRef:
                     name: mesh-server-secrets
 
-          # 控制面只在 WireGuard 地址上对外提供，hostIP 把发布端口钉在 10.8.0.1；
-          # 容器内仍是 0.0.0.0，探针才能从容器自己的回环地址打进来。
+          # 两条入口：
+          #   容器内的 8080 —— nginx-proxy-manager 在同一个 apps 网络里按名字连，
+          #   对外是 https://mesh.daveny.cn；
+          #   hostPort 8088 仍钉在 10.8.0.1 —— 已经在用这个地址的 mesh 设备不用改配置。
           ports:
               - name: http
-                containerPort: 8088
+                containerPort: 8080
                 hostPort: 8088
                 hostIP: 10.8.0.1
                 protocol: TCP

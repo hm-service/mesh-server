@@ -1,7 +1,7 @@
 package api_test
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"mesh-server/app"
 	"mesh-server/core"
@@ -196,25 +198,32 @@ func registerDevice(t *testing.T, env *testenv.Env, name, toml string) registere
 	return registeredDevice{internalID: id, deviceID: deviceID, priv: priv, configTOML: toml, configHash: wantHash}
 }
 
-// releaseZip packs client bytes into a release package. The server only accepts
-// this format, and the package must carry the kernel beside the client.
-func releaseZip(t *testing.T, client []byte) []byte {
+// releasePkg packs client bytes into the tar.zst the launcher installs. The
+// package must carry the kernel beside the client.
+func releasePkg(t *testing.T, client []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
 	write := func(name string, data []byte) {
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatalf("zip create %s: %v", name, err)
+		hdr := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header %s: %v", name, err)
 		}
-		if _, err := w.Write(data); err != nil {
-			t.Fatalf("zip write %s: %v", name, err)
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("tar write %s: %v", name, err)
 		}
 	}
 	write("mesh-client.exe", client)
 	write("bin/easytier-core.exe", []byte("core"))
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
 	if err := zw.Close(); err != nil {
-		t.Fatalf("zip close: %v", err)
+		t.Fatalf("zstd close: %v", err)
 	}
 	return buf.Bytes()
 }
@@ -519,7 +528,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 
 	// Publish a build so app_hash has a value to compare against.
-	build := releaseZip(t, []byte("client build one"))
+	build := releasePkg(t, []byte("client build one"))
 	release := publishUpload(t, env, "2026.11.24-4", "修复窄屏布局", "", build)
 	sum := sha256.Sum256(build)
 	wantSHA := hex.EncodeToString(sum[:])
@@ -606,7 +615,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 
 	// Publishing another build flips app_hash and the update comes back.
-	next := publishUpload(t, env, "2026.11.25-1", "", "", releaseZip(t, []byte("client build two")))
+	next := publishUpload(t, env, "2026.11.25-1", "", "", releasePkg(t, []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppHash)
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
@@ -620,7 +629,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishUpload(t, env, "2026.11.24-4", "", "", releaseZip(t, []byte("client build one")))
+	release := publishUpload(t, env, "2026.11.24-4", "", "", releasePkg(t, []byte("client build one")))
 
 	summary := func() deviceSummary {
 		t.Helper()
@@ -816,7 +825,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	const toml = `hostname = "saved-by-settings"`
 	external := []byte("external mesh client binary")
-	externalPkg := releaseZip(t, external)
+	externalPkg := releasePkg(t, external)
 	url := fileServer(t, externalPkg)
 	saved := putSettings(t, env, map[string]string{
 		"default_toml": toml,
@@ -824,15 +833,14 @@ func TestSettingsRoundTrip(t *testing.T) {
 		"app_url":      url,
 		"app_notes":    "修复窄屏布局",
 	})
-	// app_hash describes the client inside the package; app_sha256 the package.
-	externalSum := sha256.Sum256(external)
-	wantFull := hex.EncodeToString(externalSum[:])
+	// app_hash and app_sha256 both describe the package: the client compares the
+	// package it installed, so a kernel-only change must still read as an update.
 	pkgSum := sha256.Sum256(externalPkg)
 	wantPkg := hex.EncodeToString(pkgSum[:])
 	if saved.DefaultTOML != toml || saved.AppVersion != "0.3.0" || saved.AppURL != url ||
-		saved.AppNotes != "修复窄屏布局" || saved.AppSource != "url" || saved.AppHash != wantFull[:16] ||
+		saved.AppNotes != "修复窄屏布局" || saved.AppSource != "url" || saved.AppHash != wantPkg[:16] ||
 		saved.AppSHA256 != wantPkg {
-		t.Fatalf("save response = %+v, want hash %s / %s", saved, wantFull[:16], wantFull)
+		t.Fatalf("save response = %+v, want hash %s / %s", saved, wantPkg[:16], wantPkg)
 	}
 
 	res, data = env.Do("GET", "/api/admin/settings", nil)
@@ -858,7 +866,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	// Omitted fields keep their value.
 	partial := putSettings(t, env, map[string]string{"app_version": "0.4.0"})
-	if partial.AppVersion != "0.4.0" || partial.AppURL != url || partial.DefaultTOML != toml || partial.AppHash != wantFull[:16] || partial.AppNotes != "修复窄屏布局" {
+	if partial.AppVersion != "0.4.0" || partial.AppURL != url || partial.DefaultTOML != toml || partial.AppHash != wantPkg[:16] || partial.AppNotes != "修复窄屏布局" {
 		t.Fatalf("partial update = %+v", partial)
 	}
 
@@ -941,7 +949,7 @@ func TestUploadReleaseMode(t *testing.T) {
 	const version = "2026.11.24-3"
 	const toml = `hostname = "uploaded"`
 	client := []byte{0x4d, 0x5a, 0x90, 0x00, 0xff, 0x7f, 0x0a, 0x01}
-	file := releaseZip(t, client)
+	file := releasePkg(t, client)
 
 	res, data := uploadSettings(t, env, version, "首个上传版本", toml, file)
 	if res.StatusCode != http.StatusOK {
@@ -951,8 +959,6 @@ func TestUploadReleaseMode(t *testing.T) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		t.Fatalf("decode upload response: %v", err)
 	}
-	sum := sha256.Sum256(client)
-	full := hex.EncodeToString(sum[:])
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])
 	name := version + "-mesh-client.zip"
@@ -964,7 +970,7 @@ func TestUploadReleaseMode(t *testing.T) {
 		AppSource:   "upload",
 		AppFileName: name,
 		AppSize:     int64(len(file)),
-		AppHash:     full[:16],
+		AppHash:     pkgFull[:16],
 		AppSHA256:   pkgFull,
 	}
 	if saved != want {
@@ -1007,7 +1013,7 @@ func TestUploadReleaseMode(t *testing.T) {
 	}
 
 	// Re-uploading the same version replaces the hosted file.
-	second := releaseZip(t, []byte("second build of the same version"))
+	second := releasePkg(t, []byte("second build of the same version"))
 	if res, data = uploadSettings(t, env, version, "", "", second); res.StatusCode != http.StatusOK {
 		t.Fatalf("re-upload = %d: %s", res.StatusCode, data)
 	}
@@ -1055,15 +1061,13 @@ func TestUploadReleaseMode(t *testing.T) {
 	// Switching to an external URL clears the hosted-file fields and hashes
 	// the remote package instead.
 	externalClient := []byte("external build")
-	externalPkg := releaseZip(t, externalClient)
+	externalPkg := releasePkg(t, externalClient)
 	externalURL := fileServer(t, externalPkg)
 	switched := putSettings(t, env, map[string]string{"app_version": version, "app_url": externalURL})
-	externalSum := sha256.Sum256(externalClient)
-	externalFull := hex.EncodeToString(externalSum[:])
 	extPkgSum := sha256.Sum256(externalPkg)
 	extPkgFull := hex.EncodeToString(extPkgSum[:])
 	if switched.AppSource != "url" || switched.AppFileName != "" || switched.AppSize != 0 ||
-		switched.AppHash != externalFull[:16] || switched.AppSHA256 != extPkgFull {
+		switched.AppHash != extPkgFull[:16] || switched.AppSHA256 != extPkgFull {
 		t.Fatalf("switched settings = %+v", switched)
 	}
 }

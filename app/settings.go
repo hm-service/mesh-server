@@ -1,7 +1,7 @@
 package app
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/klauspost/compress/zstd"
+
 	"mesh-server/builtin"
 	"mesh-server/db"
 )
@@ -25,7 +27,7 @@ const (
 	// UpdatesPath is the public download prefix; it is part of CONTRACT.md 1.4.
 	UpdatesPath = "/api/updates/"
 	// releaseSuffix completes the hosted file name from the version.
-	releaseSuffix = "-mesh-client.zip"
+	releaseSuffix = "-mesh-client.tar.zst"
 	// MaxAppVersionRunes bounds the client version string.
 	MaxAppVersionRunes = 64
 	// MaxUploadBytes bounds the uploaded client binary.
@@ -177,12 +179,13 @@ func (a *App) PublishUpload(version, notes string, src io.Reader) (db.Settings, 
 		return db.Settings{}, err
 	}
 	target := filepath.Join(a.updatesDir(), name)
-	// 心跳上报的是 mesh-client.exe 的哈希，不是整个包的哈希，所以要拆开看。
-	hash, err := releaseExeDigest(target)
-	if err != nil {
+	// 心跳比对的是整个更新包的摘要：内核一起随包发布，只盯主程序会把
+	// "easytier 换了但客户端没换" 漏掉。
+	if err := checkReleasePackage(target); err != nil {
 		_ = os.Remove(target)
 		return db.Settings{}, invalid("更新包不可用：%v", err)
 	}
+	hash := sha[:releaseHashLen]
 	next := db.Settings{
 		AppVersion:  version,
 		AppURL:      UpdatesPath + name,
@@ -345,55 +348,48 @@ func fetchDigest(rawURL string) (hash, sha string, err error) {
 		return "", "", err
 	}
 	full := hex.EncodeToString(sum.Sum(nil))
-	hash, err = releaseExeDigest(tmp.Name())
-	if err != nil {
+	if err := checkReleasePackage(tmp.Name()); err != nil {
 		return "", "", err
 	}
-	return hash, full, nil
+	return full[:releaseHashLen], full, nil
 }
 
-// releaseExeDigest reads the client out of a release package and returns its
-// truncated sha256. The package layout is fixed: mesh-client.exe at the root and
-// bin/easytier-core.exe beside it, which is also what the updater requires.
-func releaseExeDigest(zipPath string) (string, error) {
-	r, err := zip.OpenReader(zipPath)
+// checkReleasePackage rejects packages the client's launcher could not install.
+// The layout is fixed: the client at the root and bin/easytier-core beside it.
+// Both platform spellings are accepted so a Linux build passes the same check.
+func checkReleasePackage(pkgPath string) error {
+	f, err := os.Open(pkgPath)
 	if err != nil {
-		return "", fmt.Errorf("不是有效的 zip 包: %w", err)
+		return err
 	}
-	defer r.Close()
-	var clientHash, clientName string
-	var hasCore bool
-	for _, f := range r.File {
-		name := path.Clean(strings.ReplaceAll(f.Name, "\\", "/"))
-		switch name {
-		case "bin/easytier-core.exe":
+	defer f.Close()
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("不是有效的 zstd 数据: %w", err)
+	}
+	defer zr.Close()
+	var hasClient, hasCore bool
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("不是有效的 tar 包: %w", err)
+		}
+		switch path.Clean(strings.ReplaceAll(hdr.Name, "\\", "/")) {
+		case "bin/easytier-core.exe", "bin/easytier-core":
 			hasCore = true
-		case "mesh-client.exe":
-			sum, err := digestZipEntry(f)
-			if err != nil {
-				return "", err
-			}
-			clientHash, clientName = sum[:releaseHashLen], name
+		case "mesh-client.exe", "mesh-client":
+			hasClient = true
 		}
 	}
-	if clientName == "" {
-		return "", errors.New("包里没有 mesh-client.exe")
+	if !hasClient {
+		return errors.New("包里没有 mesh-client")
 	}
 	if !hasCore {
-		return "", errors.New("包里没有 bin/easytier-core.exe")
+		return errors.New("包里没有 bin/easytier-core")
 	}
-	return clientHash, nil
-}
-
-func digestZipEntry(f *zip.File) (string, error) {
-	rc, err := f.Open()
-	if err != nil {
-		return "", err
-	}
-	defer rc.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, io.LimitReader(rc, MaxUploadBytes+1)); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	return nil
 }

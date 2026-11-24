@@ -3,6 +3,7 @@ module mesh-server
 go 1.27.3
 
 require (
+	github.com/klauspost/compress v1.20.5
 	golang.org/x/crypto v0.59.0
 	modernc.org/sqlite v1.63.0
 )

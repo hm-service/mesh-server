@@ -130,26 +130,24 @@ func TestHealthCarriesNoAuthState(t *testing.T) {
 	}
 }
 
-// TestReleaseExposesFullDigest pins the second half of the release fix: the
-// 16-character hash keeps its old meaning, and the full sha256 travels next to
-// it so a client can verify what it downloaded.
+// TestReleaseExposesFullDigest pins that the 16-character hash clients compare
+// is a prefix of the package digest, and the full sha256 travels next to it so
+// a client can verify what it downloaded.
 func TestReleaseExposesFullDigest(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 	client := []byte("a whole mesh client binary")
-	file := releaseZip(t, client)
+	file := releasePkg(t, client)
 	release := publishUpload(t, env, "2026.11.24-3", "", "", file)
 
-	sum := sha256.Sum256(client)
-	full := hex.EncodeToString(sum[:])
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])
 	if len(release.AppHash) != 16 {
 		t.Fatalf("app_hash = %q, want 16 characters", release.AppHash)
 	}
-	if release.AppHash != full[:16] {
-		t.Fatalf("app_hash = %q, want %q", release.AppHash, full[:16])
+	if release.AppHash != pkgFull[:16] {
+		t.Fatalf("app_hash = %q, want %q", release.AppHash, pkgFull[:16])
 	}
 	if release.AppSHA256 != pkgFull {
 		t.Fatalf("app_sha256 = %q, want %q", release.AppSHA256, pkgFull)
@@ -165,7 +163,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out.AppUpdate == nil || out.AppUpdate.SHA256 != pkgFull {
-		t.Fatalf("app_update = %+v, want sha256 %q", out.AppUpdate, full)
+		t.Fatalf("app_update = %+v, want sha256 %q", out.AppUpdate, pkgFull)
 	}
 }
 

@@ -3,7 +3,9 @@
 # 不依赖构建机能拉到 node 与 golang 的镜像。
 FROM docker.io/library/alpine:3
 
-RUN apk --no-cache add ca-certificates tzdata
+# curl 是 podman kube play 翻译 httpGet 探针时要用的：它把探针写成容器内的
+# `curl -f`，镜像里没有 curl 就会一直探针失败，pod 每 90 秒被杀一次。
+RUN apk --no-cache add ca-certificates tzdata curl
 
 WORKDIR /app
 COPY mesh-server .

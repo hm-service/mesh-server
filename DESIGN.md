@@ -34,11 +34,11 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | GET/POST | `/api/devices` | Bearer |
 | GET/PUT/DELETE | `/api/devices/{id}` | Bearer |
 | POST | `/api/devices/{id}/token` | Bearer |
-| GET/PUT | `/api/admin/settings` | Bearer |
+| GET/PUT | `/api/admin/releases` | Bearer |
+| DELETE | `/api/admin/releases/{platform...}` | Bearer |
 | GET | `/api/updates/{file}` | 无 |
-| POST | `/api/register` | token 或设备签名 |
-| GET | `/api/config` | 设备签名 |
-| POST | `/api/heartbeat` | 设备签名 |
+| POST | `/api/register` | token 或设备签名（在请求体里） |
+| POST | `/api/heartbeat` | 设备签名（在请求体里） |
 
 请求与响应的字段、状态码、错误码见 `CONTRACT.md` 1.4；本文不重复。
 

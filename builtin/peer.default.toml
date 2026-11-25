@@ -1,14 +1,16 @@
 # 默认 EasyTier 配置：控制面用它预填“新建设备”对话框，管理员保存后就是该设备的
 # config.toml，客户端原样写盘并作为 core 的 -c 参数。
 #
-# 这份模板只描述网络，不描述节点身份。身份由客户端启动 core 时按“配置里有没有
-# network_secret”选择：有 secret 走 --secure-mode + ET_LOCAL_PRIVATE_KEY，没有则用
-# 控制面签发的 ET_CREDENTIAL。
+# 这份模板只描述网络，不含任何密钥。没有 network_secret 的节点是凭据节点：客户端
+# 不传 --secure-mode，用控制面签发的 config/credential.json 走 ET_CREDENTIAL；首次
+# 启动还没有凭据就先不起 core，等心跳下发后再起（心跳不依赖 core）。
+# 三个种子（ali / tencent / zyf）是正式节点：配置里带 network_secret，用
+# config/secure.key 的固定私钥走 --secure-mode；它们的配置单独维护、不从这份模板
+# 复制，所以这里不该出现任何密钥。
 #
-# 不要在这里加 [secure_mode]：客户端启动 core 时一定用 --secure-mode（配
+# 也不要在这里加 [secure_mode]：客户端启动 core 时一定用 --secure-mode（配
 # ET_LOCAL_PRIVATE_KEY）或 ET_CREDENTIAL 指明身份，两者都会把这一段整体覆盖，
-# 配置里写的 enabled 不会生效。单独拿这份 TOML 起 core 时，enabled = true 却没有
-# 私钥的节点会被随机生成一把 X25519 私钥，节点身份每次都变。
+# 配置里写的 enabled 不会生效。
 
 # dhcp = true：地址由网络里的 DHCP 分配，多台设备不会撞车。
 # 要固定地址：先把 dhcp 改成 false（或删掉这一行），再放开下面那行——
@@ -18,11 +20,8 @@ dhcp = true
 
 [network_identity]
 # 全网一致的网络名，不同 network_name 的节点不在同一个网络里。
+# 本段不写 network_secret：写了就成了正式节点，凭据节点的身份只能来自签发的凭据。
 network_name = "test-net"
-# 全网共享口令，由管理员在“配置”页填成与种子相同的值；真实值不进 git、不进内置
-# 模板，这里只是占位符。不能留空：留空时客户端会把这台设备当成凭据节点（没有凭据
-# 就起不了 core），core 也会拿空口令派生网络摘要，知道网络名的人都能进。
-network_secret = "REPLACE_WITH_NETWORK_SECRET"
 
 [flags]
 # 必须全网一致，两端算法不同时握手直接失败。等价于启动参数

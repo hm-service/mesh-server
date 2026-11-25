@@ -5,11 +5,16 @@ import (
 	"testing"
 )
 
-// TestDefaultTemplateDescribesNetworkOnly 钉住内置模板不能有的两样东西：
-// [secure_mode] 段（客户端启动 core 时总会用 --secure-mode 或 --credential 整体
-// 覆盖它，而单独拿这份 TOML 起 core 又会给 enabled 且没有私钥的节点随机生成一把
-// X25519 私钥）与真实密钥（会被编进二进制并随 git 分发）。network_secret 又必须
-// 非空：客户端按它决定这台设备是正式节点还是凭据节点。
+// TestDefaultTemplateDescribesNetworkOnly 钉住内置模板的边界：它只描述网络，
+// 不带任何身份材料。
+//
+//   - 没有 [secure_mode] 段：客户端启动 core 时总会用 --secure-mode 或
+//     --credential 整体覆盖它，而单独拿这份 TOML 起 core 又会给 enabled 且没有私钥
+//     的节点随机生成一把 X25519 私钥。
+//   - 没有 network_secret：从这份模板建出来的设备是凭据节点，身份来自控制面签发
+//     的 credential.json；种子是正式节点，配置单独维护。密钥也就不必进 git 与
+//     二进制。
+//   - peer 只能是 udp/tcp，且两种各占一半：只留一种时那种协议不通就连不上。
 func TestDefaultTemplateDescribesNetworkOnly(t *testing.T) {
 	text := DefaultTemplate()
 	for _, line := range strings.Split(text, "\n") {
@@ -18,8 +23,11 @@ func TestDefaultTemplateDescribesNetworkOnly(t *testing.T) {
 		}
 	}
 
-	if got := quotedValues(text, "network_secret"); len(got) != 1 || got[0] == "" {
-		t.Fatalf("network_secret = %q, want one non-empty placeholder", got)
+	if hasKey(text, "network_secret") {
+		t.Fatal("built-in template must not carry network_secret: devices built from it are credential nodes")
+	}
+	if got := quotedValues(text, "network_name"); len(got) != 1 || got[0] == "" {
+		t.Fatalf("network_name = %q, want one non-empty value", got)
 	}
 
 	total, udp := 0, 0
@@ -36,6 +44,20 @@ func TestDefaultTemplateDescribesNetworkOnly(t *testing.T) {
 	if total == 0 || udp*2 != total {
 		t.Fatalf("peer uris = %d in total, %d udp; want the same non-zero number of udp and tcp", total, udp)
 	}
+}
+
+// hasKey reports whether an uncommented `key = …` line exists.
+func hasKey(text, key string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if name, _, ok := strings.Cut(line, "="); ok && strings.TrimSpace(name) == key {
+			return true
+		}
+	}
+	return false
 }
 
 // quotedValues returns the quoted value of every `key = "…"` line outside

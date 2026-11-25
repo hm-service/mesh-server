@@ -216,10 +216,13 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
-	_, err := s.app.DeleteDevice(r.PathValue("id"))
+	_, err := s.app.DeleteDevice(r.Context(), r.PathValue("id"))
 	switch {
 	case errors.Is(err, app.ErrNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	case errors.Is(err, app.ErrCredentialChannelUnconfigured):
+		writeCredentialChannelUnconfigured(w)
 		return
 	case err != nil:
 		s.logger.Error("delete device", "error", err)
@@ -247,26 +250,23 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 // handleIssueCredential 给设备签发一张凭据，私钥只在这一个响应里出现。
 func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	secret, err := s.app.IssueCredential(r.Context(), id)
+	issued, err := s.app.IssueCredential(r.Context(), id)
 	switch {
 	case errors.Is(err, app.ErrNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	case errors.Is(err, app.ErrCredentialChannelUnconfigured):
+		writeCredentialChannelUnconfigured(w)
 		return
 	case err != nil:
 		s.logger.Error("issue credential", "id", id, "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	cred, err := s.app.LatestCredential(id)
-	if err != nil {
-		s.logger.Error("load issued credential", "id", id, "error", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "internal")
-		return
-	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"credential":    secret,
-		"credential_id": cred.CredentialID,
-		"expires_at":    cred.ExpiresAt,
+		"credential":    issued.Secret,
+		"credential_id": issued.ID,
+		"expires_at":    issued.Expiry,
 	})
 }
 
@@ -274,9 +274,20 @@ func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRevokeCredential(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.app.RevokeCredential(r.Context(), id); err != nil {
+		if errors.Is(err, app.ErrCredentialChannelUnconfigured) {
+			writeCredentialChannelUnconfigured(w)
+			return
+		}
 		s.logger.Error("revoke credential", "id", id, "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeCredentialChannelUnconfigured 回答「这台控制面没有签发通道，却要动种子
+// 上的凭据」：记录留着，种子侧那张凭据仍然有效，只能由运维手工撤销。
+func writeCredentialChannelUnconfigured(w http.ResponseWriter) {
+	httpx.WriteErrorDetail(w, http.StatusConflict, "credential_channel_unconfigured",
+		"未配置凭据签发通道（ET_CLI），无法在种子上撤销；请在种子上手工撤销这些凭据")
 }

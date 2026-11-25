@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -124,7 +125,7 @@ func TestDeleteRevokesDeviceID(t *testing.T) {
 	if _, err := a.BindDevice(token, "dev-1", "HOST", "pk", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.DeleteDevice(device.PublicID); err != nil {
+	if _, err := a.DeleteDevice(context.Background(), device.PublicID); err != nil {
 		t.Fatalf("DeleteDevice() error: %v", err)
 	}
 	if _, found, err := a.DeviceByID(device.PublicID); err != nil || found {
@@ -133,7 +134,7 @@ func TestDeleteRevokesDeviceID(t *testing.T) {
 	if !a.Revoked("dev-1") {
 		t.Fatal("deleted device_id not marked revoked")
 	}
-	if _, err := a.DeleteDevice(device.PublicID); !errors.Is(err, ErrNotFound) {
+	if _, err := a.DeleteDevice(context.Background(), device.PublicID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("DeleteDevice(unknown) = %v, want ErrNotFound", err)
 	}
 }
@@ -225,4 +226,50 @@ func dbDevice(publicID, deviceID string, seenAt int64) db.Device {
 
 func dbRelease(version, hash string) db.Release {
 	return db.Release{Version: version, Hash: hash}
+}
+
+// TestOpenRehashesStoredConfigs pins F3: a row written with the old normalized
+// digest is rewritten on the next Open, so the device does not report a hash the
+// client can never compute and stays stale forever.
+func TestOpenRehashesStoredConfigs(t *testing.T) {
+	dir := t.TempDir()
+	// 与内置模板一样末尾没有换行：旧算法会补一个，所以两个摘要必然不同。
+	const toml = "hostname = \"auto\""
+	first, err := Open(dir, Options{})
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	device, _, err := first.CreateDevice("laptop", toml)
+	if err != nil {
+		t.Fatalf("CreateDevice() error: %v", err)
+	}
+	legacy := core.Hash(toml + "\n")
+	if legacy == core.Hash(toml) {
+		t.Fatalf("the two digests are equal, the test proves nothing")
+	}
+	if _, err := first.database.Update(device.PublicID, func(d *db.Device) error {
+		d.ConfigHash = legacy
+		return nil
+	}); err != nil {
+		t.Fatalf("store the legacy digest: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	second, err := Open(dir, Options{})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	migrated, found, err := second.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+	if migrated.ConfigHash != core.Hash(toml) {
+		t.Fatalf("config hash = %q, want %q", migrated.ConfigHash, core.Hash(toml))
+	}
+	if migrated.ConfigTOML != toml {
+		t.Fatalf("migration rewrote the config itself: %q", migrated.ConfigTOML)
+	}
 }

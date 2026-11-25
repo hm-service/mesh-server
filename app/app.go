@@ -87,6 +87,10 @@ func Open(dataDir string, opts Options) (*App, error) {
 	if a.fetch == nil {
 		a.fetch = newFetchClient(opts.FetchAllow)
 	}
+	if err := a.migrateConfigHashes(); err != nil {
+		database.Close()
+		return nil, err
+	}
 	if purged, err := a.database.PurgeExpiredTokens(a.now().Unix()); err != nil {
 		database.Close()
 		return nil, err

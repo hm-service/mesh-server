@@ -87,10 +87,13 @@ type launcherInfo struct {
 }
 
 type heartbeatResponse struct {
-	ConfigHash string        `json:"config_hash,omitempty"`
-	ConfigB64  string        `json:"config_b64,omitempty"`
-	AppUpdate  *updateInfo   `json:"app_update,omitempty"`
-	Launcher   *launcherInfo `json:"launcher,omitempty"`
+	ConfigHash       string        `json:"config_hash,omitempty"`
+	ConfigB64        string        `json:"config_b64,omitempty"`
+	AppUpdate        *updateInfo   `json:"app_update,omitempty"`
+	Launcher         *launcherInfo `json:"launcher,omitempty"`
+	Credential       string        `json:"credential,omitempty"`
+	CredentialID     string        `json:"credential_id,omitempty"`
+	CredentialExpiry int64         `json:"credential_expiry,omitempty"`
 }
 
 // testPlatform is the platform key the tests publish and heartbeat with.

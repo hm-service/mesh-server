@@ -9,12 +9,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
 	"mesh-server/api"
 	"mesh-server/app"
 	"mesh-server/core"
+	"mesh-server/internal/fakecli"
 )
 
 // Token is the AUTH_TOKEN every test environment uses.
@@ -37,14 +40,19 @@ type Env struct {
 
 // Clock is the injectable application clock.
 type Clock struct {
-	t time.Time
+	t   *testing.T
+	now time.Time
 }
 
 // Now is the clock reading.
-func (c *Clock) Now() time.Time { return c.t }
+func (c *Clock) Now() time.Time { return c.now }
 
-// Advance moves the clock forward.
-func (c *Clock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+// Advance moves the clock forward and pins the stand-in easytier-cli to the same
+// moment, so a credential issued after the move expires in the moved frame.
+func (c *Clock) Advance(d time.Duration) {
+	c.now = c.now.Add(d)
+	c.t.Setenv(fakecli.NowEnv, strconv.FormatInt(c.now.Unix(), 10))
+}
 
 // Option adjusts an environment before the server is built.
 type Option func(*config)
@@ -54,6 +62,10 @@ type config struct {
 	logger         *slog.Logger
 	readyzToken    string
 	apiConcurrency int
+	// dataDir reuses an existing DATA_DIR; empty means a fresh temporary one.
+	dataDir string
+	// credentialCLI points the app at the test binary as easytier-cli.
+	credentialCLI bool
 }
 
 // WithReadyzToken protects /readyz the way a deployment does.
@@ -71,6 +83,18 @@ func WithAPIConcurrency(n int) Option {
 	return func(c *config) { c.apiConcurrency = n }
 }
 
+// WithDataDir reuses an existing state directory, so a test can open the same
+// database twice (for example to drop the credential channel in between).
+func WithDataDir(dir string) Option {
+	return func(c *config) { c.dataDir = dir }
+}
+
+// WithCredentialCLI turns credential issuance on, using the test binary itself
+// as the stand-in easytier-cli (see internal/fakecli).
+func WithCredentialCLI() Option {
+	return func(c *config) { c.credentialCLI = true }
+}
+
 // New builds the environment and logs the admin in.
 func New(t *testing.T, options ...Option) *Env {
 	t.Helper()
@@ -78,14 +102,28 @@ func New(t *testing.T, options ...Option) *Env {
 	for _, option := range options {
 		option(&cfg)
 	}
-	dir := t.TempDir()
-	clock := &Clock{t: time.Unix(1_732_400_000, 0)}
-	instance, err := app.Open(dir, app.Options{
+	dir := cfg.dataDir
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	clock := &Clock{t: t, now: time.Unix(1_732_400_000, 0)}
+	appOptions := app.Options{
 		Now: clock.Now,
 		// The publish tests serve packages from an httptest server on loopback,
 		// which the hardened download client refuses by design.
 		FetchClient: &http.Client{Timeout: 10 * time.Second},
-	})
+	}
+	if cfg.credentialCLI {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatalf("locate test binary: %v", err)
+		}
+		appOptions.CredentialCLI = self
+		appOptions.CredentialRPC = "127.0.0.1:15889"
+	}
+	// The stand-in CLI reads the same frame the app clock starts at.
+	t.Setenv(fakecli.NowEnv, strconv.FormatInt(clock.now.Unix(), 10))
+	instance, err := app.Open(dir, appOptions)
 	if err != nil {
 		t.Fatalf("open app: %v", err)
 	}

@@ -1,6 +1,7 @@
-# 运行时镜像：linux/amd64 二进制在宿主机交叉编译好再 COPY 进来。
-# 从源码出镜像用 Dockerfile；这里只为 podman kube play 提供本地镜像，
-# 不依赖构建机能拉到 node 与 golang 的镜像。
+# 离线兜底的运行时镜像：linux/amd64 二进制在宿主机交叉编译好再 COPY 进来。
+# 正常部署拉 CI 推到 GHCR 的镜像（见 Dockerfile）；只有目标机拉不到镜像时才
+# 用这份，它不依赖构建机能拉到 node 与 golang 的镜像。
+# 镜像里没有 easytier-cli：用它时 ET_CLI 留空，或者自己把 CLI 打进镜像。
 FROM docker.io/library/alpine:3
 
 # curl 是 podman kube play 翻译 httpGet 探针时要用的：它把探针写成容器内的

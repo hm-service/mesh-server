@@ -45,7 +45,6 @@ spec:
 
     containers:
         - name: app
-          # 本地构建的镜像（见 Dockerfile.runtime），不从仓库拉取。
           # 镜像由 GitHub Actions 构建并推到 GHCR，部署机只负责拉取。
           image: ghcr.io/hm-service/mesh-server:latest
           imagePullPolicy: Always

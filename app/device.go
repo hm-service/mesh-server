@@ -201,10 +201,11 @@ func (a *App) IssueToken(publicID string) (string, error) {
 // DeleteDevice removes the slot and remembers its device_id so later signed
 // requests are answered with code "revoked" (CONTRACT.md 2.6). The tombstone
 // only lives in memory, exactly as before.
-func (a *App) DeleteDevice(publicID string) (db.Device, error) {
+func (a *App) DeleteDevice(ctx context.Context, publicID string) (db.Device, error) {
 	// 先撤销凭据再删记录：撤销失败就让删除失败，否则这台设备还能用旧凭据
-	// 一直连到过期，而控制面已经没有它的记录了。
-	if err := a.RevokeCredential(context.Background(), publicID); err != nil {
+	// 一直连到过期，而控制面已经没有它的记录了。撤销走调用方的 context：
+	// 客户端断开后不该再占着种子逐张等下去。
+	if err := a.RevokeCredential(ctx, publicID); err != nil {
 		return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
 	}
 	device, err := a.database.Delete(publicID)
@@ -280,6 +281,29 @@ func (a *App) Touch(publicID, ip string) error {
 // RecordHeartbeat stores the hashes a device reported together with its platform.
 func (a *App) RecordHeartbeat(publicID, configHash, appHash, platform string) error {
 	return a.database.RecordHeartbeat(publicID, configHash, appHash, platform, a.now().Unix())
+}
+
+// migrateConfigHashes 按当前算法重算每台设备的 config_hash，只写不一致的行。
+// 摘要算法变过而存量行没跟着变时，客户端现算的值永远对不上，设备会一直
+// stale，每轮心跳都被重发一遍配置。幂等，每次启动都可以跑。
+func (a *App) migrateConfigHashes() error {
+	devices, err := a.database.List()
+	if err != nil {
+		return err
+	}
+	for _, device := range devices {
+		want := core.Hash(device.ConfigTOML)
+		if device.ConfigHash == want {
+			continue
+		}
+		if _, err := a.database.Update(device.PublicID, func(d *db.Device) error {
+			d.ConfigHash = want
+			return nil
+		}); err != nil {
+			return fmt.Errorf("migrate config hash of %s: %w", device.PublicID, err)
+		}
+	}
+	return nil
 }
 
 // DeviceStatus is derived from last_seen_at; an unregistered slot is pending.

@@ -141,13 +141,21 @@ func (a *App) Publish(in PublishInput) error {
 			return err
 		}
 		defer staged.Abort()
+		// 模板先落地再提交槽位：rename 失败时一个槽位都还没写，请求返回失败
+		// 不会留下已生效的那一半。反过来先提交槽位再 rename，rename 一失败
+		// 就是「返回 500 但槽位已生效」。两处存储没有共同的提交点，剩下的
+		// 窗口是槽位事务失败而模板已经换新：模板只是一份默认配置，重发一次
+		// 即可。
+		if err := staged.Commit(); err != nil {
+			return err
+		}
 	}
 	if client != nil || launcher != nil {
 		if err := a.database.PublishSlots(in.Platform, client, launcher); err != nil {
 			return err
 		}
 	}
-	return staged.Commit()
+	return nil
 }
 
 // prepareClientSlot validates one client package slot and computes the digests

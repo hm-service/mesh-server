@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -78,7 +79,7 @@ func main() {
 	fmt.Printf("AFTER FIRST START  devices=%d release_version=%q\n", len(devices), rel.Version)
 
 	// The admin revokes the device and deletes the published platform.
-	if _, err := a.DeleteDevice("d_abc123"); err != nil && !errors.Is(err, app.ErrNotFound) {
+	if _, err := a.DeleteDevice(context.Background(), "d_abc123"); err != nil && !errors.Is(err, app.ErrNotFound) {
 		panic(err)
 	}
 	if err := a.ClearRelease("windows/amd64"); err != nil {

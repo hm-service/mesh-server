@@ -290,21 +290,23 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	launcher := launcherOf(r, release)
 	// 设备上报的 id 与最新签发的一致，说明它已经换上新凭据并重启过 core，
 	// 这时才吊销其余的。早一步吊销会让还没拿到新凭据的设备失联。
-	if req.CredentialID != "" {
+	// "none" 表示它手里没有凭据（那张新签的还没被用上），空串是旧客户端或
+	// 正式节点，这两种都没有可确认的切换，不调 ConfirmCredential。
+	if req.CredentialID != "" && req.CredentialID != "none" {
 		if err := s.app.ConfirmCredential(r.Context(), device.PublicID, req.CredentialID); err != nil {
 			s.logger.Error("confirm credential", "id", device.PublicID, "error", err)
 		}
 	}
-	secret, credID, credExpiry := s.issueCredentialIfNeeded(r, device.PublicID, req.CredentialID)
-	if !configChanged && !appChanged && launcher == nil && secret == "" {
+	issued := s.issueCredentialIfNeeded(r, device.PublicID, req.CredentialID)
+	if !configChanged && !appChanged && launcher == nil && issued == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	resp := heartbeatResponse{
-		Launcher:         launcher,
-		Credential:       secret,
-		CredentialID:     credID,
-		CredentialExpiry: credExpiry,
+	resp := heartbeatResponse{Launcher: launcher}
+	if issued != nil {
+		resp.Credential = issued.Secret
+		resp.CredentialID = issued.ID
+		resp.CredentialExpiry = issued.Expiry
 	}
 	if configChanged {
 		resp.ConfigHash = device.ConfigHash
@@ -321,40 +323,43 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
-// issueCredentialIfNeeded 判断这台设备要不要一张新凭据，要就当场签发。
-// 触发条件：没有记录、上报的 id 与最新签发的不一致（设备没收到或重装了）、
-// 或者最新的那张快到期。私钥只在这里产生，服务端不留。
-func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID string) (string, string, int64) {
+// issueCredentialIfNeeded 判断这台设备要不要一张新凭据，要就当场签发，并用
+// 这次签发自己的 id 与到期时间回答（不能回头再查一次库：并发心跳时那会把
+// 一张凭据的私钥配到另一张的 id 上）。
+//
+// 上报的 credentialId 是设备 core 里正在用的那张。与最新签发的一致说明切换
+// 已经完成，报着旧 id 说明 core 还没重启、等它重启就会报上最新的那张——两种
+// 情况都不补签，只有最新那张进入续期窗口时才签下一张。报 none 时签发，但
+// 同一设备 CredentialNoneCooldown 内只签一次。
+func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID string) *app.IssuedCredential {
 	if !s.app.CredentialConfigured() {
-		return "", "", 0
+		return nil
+	}
+	// 空串是正式节点（CONTRACT.md 1.5）或还不认识这个字段的旧客户端：既不
+	// 确认也不签发，连凭据表都不必读。
+	if reportedID == "" {
+		return nil
 	}
 	latest, err := s.app.LatestCredential(publicID)
-	need := false
 	switch {
 	case errors.Is(err, db.ErrCredentialNotFound):
-		need = true
+		// 这台设备从来就没有过凭据。
 	case err != nil:
 		s.logger.Error("load credential", "id", publicID, "error", err)
-		return "", "", 0
-	case latest.CredentialID != reportedID:
-		// 已经给过一张，而设备又说不出自己在用哪张：它多半是还不支持凭据的
-		// 旧版本。这时不能再签，否则每轮心跳都会多一张。
-		need = reportedID != ""
-	case latest.ExpiresAt-s.app.Now().Unix() < int64(app.CredentialRenewBefore.Seconds()):
-		need = true
+		return nil
+	case reportedID == "none":
+		// 客户端明确声明本地没有凭据：立刻签一张，但同一设备 5 分钟内只签
+		// 一次，冷却只挡并发心跳与一直写不进本地文件的循环。
+		if s.app.Now().Unix()-latest.CreatedAt < int64(app.CredentialNoneCooldown.Seconds()) {
+			return nil
+		}
+	case latest.ExpiresAt-s.app.Now().Unix() >= int64(app.CredentialRenewBefore.Seconds()):
+		return nil
 	}
-	if !need {
-		return "", "", 0
-	}
-	secret, err := s.app.IssueCredential(r.Context(), publicID)
+	issued, err := s.app.IssueCredential(r.Context(), publicID)
 	if err != nil {
 		s.logger.Error("issue credential", "id", publicID, "error", err)
-		return "", "", 0
+		return nil
 	}
-	issued, err := s.app.LatestCredential(publicID)
-	if err != nil {
-		s.logger.Error("reload credential", "id", publicID, "error", err)
-		return "", "", 0
-	}
-	return secret, issued.CredentialID, issued.ExpiresAt
+	return &issued
 }

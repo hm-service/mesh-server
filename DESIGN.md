@@ -12,8 +12,9 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
   { cat k8s.mesh-server.yaml k8s.mesh-server.secret.yaml; } | sed "s/__READYZ_TOKEN__/$R/" > k8s.mesh-server.deploy.yaml
   ```
 
-  镜像在目标机本地构建（`Dockerfile.runtime` + 交叉编译好的 `linux/amd64` 二进制），不依赖镜像仓库；
-- 从源码出发布镜像用 `Dockerfile`（多阶段，`ghcr.io/hm-service/mesh-server:<yyyy-MM-dd>` 与 `latest`，`linux/amd64` + `linux/arm64`）；
+  镜像由 CI（GitHub Actions）构建并推到 `ghcr.io/hm-service/mesh-server`，部署机只拉取，清单用 `imagePullPolicy: Always`；
+- 从源码出镜像用 `Dockerfile`（多阶段，`ghcr.io/hm-service/mesh-server:<yyyy-MM-dd>` 与 `latest`，`linux/amd64` + `linux/arm64`；最后一个阶段带进 `easytier-cli`，见第 6 节）；
+- `Dockerfile.runtime` 是离线兜底：把交叉编译好的 `linux/amd64` 二进制放在同目录，在目标机本地出镜像，不依赖镜像仓库。它没有 `easytier-cli`，用它时 `ET_CLI` 留空，或者自己把 CLI 打进镜像；
 - 容器只跑一个二进制，根文件系统可只读，唯一可写路径是 `DATA_DIR`（默认 `/data`）；
 - 应用不做 TLS，反向代理负责终止 TLS、限速与域名；应用只认 `HOST`/`X-Forwarded-Proto` 与可信反代传来的客户端地址；
 - 探针：`/livez` 恒 200；`/readyz` 校验 `DATA_DIR` 权限（0700）并往 SQLite 写删 `__probe` 表，失败返回 503；`READYZ_TOKEN` 为空时不做鉴权，但探针会写 `__probe` 表，部署里必须设置，否则谁都能触发写入。
@@ -41,6 +42,8 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | GET/POST | `/api/devices` | Bearer |
 | GET/PUT/DELETE | `/api/devices/{id}` | Bearer |
 | POST | `/api/devices/{id}/token` | Bearer |
+| POST | `/api/devices/{id}/credential` | Bearer |
+| DELETE | `/api/devices/{id}/credential` | Bearer |
 | PUT | `/api/devices/{id}/group` | Bearer |
 | PUT | `/api/layout` | Bearer |
 | GET/POST | `/api/groups` | Bearer |
@@ -109,18 +112,31 @@ CREATE TABLE release (
     launcher_url     TEXT NOT NULL DEFAULT '',
     launcher_sha256  TEXT NOT NULL DEFAULT ''     -- 启动器完整摘要，客户端自己比对
 );
+
+CREATE TABLE credential (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    credential_id    TEXT NOT NULL UNIQUE,         -- 种子上的标识（uuid4），撤销与续期用
+    device_public_id TEXT NOT NULL DEFAULT '',     -- 所属设备的 public_id
+    expires_at       INTEGER NOT NULL DEFAULT 0,
+    created_at       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX credential_device ON credential (device_public_id);
 ```
 
 `release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
 
+`credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 6 节的 `ET_CLI`）。
+
 表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
+
+`config_hash` 是数据而不是结构：启动时把每台设备的摘要按当前算法（`core.Hash`，即 `sha256(toml)` 前 16 位）重算一遍，只写不一致的行。摘要算法变化后存量行由此迁移，设备不会停在永远 `stale`、每轮心跳都被重发配置的状态。
 
 ## 5. 安全模型
 
 | 面 | 机制 |
 | --- | --- |
 | 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长（`api` 包内常量，不提供关闭开关） |
-| 设备面 | Ed25519 请求签名（`MESH1` 五行原文）+ 300 秒时间窗 + nonce 重放缓存 |
+| 设备面 | Ed25519 请求签名（`MESH2` 八行原文）+ 300 秒时间窗 + nonce 重放缓存；普通节点在 mesh 里的身份是种子签发的凭据，控制面只留 `credential_id` 与到期时间 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
 | 发布包 | 客户端包：`app_hash`（16 位）用于判定，`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
 | 发布下载 | 服务端下载发布地址时拒绝回环、私网、链路本地、组播与未指定地址（`net.Dialer.Control` 逐个连接校验），最多 5 次重定向且每一跳重新校验，不走代理 |
@@ -140,6 +156,8 @@ CREATE TABLE release (
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
 | `RELEASE_FETCH_ALLOW` | 否 | 空（只允许公网） | 逗号分隔的 IP 或 CIDR；发布下载允许连接这些内网地址 |
+| `ET_CLI` | 否 | 空 | `easytier-cli` 路径；为空表示这台控制面不签发也不撤销凭据，两条凭据路由与「删除还有凭据记录的设备」都返回 409 `credential_channel_unconfigured` |
+| `ET_RPC_ADDR` | `ET_CLI` 非空时必填 | — | 种子 management RPC 的地址（宿主上的转发口）；`ET_CLI` 非空而它为空时拒绝启动 |
 | `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |
 | `MAX_API_CONCURRENCY` | 否 | 128 | 管理面与设备面各自的上限 |
 | `MAX_STATIC_CONCURRENCY` | 否 | 64 | 静态资源并发上限 |
@@ -149,6 +167,8 @@ CREATE TABLE release (
 | `GOMEMLIMIT` | 否 | 128MiB | 未设置时由程序设置该软上限 |
 
 数值型变量解析失败或越界时直接拒绝启动，退出码 1。
+
+镜像里的 `easytier-cli` 必须与种子上的 `easytier-core` 同一发布次版本（`Dockerfile` 的 `EASYTIER_VERSION` 固定它）：签发与撤销的参数名、JSON 字段都随版本变化。
 
 ## 7. 日志与生命周期
 

@@ -22,9 +22,14 @@ interface SlotDraft {
   hint: string;
 }
 
+/** ClientDraft 是客户端包槽位：autoUpdate 跟着这个包一起发布。 */
+interface ClientDraft extends SlotDraft {
+  autoUpdate: boolean;
+}
+
 interface Draft {
   launcher: SlotDraft;
-  client: SlotDraft;
+  client: ClientDraft;
 }
 
 const drafts = reactive<Record<string, Draft>>({});
@@ -57,6 +62,7 @@ function reset(platform: string, payload: ReleasesPayload | null = props.release
       version: value?.app_version ?? "",
       url: value?.app_url ?? "",
       notes: value?.app_notes ?? "",
+      autoUpdate: value?.auto_update ?? false,
     },
   };
   return drafts[platform] as Draft;
@@ -83,6 +89,7 @@ function clientLine(platform: string): string {
   if (!value || !value.app_version) return "尚未发布";
   const parts = [value.app_version];
   if (value.app_url) parts.push(value.app_url);
+  parts.push(value.auto_update ? "自动安装" : "手动安装");
   return parts.join(" · ");
 }
 
@@ -146,6 +153,7 @@ async function saveClient(platform: string) {
       app_version: version,
       app_url: draft.url.trim(),
       app_notes: draft.notes,
+      auto_update: draft.autoUpdate,
     });
     emit("saved", saved);
     reset(platform, saved);
@@ -293,6 +301,16 @@ async function clearPlatform(platform: string) {
                 maxlength="2000"
                 spellcheck="false"
               />
+            </div>
+            <div class="field full">
+              <label class="check" :for="platform + '-auto-update'">
+                <input
+                  :id="platform + '-auto-update'"
+                  v-model="drafts[platform]!.client.autoUpdate"
+                  type="checkbox"
+                />
+                <span>客户端收到这个版本后自动安装（不勾选则只提示，等用户手动确认）</span>
+              </label>
             </div>
           </div>
           <div v-if="drafts[platform]!.client.hint" class="hint">{{ drafts[platform]!.client.hint }}</div>

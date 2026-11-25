@@ -12,12 +12,15 @@ import (
 )
 
 // releaseView is one platform's two published slots in the admin payload.
+// AutoUpdate 是跟着客户端包走的开关：true 表示客户端收到这个版本后可以自己装，
+// false 表示只提示、等用户手动确认。
 type releaseView struct {
 	Platform        string `json:"platform"`
 	AppVersion      string `json:"app_version"`
 	AppURL          string `json:"app_url"`
 	AppSHA256       string `json:"app_sha256"`
 	AppNotes        string `json:"app_notes"`
+	AutoUpdate      bool   `json:"auto_update"`
 	LauncherVersion string `json:"launcher_version"`
 	LauncherURL     string `json:"launcher_url"`
 	LauncherSHA256  string `json:"launcher_sha256"`
@@ -36,6 +39,7 @@ type releaseInput struct {
 	AppVersion      *string `json:"app_version"`
 	AppURL          *string `json:"app_url"`
 	AppNotes        *string `json:"app_notes"`
+	AutoUpdate      *bool   `json:"auto_update"`
 	LauncherVersion *string `json:"launcher_version"`
 	LauncherURL     *string `json:"launcher_url"`
 	DefaultTOML     *string `json:"default_toml"`
@@ -48,6 +52,7 @@ func toView(r db.Release) releaseView {
 		AppURL:          r.URL,
 		AppSHA256:       r.SHA256,
 		AppNotes:        r.Notes,
+		AutoUpdate:      r.AutoUpdate,
 		LauncherVersion: r.LauncherVersion,
 		LauncherURL:     r.LauncherURL,
 		LauncherSHA256:  r.LauncherSHA256,
@@ -102,6 +107,12 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "app_version 与 app_url 必须同时给出")
 		return
 	}
+	// 这个开关属于客户端包，没有包可挂时不接受单独的 auto_update：否则要么写进
+	// 一行没有发布内容的记录，要么被悄悄丢掉，两种都不是调用方要的结果。
+	if req.AutoUpdate != nil && !client {
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "auto_update 必须与 app_version、app_url 一起给出")
+		return
+	}
 	if launcher && (req.LauncherVersion == nil || req.LauncherURL == nil) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "launcher_version 与 launcher_url 必须同时给出")
 		return
@@ -116,7 +127,13 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		if req.AppNotes != nil {
 			notes = *req.AppNotes
 		}
-		publish.Client = &db.ClientSlot{Version: *req.AppVersion, URL: *req.AppURL, Notes: notes}
+		// 省略 auto_update 等于"手动"：每次发布客户端包都会重写这个开关，
+		// 新包默认不让客户端自己装。
+		autoUpdate := false
+		if req.AutoUpdate != nil {
+			autoUpdate = *req.AutoUpdate
+		}
+		publish.Client = &db.ClientSlot{Version: *req.AppVersion, URL: *req.AppURL, Notes: notes, AutoUpdate: autoUpdate}
 	}
 	if launcher {
 		publish.Launcher = &db.LauncherSlot{Version: *req.LauncherVersion, URL: *req.LauncherURL}

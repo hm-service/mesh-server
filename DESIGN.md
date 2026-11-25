@@ -28,7 +28,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | --- | --- |
 | 设备 | 按分组排的表：名称与主机名、mesh 地址、在线状态、配置是否同步、客户端版本、最后在线；行内拖拽排序与改分组。详情抽屉里编辑配置（含「重置为模板」）、轮换凭据、签发注册令牌、撤销设备 |
 | 默认模板 | 当前生效的默认 EasyTier 模板（`DATA_DIR/peer.default.toml`，缺失或空白时展示内置模板）；保存写回该文件 |
-| 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址 |
+| 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址；客户端包槽位另有「自动安装」复选框，列表行显示该平台当前是自动还是手动 |
 
 鉴权只有 `AUTH_TOKEN` 一种形态：登录页提交它，换回一个 24 小时的无状态 Bearer 凭证；没有跳过登录的开关。
 
@@ -108,6 +108,7 @@ CREATE TABLE release (
     url              TEXT NOT NULL DEFAULT '',
     sha256           TEXT NOT NULL DEFAULT '',    -- 客户端包完整摘要，客户端校验下载
     notes            TEXT NOT NULL DEFAULT '',
+    auto_update      BOOLEAN NOT NULL DEFAULT 0,  -- 客户端包是否允许客户端自己装
     launcher_version TEXT NOT NULL DEFAULT '',    -- 启动器版本号
     launcher_url     TEXT NOT NULL DEFAULT '',
     launcher_sha256  TEXT NOT NULL DEFAULT ''     -- 启动器完整摘要，客户端自己比对
@@ -123,11 +124,11 @@ CREATE TABLE credential (
 CREATE INDEX credential_device ON credential (device_public_id);
 ```
 
-`release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
+`release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。`auto_update` 属于客户端包槽位：发布这个包时一起写，发布或清空启动器不改动它。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
 
 `credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 6 节的 `ET_CLI`）。
 
-表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上；`device.last_app_hash` 由 `renameAppHashColumn` 原地改名为 `last_app_version` 并清空旧值（旧的 16 位包摘要在新语义下不是版本号），`release.hash` 由 `dropReleaseHashColumn` 删除；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
+表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上（`release.auto_update` 就是这样加上来的，存量行一律为 0，即手动安装）；`device.last_app_hash` 由 `renameAppHashColumn` 原地改名为 `last_app_version` 并清空旧值（旧的 16 位包摘要在新语义下不是版本号），`release.hash` 由 `dropReleaseHashColumn` 删除；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
 
 `config_hash` 是数据而不是结构：启动时把每台设备的摘要按当前算法（`core.Hash`，即 `sha256(toml)` 前 16 位）重算一遍，只写不一致的行。摘要算法变化后存量行由此迁移，设备不会停在永远 `stale`、每轮心跳都被重发配置的状态。
 

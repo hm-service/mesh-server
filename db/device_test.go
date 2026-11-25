@@ -190,9 +190,13 @@ func TestOpenMigratesAppIdentity(t *testing.T) {
 	if found, err := d.hasColumn("release", "hash"); err != nil || found {
 		t.Fatalf("release.hash survived the migration: found %v, %v", found, err)
 	}
+	// A package published before the switch existed is manual.
+	if found, err := d.hasColumn("release", "auto_update"); err != nil || !found {
+		t.Fatalf("release.auto_update missing after the migration: found %v, %v", found, err)
+	}
 	release, found, err := d.Release("windows/amd64")
-	if err != nil || !found || release.Version != "2026.11.25-1" || release.SHA256 != "full-digest" {
-		t.Fatalf("migrated release = %+v, found %v, %v", release, found, err)
+	if err != nil || !found || release.Version != "2026.11.25-1" || release.SHA256 != "full-digest" || release.AutoUpdate {
+		t.Fatalf("migrated release = %+v, found %v, %v; want it kept and manual", release, found, err)
 	}
 }
 
@@ -233,14 +237,15 @@ func TestReleasePerPlatform(t *testing.T) {
 // has its own write and clear path.
 func TestReleaseSlotsAreIndependent(t *testing.T) {
 	d := openTemp(t)
-	client := ClientSlot{Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1"}
+	client := ClientSlot{Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1", AutoUpdate: true}
 	if err := d.PublishSlots("windows/amd64", &client, nil); err != nil {
 		t.Fatalf("PublishSlots() client error: %v", err)
 	}
 	if err := d.PublishSlots("windows/amd64", nil, &LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}); err != nil {
 		t.Fatalf("PublishSlots() launcher error: %v", err)
 	}
-	want := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1",
+	// Publishing the launcher leaves the package's switch where the admin put it.
+	want := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1", AutoUpdate: true,
 		LauncherVersion: "l1", LauncherURL: "lu1", LauncherSHA256: "ls1"}
 	got, found, err := d.Release("windows/amd64")
 	if err != nil || !found || got != want {
@@ -251,7 +256,7 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 	if err := d.ClearLauncher("windows/amd64"); err != nil {
 		t.Fatalf("ClearLauncher() error: %v", err)
 	}
-	clientOnly := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1"}
+	clientOnly := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1", AutoUpdate: true}
 	if got, found, err = d.Release("windows/amd64"); err != nil || !found || got != clientOnly {
 		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want %+v", got, found, err, clientOnly)
 	}

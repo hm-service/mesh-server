@@ -7,7 +7,7 @@ import (
 )
 
 // Release is what one platform publishes: the client package (Version, URL,
-// SHA256, Notes) and the launcher (LauncherVersion, LauncherURL,
+// SHA256, Notes, AutoUpdate) and the launcher (LauncherVersion, LauncherURL,
 // LauncherSHA256). The two slots are written and cleared independently, so a row
 // exists as long as at least one of them is published.
 //
@@ -15,24 +15,31 @@ import (
 // compares; SHA256 is the full digest they verify the download against. The
 // launcher slot stores only the full digest: clients hash the launcher they
 // already have themselves, so there is no reported version to compare against.
+//
+// AutoUpdate is the package-level switch clients follow: it says whether this
+// build may install itself, not whether this device is unattended. It belongs to
+// the client package slot because one platform publishes one package at a time.
 type Release struct {
 	Platform        string
 	Version         string
 	URL             string
 	SHA256          string
 	Notes           string
+	AutoUpdate      bool
 	LauncherVersion string
 	LauncherURL     string
 	LauncherSHA256  string
 }
 
 // ClientSlot is the client package slot of one platform: the address clients
-// download from and the digest of the bytes behind it.
+// download from, the digest of the bytes behind it and the policy attached to
+// this package.
 type ClientSlot struct {
-	Version string
-	URL     string
-	SHA256  string
-	Notes   string
+	Version    string
+	URL        string
+	SHA256     string
+	Notes      string
+	AutoUpdate bool
 }
 
 // LauncherSlot is the launcher slot of one platform. Only the full digest is
@@ -43,12 +50,12 @@ type LauncherSlot struct {
 	SHA256  string
 }
 
-const releaseColumns = "platform, version, url, sha256, notes, launcher_version, launcher_url, launcher_sha256"
+const releaseColumns = "platform, version, url, sha256, notes, auto_update, launcher_version, launcher_url, launcher_sha256"
 
 // scanRelease reads one row of releaseColumns.
 func scanRelease(row interface{ Scan(...any) error }) (Release, error) {
 	var r Release
-	err := row.Scan(&r.Platform, &r.Version, &r.URL, &r.SHA256, &r.Notes,
+	err := row.Scan(&r.Platform, &r.Version, &r.URL, &r.SHA256, &r.Notes, &r.AutoUpdate,
 		&r.LauncherVersion, &r.LauncherURL, &r.LauncherSHA256)
 	return r, err
 }
@@ -100,8 +107,8 @@ func (d *DB) PublishSlots(platform string, client *ClientSlot, launcher *Launche
 		return fmt.Errorf("create release row: %w", err)
 	}
 	if client != nil {
-		if _, err := tx.Exec("UPDATE release SET version = ?, url = ?, sha256 = ?, notes = ? WHERE platform = ?",
-			client.Version, client.URL, client.SHA256, client.Notes, platform); err != nil {
+		if _, err := tx.Exec("UPDATE release SET version = ?, url = ?, sha256 = ?, notes = ?, auto_update = ? WHERE platform = ?",
+			client.Version, client.URL, client.SHA256, client.Notes, client.AutoUpdate, platform); err != nil {
 			return fmt.Errorf("publish client slot: %w", err)
 		}
 	}

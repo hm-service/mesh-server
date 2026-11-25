@@ -62,6 +62,8 @@ export interface ReleaseView {
   app_url: string;
   app_sha256: string;
   app_notes: string;
+  /** auto_update 跟着客户端包走：true 时客户端收到这个版本会自己装。 */
+  auto_update: boolean;
   launcher_version: string;
   launcher_url: string;
   launcher_sha256: string;
@@ -73,6 +75,8 @@ export interface ReleasePublish {
   app_version?: string;
   app_url?: string;
   app_notes?: string;
+  /** 只随客户端包一起给出，省略即 false（手动安装）。 */
+  auto_update?: boolean;
   launcher_version?: string;
   launcher_url?: string;
   default_toml?: string;

@@ -87,10 +87,11 @@ type configResponse struct {
 }
 
 type updateInfo struct {
-	Version string `json:"version"`
-	URL     string `json:"url"`
-	Notes   string `json:"notes,omitempty"`
-	SHA256  string `json:"sha256,omitempty"`
+	Version    string `json:"version"`
+	URL        string `json:"url"`
+	Notes      string `json:"notes,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	AutoUpdate bool   `json:"autoUpdate"`
 }
 
 type launcherInfo struct {
@@ -119,6 +120,7 @@ type releaseView struct {
 	AppURL          string `json:"app_url"`
 	AppSHA256       string `json:"app_sha256"`
 	AppNotes        string `json:"app_notes"`
+	AutoUpdate      bool   `json:"auto_update"`
 	LauncherVersion string `json:"launcher_version"`
 	LauncherURL     string `json:"launcher_url"`
 	LauncherSHA256  string `json:"launcher_sha256"`
@@ -522,7 +524,7 @@ func TestNonceReplayIsRejected(t *testing.T) {
 }
 
 // putReleases saves through the admin API and returns the response.
-func putReleases(t *testing.T, env *testenv.Env, fields map[string]string) releasesResponse {
+func putReleases(t *testing.T, env *testenv.Env, fields map[string]any) releasesResponse {
 	t.Helper()
 	res, data := env.Do("PUT", "/api/admin/releases", fields)
 	if res.StatusCode != http.StatusOK {
@@ -538,7 +540,7 @@ func putReleases(t *testing.T, env *testenv.Env, fields map[string]string) relea
 // publishExternal points the platform at a served package and returns its view.
 func publishExternal(t *testing.T, env *testenv.Env, platform, version, notes string, pkg []byte) releaseView {
 	t.Helper()
-	return putReleases(t, env, map[string]string{
+	return putReleases(t, env, map[string]any{
 		"platform":    platform,
 		"app_version": version,
 		"app_url":     fileServer(t, pkg),
@@ -549,7 +551,7 @@ func publishExternal(t *testing.T, env *testenv.Env, platform, version, notes st
 // publishLauncher points the launcher slot of platform at a served file.
 func publishLauncher(t *testing.T, env *testenv.Env, platform, version string, launcher []byte) releaseView {
 	t.Helper()
-	return putReleases(t, env, map[string]string{
+	return putReleases(t, env, map[string]any{
 		"platform":         platform,
 		"launcher_version": version,
 		"launcher_url":     fileServer(t, launcher),
@@ -869,7 +871,7 @@ func TestReleaseRoundTrip(t *testing.T) {
 	const toml = `hostname = "saved-by-settings"`
 	externalPkg := releasePkg(t, []byte("external mesh client binary"))
 	rawURL := fileServer(t, externalPkg)
-	saved := putReleases(t, env, map[string]string{
+	saved := putReleases(t, env, map[string]any{
 		"platform":     testPlatform,
 		"default_toml": toml,
 		"app_version":  "0.3.0",
@@ -909,7 +911,7 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 
 	// Editing only the template keeps the release.
-	revised := putReleases(t, env, map[string]string{"platform": testPlatform, "default_toml": `hostname = "only-template"`})
+	revised := putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": `hostname = "only-template"`})
 	if r := revised.releaseOf(testPlatform); r.AppVersion != "0.3.0" {
 		t.Fatalf("template-only save = %+v, want the release kept", revised)
 	}
@@ -920,6 +922,76 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("release survived delete: found %v, %v", found, err)
+	}
+}
+
+// TestAutoUpdateFollowsThePackage pins the package-level switch: it is stored
+// with the client package, travels to clients inside app_update, is rewritten by
+// every client-package publish (omitted means manual), and cannot be set on a
+// platform that has no package to attach it to.
+func TestAutoUpdateFollowsThePackage(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+
+	build := releasePkg(t, []byte("client build one"))
+	saved := putReleases(t, env, map[string]any{
+		"platform":    testPlatform,
+		"app_version": "2026.11.26-1",
+		"app_url":     fileServer(t, build),
+		"auto_update": true,
+	}).releaseOf(testPlatform)
+	if !saved.AutoUpdate {
+		t.Fatalf("published release = %+v, want auto_update", saved)
+	}
+	// The switch is data, not a request-time decoration.
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || !stored.AutoUpdate {
+		t.Fatalf("stored release = %+v, found %v, %v; want auto_update", stored, found, err)
+	}
+
+	// The client learns the policy together with the update itself.
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-0")
+	var got heartbeatResponse
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || !got.AppUpdate.AutoUpdate {
+		t.Fatalf("heartbeat = %d %+v, want app_update with autoUpdate", res.StatusCode, got)
+	}
+
+	// No app_update, no autoUpdate: the field does not ride on other responses.
+	res, data = heartbeat(t, env, dev, &nonces, "0000000000000000", "2026.11.26-1")
+	var onlyConfig heartbeatResponse
+	if err := json.Unmarshal(data, &onlyConfig); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	if res.StatusCode != http.StatusOK || onlyConfig.AppUpdate != nil || strings.Contains(string(data), "autoUpdate") {
+		t.Fatalf("config-only heartbeat = %d %s, want no autoUpdate", res.StatusCode, data)
+	}
+
+	// Publishing the launcher leaves the client package's switch alone.
+	launcher := publishLauncher(t, env, testPlatform, "2026.11.26-9", []byte("launcher binary"))
+	if !launcher.AutoUpdate || launcher.AppVersion != "2026.11.26-1" {
+		t.Fatalf("launcher publish = %+v, want the client slot kept", launcher)
+	}
+
+	// A new package starts manual unless the admin says otherwise.
+	next := putReleases(t, env, map[string]any{
+		"platform":    testPlatform,
+		"app_version": "2026.11.26-2",
+		"app_url":     fileServer(t, build),
+	}).releaseOf(testPlatform)
+	if next.AutoUpdate || next.AppVersion != "2026.11.26-2" {
+		t.Fatalf("republished package = %+v, want it back to manual", next)
+	}
+
+	// The switch cannot be flipped on its own: it has no package to belong to.
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]any{"platform": testPlatform, "auto_update": true})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_argument") {
+		t.Fatalf("lone auto_update = %d: %s, want 400 invalid_argument", res.StatusCode, data)
+	}
+	if stored, _, err := env.App.Release(testPlatform); err != nil || stored.AutoUpdate {
+		t.Fatalf("rejected auto_update changed the row: %+v, %v", stored, err)
 	}
 }
 
@@ -1181,7 +1253,7 @@ func TestSavedTemplateAppliesToNewDevices(t *testing.T) {
 	env := testenv.New(t)
 	const custom = `hostname = "from-settings"
 ipv4 = "10.126.126.9/24"`
-	putReleases(t, env, map[string]string{"platform": testPlatform, "default_toml": custom})
+	putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": custom})
 
 	// The create dialog prefills from GET /api/admin/template.
 	res, data := env.Do("GET", "/api/admin/template", nil)

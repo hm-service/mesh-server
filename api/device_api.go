@@ -212,12 +212,14 @@ func (s *Server) slotTokenValid(device db.Device, token string, now time.Time) b
 
 // updateInfo points a client at the published build. Version is compared with
 // the version the device reports; sha256 lets the client verify the download
-// after the fact.
+// after the fact. AutoUpdate 是这个包自己带的选择——发布方决定它能不能自己装，
+// 设备是不是无人值守不参与判断，所以它跟着 app_update 走，永远有值。
 type updateInfo struct {
-	Version string `json:"version"`
-	URL     string `json:"url"`
-	Notes   string `json:"notes,omitempty"`
-	SHA256  string `json:"sha256,omitempty"`
+	Version    string `json:"version"`
+	URL        string `json:"url"`
+	Notes      string `json:"notes,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	AutoUpdate bool   `json:"autoUpdate"`
 }
 
 // launcherInfo points a client at the launcher published for its platform. It
@@ -314,10 +316,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if appChanged {
 		resp.AppUpdate = &updateInfo{
-			Version: release.Version,
-			URL:     absoluteURL(r, release.URL),
-			Notes:   release.Notes,
-			SHA256:  release.SHA256,
+			Version:    release.Version,
+			URL:        absoluteURL(r, release.URL),
+			Notes:      release.Notes,
+			SHA256:     release.SHA256,
+			AutoUpdate: release.AutoUpdate,
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)

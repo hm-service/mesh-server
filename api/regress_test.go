@@ -114,7 +114,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 	client := []byte("a whole mesh client binary")
 	file := releasePkg(t, client)
-	release := putReleases(t, env, map[string]string{
+	release := putReleases(t, env, map[string]any{
 		"platform":    testPlatform,
 		"app_version": "2026.11.24-3",
 		"app_url":     fileServer(t, file),

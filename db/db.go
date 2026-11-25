@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS release (
     url              TEXT    NOT NULL DEFAULT '',
     sha256           TEXT    NOT NULL DEFAULT '',
     notes            TEXT    NOT NULL DEFAULT '',
+    auto_update      BOOLEAN NOT NULL DEFAULT 0,
     launcher_version TEXT    NOT NULL DEFAULT '',
     launcher_url     TEXT    NOT NULL DEFAULT '',
     launcher_sha256  TEXT    NOT NULL DEFAULT ''
@@ -128,6 +129,11 @@ func (d *DB) createSchema() error {
 		return err
 	}
 	if err := d.ensureColumn("release", "launcher_sha256", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// A database written before the package-level switch existed keeps every
+	// package it published as manual: the column arrives as 0.
+	if err := d.ensureColumn("release", "auto_update", "BOOLEAN NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := d.renameAppHashColumn(); err != nil {

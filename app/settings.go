@@ -160,9 +160,10 @@ func (a *App) Publish(in PublishInput) error {
 // of the bytes clients will download. It writes nothing.
 func (a *App) prepareClientSlot(slot db.ClientSlot) (db.ClientSlot, error) {
 	next := db.ClientSlot{
-		Version: strings.TrimSpace(slot.Version),
-		URL:     strings.TrimSpace(slot.URL),
-		Notes:   strings.TrimSpace(slot.Notes),
+		Version:    strings.TrimSpace(slot.Version),
+		URL:        strings.TrimSpace(slot.URL),
+		Notes:      strings.TrimSpace(slot.Notes),
+		AutoUpdate: slot.AutoUpdate,
 	}
 	if err := validateSlot("app", next.Version, next.URL); err != nil {
 		return db.ClientSlot{}, err

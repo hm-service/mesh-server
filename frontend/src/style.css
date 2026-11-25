@@ -552,6 +552,17 @@ textarea {
 .form-grid { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: var(--s2) var(--s3); }
 .form-grid .field { display: flex; flex-direction: column; }
 .field label { color: var(--muted); font-size: var(--fs-xs); margin-bottom: var(--s1); }
+/* 复选框字段：勾选框与标签同一行，不沿用 .field label 的块级排版。 */
+.field label.check {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.field label.check input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .slot .actions { margin-top: var(--s3); }
 .slot .err, .slot .hint { margin-top: var(--s2); }
 

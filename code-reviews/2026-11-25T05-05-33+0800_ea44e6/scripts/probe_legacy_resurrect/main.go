@@ -96,7 +96,7 @@ func main() {
 	a = open(dir)
 	devices, _ = a.ListDevices()
 	rel, found, _ = a.Release("windows/amd64")
-	fmt.Printf("AFTER RESTART     devices=%d release_found=%v version=%q hash=%q\n", len(devices), found, rel.Version, rel.Hash)
+	fmt.Printf("AFTER RESTART     devices=%d release_found=%v version=%q\n", len(devices), found, rel.Version)
 	deviceResurrected := len(devices) == 1
 	releaseResurrected := found
 
@@ -124,7 +124,7 @@ func main() {
 	a = open(dir)
 	defer a.Close()
 	rel, _, _ = a.Release("windows/amd64")
-	fmt.Printf("AFTER RESTART     version=%q hash=%q launcher_version=%q launcher_url=%q\n", rel.Version, rel.Hash, rel.LauncherVersion, rel.LauncherURL)
+	fmt.Printf("AFTER RESTART     version=%q launcher_version=%q launcher_url=%q\n", rel.Version, rel.LauncherVersion, rel.LauncherURL)
 	launcherWiped := rel.LauncherVersion == "" && rel.Version != ""
 
 	if deviceResurrected && releaseResurrected && launcherWiped {

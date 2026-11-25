@@ -26,8 +26,6 @@ const (
 	MaxAppVersionRunes = 64
 	// MaxReleaseBytes bounds the package downloaded from a slot's URL.
 	MaxReleaseBytes = 200 << 20
-	// releaseHashLen is the length of the truncated sha256 clients compare.
-	releaseHashLen = 16
 
 	maxAppURLRunes    = 2048
 	maxAppNotesRunes  = 2000
@@ -158,7 +156,7 @@ func (a *App) Publish(in PublishInput) error {
 	return nil
 }
 
-// prepareClientSlot validates one client package slot and computes the digests
+// prepareClientSlot validates one client package slot and computes the digest
 // of the bytes clients will download. It writes nothing.
 func (a *App) prepareClientSlot(slot db.ClientSlot) (db.ClientSlot, error) {
 	next := db.ClientSlot{
@@ -172,11 +170,11 @@ func (a *App) prepareClientSlot(slot db.ClientSlot) (db.ClientSlot, error) {
 	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
 		return db.ClientSlot{}, invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
 	}
-	hash, sha, err := a.fetchDigest(next.URL)
+	sha, err := a.fetchDigest(next.URL)
 	if err != nil {
 		return db.ClientSlot{}, invalid("无法读取 app_url 指向的文件：%v", err)
 	}
-	next.Hash, next.SHA256 = hash, sha
+	next.SHA256 = sha
 	return next, nil
 }
 
@@ -187,7 +185,7 @@ func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error)
 	if err := validateSlot("launcher", next.Version, next.URL); err != nil {
 		return db.LauncherSlot{}, err
 	}
-	_, sha, err := a.fetchDigest(next.URL)
+	sha, err := a.fetchDigest(next.URL)
 	if err != nil {
 		return db.LauncherSlot{}, invalid("无法读取 launcher_url 指向的文件：%v", err)
 	}
@@ -282,25 +280,24 @@ func dialGuard(allow []netip.Prefix) func(network, address string, c syscall.Raw
 	}
 }
 
-// fetchDigest downloads rawURL and returns the shortened and full sha256 of the
-// bytes clients will download.
-func (a *App) fetchDigest(rawURL string) (hash, sha string, err error) {
+// fetchDigest downloads rawURL and returns the full sha256 of the bytes clients
+// will download.
+func (a *App) fetchDigest(rawURL string) (sha string, err error) {
 	res, err := a.fetch.Get(rawURL)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("HTTP %d", res.StatusCode)
+		return "", fmt.Errorf("HTTP %d", res.StatusCode)
 	}
 	sum := sha256.New()
 	n, err := io.Copy(sum, io.LimitReader(res.Body, MaxReleaseBytes+1))
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	if n > MaxReleaseBytes {
-		return "", "", errors.New("文件超过 200MB")
+		return "", errors.New("文件超过 200MB")
 	}
-	full := hex.EncodeToString(sum.Sum(nil))
-	return full[:releaseHashLen], full, nil
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }

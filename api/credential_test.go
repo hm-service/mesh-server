@@ -33,7 +33,7 @@ func credentialHeartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce
 		"signature":    base64.StdEncoding.EncodeToString(ed25519.Sign(dev.priv, []byte(msg))),
 		"platform":     testPlatform,
 		"configHash":   dev.configHash,
-		"appHash":      "",
+		"appVersion":   "",
 		"credentialId": credentialID,
 	})
 	if err != nil {

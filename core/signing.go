@@ -23,9 +23,9 @@ var (
 // The fields are joined in a fixed order instead of hashing the JSON body: the
 // heartbeat carries its own signature, so any body-digest scheme would have to
 // strip and re-serialise it on both sides and stay in lockstep forever.
-func SigningString(method, path, deviceID, timestamp, nonce, platformID, configHash, appHash string) string {
+func SigningString(method, path, deviceID, timestamp, nonce, platformID, configHash, appVersion string) string {
 	return strings.Join([]string{
-		"MESH2", method, path, deviceID, timestamp, nonce, platformID, configHash, appHash,
+		"MESH2", method, path, deviceID, timestamp, nonce, platformID, configHash, appVersion,
 	}, "\n")
 }
 

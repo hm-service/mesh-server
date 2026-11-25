@@ -278,9 +278,10 @@ func (a *App) Touch(publicID, ip string) error {
 	return a.database.Touch(publicID, a.now().Unix(), ip)
 }
 
-// RecordHeartbeat stores the hashes a device reported together with its platform.
-func (a *App) RecordHeartbeat(publicID, configHash, appHash, platform string) error {
-	return a.database.RecordHeartbeat(publicID, configHash, appHash, platform, a.now().Unix())
+// RecordHeartbeat stores the config hash and app version a device reported
+// together with its platform.
+func (a *App) RecordHeartbeat(publicID, configHash, appVersion, platform string) error {
+	return a.database.RecordHeartbeat(publicID, configHash, appVersion, platform, a.now().Unix())
 }
 
 // migrateConfigHashes 按当前算法重算每台设备的 config_hash，只写不一致的行。
@@ -326,12 +327,12 @@ func ConfigState(d db.Device) string {
 	return "stale"
 }
 
-// AppState reports whether the device runs the build published for its platform.
-// With nothing published for that platform there is nothing to update to, so it
-// counts as current, even for a device that has never reported a platform
-// (CONTRACT.md 1.4).
+// AppState reports whether the device runs the version published for its
+// platform. With nothing published for that platform there is nothing to update
+// to, so it counts as current, even for a device that has never reported a
+// platform (CONTRACT.md 1.4).
 func AppState(d db.Device, r db.Release) string {
-	if r.Hash == "" || d.LastAppHash == r.Hash {
+	if r.Version == "" || d.LastAppVersion == r.Version {
 		return "current"
 	}
 	return "stale"
@@ -339,9 +340,6 @@ func AppState(d db.Device, r db.Release) string {
 
 // ReleaseVersion labels the published build; empty when nothing is published.
 func ReleaseVersion(r db.Release) string {
-	if r.Hash == "" {
-		return ""
-	}
 	return r.Version
 }
 

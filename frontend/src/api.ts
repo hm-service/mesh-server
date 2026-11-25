@@ -9,7 +9,7 @@ export interface DeviceSummary {
   status: "online" | "offline" | "pending";
   config_hash: string;
   last_config_hash: string;
-  last_app_hash: string;
+  last_app_version: string;
   config_state: "current" | "stale";
   app_state: "current" | "stale";
   app_version: string;
@@ -60,7 +60,6 @@ export interface ReleaseView {
   platform: string;
   app_version: string;
   app_url: string;
-  app_hash: string;
   app_sha256: string;
   app_notes: string;
   launcher_version: string;

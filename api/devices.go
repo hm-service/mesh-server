@@ -19,7 +19,7 @@ type deviceSummary struct {
 	Status         string `json:"status"`
 	ConfigHash     string `json:"config_hash"`
 	LastConfigHash string `json:"last_config_hash"`
-	LastAppHash    string `json:"last_app_hash"`
+	LastAppVersion string `json:"last_app_version"`
 	ConfigState    string `json:"config_state"`
 	AppState       string `json:"app_state"`
 	AppVersion     string `json:"app_version"`
@@ -55,7 +55,7 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 		Status:         app.DeviceStatus(d, now),
 		ConfigHash:     d.ConfigHash,
 		LastConfigHash: d.LastConfigHash,
-		LastAppHash:    d.LastAppHash,
+		LastAppVersion: d.LastAppVersion,
 		ConfigState:    app.ConfigState(d),
 		AppState:       app.AppState(d, release),
 		AppVersion:     app.ReleaseVersion(release),
@@ -86,7 +86,7 @@ type deviceDetail struct {
 	LastSeenAt     int64  `json:"last_seen_at"`
 	LastIP         string `json:"last_ip"`
 	LastConfigHash string `json:"last_config_hash"`
-	LastAppHash    string `json:"last_app_hash"`
+	LastAppVersion string `json:"last_app_version"`
 	Status         string `json:"status"`
 	ConfigState    string `json:"config_state"`
 	AppState       string `json:"app_state"`
@@ -125,7 +125,7 @@ func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
 		LastSeenAt:     d.LastSeenAt,
 		LastIP:         d.LastIP,
 		LastConfigHash: d.LastConfigHash,
-		LastAppHash:    d.LastAppHash,
+		LastAppVersion: d.LastAppVersion,
 		Status:         app.DeviceStatus(d, now),
 		ConfigState:    app.ConfigState(d),
 		AppState:       app.AppState(d, release),

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -113,21 +114,103 @@ func TestPurgeExpiredTokens(t *testing.T) {
 	}
 }
 
+// TestOpenMigratesAppIdentity proves that a database written while clients
+// reported a 16-character package digest gains device.last_app_version (the old
+// digest is cleared: it is not a version) and loses release.hash.
+func TestOpenMigratesAppIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mesh.db")
+	conn, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old database: %v", err)
+	}
+	const oldDevice = `CREATE TABLE device (
+	    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+	    public_id        TEXT    NOT NULL UNIQUE,
+	    name             TEXT    NOT NULL DEFAULT '',
+	    device_id        TEXT    NOT NULL DEFAULT '',
+	    hostname         TEXT    NOT NULL DEFAULT '',
+	    pubkey           TEXT    NOT NULL DEFAULT '',
+	    config_toml      TEXT    NOT NULL DEFAULT '',
+	    config_hash      TEXT    NOT NULL DEFAULT '',
+	    token            TEXT    NOT NULL DEFAULT '',
+	    token_expires_at INTEGER NOT NULL DEFAULT 0,
+	    created_at       INTEGER NOT NULL DEFAULT 0,
+	    last_seen_at     INTEGER NOT NULL DEFAULT 0,
+	    last_ip          TEXT    NOT NULL DEFAULT '',
+	    last_config_hash TEXT    NOT NULL DEFAULT '',
+	    last_app_hash    TEXT    NOT NULL DEFAULT ''
+	)`
+	const oldRelease = `CREATE TABLE release (
+	    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+	    platform         TEXT NOT NULL UNIQUE,
+	    version          TEXT NOT NULL DEFAULT '',
+	    url              TEXT NOT NULL DEFAULT '',
+	    hash             TEXT NOT NULL DEFAULT '',
+	    sha256           TEXT NOT NULL DEFAULT '',
+	    notes            TEXT NOT NULL DEFAULT ''
+	)`
+	if _, err := conn.Exec(oldDevice); err != nil {
+		conn.Close()
+		t.Fatalf("create old device table: %v", err)
+	}
+	if _, err := conn.Exec(oldRelease); err != nil {
+		conn.Close()
+		t.Fatalf("create old release table: %v", err)
+	}
+	if _, err := conn.Exec("INSERT INTO device (public_id, name, last_app_hash) VALUES ('d_old', '旧设备', 'efe0e1d322d28c45')"); err != nil {
+		conn.Close()
+		t.Fatalf("insert old device: %v", err)
+	}
+	if _, err := conn.Exec("INSERT INTO release (platform, version, url, hash, sha256, notes) VALUES ('windows/amd64', '2026.11.25-1', 'http://example/old', 'efe0e1d322d28c45', 'full-digest', '')"); err != nil {
+		conn.Close()
+		t.Fatalf("insert old release: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close old database: %v", err)
+	}
+
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on old database error: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	device, err := d.Get("d_old")
+	if err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	if device.LastAppVersion != "" {
+		t.Fatalf("migrated last_app_version = %q, want the old digest cleared", device.LastAppVersion)
+	}
+	if found, err := d.hasColumn("device", "last_app_hash"); err != nil || found {
+		t.Fatalf("device.last_app_hash survived the migration: found %v, %v", found, err)
+	}
+	if found, err := d.hasColumn("device", "last_app_version"); err != nil || !found {
+		t.Fatalf("device.last_app_version missing after the migration: found %v, %v", found, err)
+	}
+	if found, err := d.hasColumn("release", "hash"); err != nil || found {
+		t.Fatalf("release.hash survived the migration: found %v, %v", found, err)
+	}
+	release, found, err := d.Release("windows/amd64")
+	if err != nil || !found || release.Version != "2026.11.25-1" || release.SHA256 != "full-digest" {
+		t.Fatalf("migrated release = %+v, found %v, %v", release, found, err)
+	}
+}
+
 func TestReleasePerPlatform(t *testing.T) {
 	d := openTemp(t)
 	if _, found, err := d.Release("windows/amd64"); err != nil || found {
 		t.Fatalf("Release() on empty database = found %v, %v", found, err)
 	}
-	first := ClientSlot{Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1"}
+	first := ClientSlot{Version: "v1", URL: "u1", SHA256: "s1"}
 	if err := d.PublishSlots("windows/amd64", &first, nil); err != nil {
 		t.Fatalf("PublishSlots() error: %v", err)
 	}
-	second := ClientSlot{Version: "v2", URL: "u2", Hash: "h2", SHA256: "s2"}
+	second := ClientSlot{Version: "v2", URL: "u2", SHA256: "s2"}
 	if err := d.PublishSlots("windows/amd64", &second, nil); err != nil {
 		t.Fatalf("PublishSlots() second error: %v", err)
 	}
 	got, found, err := d.Release("windows/amd64")
-	if err != nil || !found || got != (Release{Platform: "windows/amd64", Version: "v2", URL: "u2", Hash: "h2", SHA256: "s2"}) {
+	if err != nil || !found || got != (Release{Platform: "windows/amd64", Version: "v2", URL: "u2", SHA256: "s2"}) {
 		t.Fatalf("Release() = %+v, found %v, %v", got, found, err)
 	}
 	if err := d.PublishSlots("linux/amd64", &ClientSlot{Version: "v9"}, nil); err != nil {
@@ -150,14 +233,14 @@ func TestReleasePerPlatform(t *testing.T) {
 // has its own write and clear path.
 func TestReleaseSlotsAreIndependent(t *testing.T) {
 	d := openTemp(t)
-	client := ClientSlot{Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1"}
+	client := ClientSlot{Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1"}
 	if err := d.PublishSlots("windows/amd64", &client, nil); err != nil {
 		t.Fatalf("PublishSlots() client error: %v", err)
 	}
 	if err := d.PublishSlots("windows/amd64", nil, &LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}); err != nil {
 		t.Fatalf("PublishSlots() launcher error: %v", err)
 	}
-	want := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1",
+	want := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1",
 		LauncherVersion: "l1", LauncherURL: "lu1", LauncherSHA256: "ls1"}
 	got, found, err := d.Release("windows/amd64")
 	if err != nil || !found || got != want {
@@ -168,7 +251,7 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 	if err := d.ClearLauncher("windows/amd64"); err != nil {
 		t.Fatalf("ClearLauncher() error: %v", err)
 	}
-	clientOnly := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1", Notes: "n1"}
+	clientOnly := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1"}
 	if got, found, err = d.Release("windows/amd64"); err != nil || !found || got != clientOnly {
 		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want %+v", got, found, err, clientOnly)
 	}
@@ -190,7 +273,7 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 func TestPublishSlotsIsAtomic(t *testing.T) {
 	d := openTemp(t)
 	if err := d.PublishSlots("windows/amd64",
-		&ClientSlot{Version: "v1", URL: "u1", Hash: "h1", SHA256: "s1"},
+		&ClientSlot{Version: "v1", URL: "u1", SHA256: "s1"},
 		&LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}); err != nil {
 		t.Fatalf("PublishSlots() error: %v", err)
 	}

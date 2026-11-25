@@ -6,7 +6,7 @@ import (
 )
 
 // HashLen is the length of config_hash: the first 16 hex characters of the
-// sha256 digest, the same length app_hash uses (CONTRACT.md 1.2).
+// sha256 digest (CONTRACT.md 1.2).
 const HashLen = 16
 
 // Hash returns the first HashLen hex characters of sha256(toml).

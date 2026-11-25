@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS device (
     last_seen_at     INTEGER NOT NULL DEFAULT 0,
     last_ip          TEXT    NOT NULL DEFAULT '',
     last_config_hash TEXT    NOT NULL DEFAULT '',
-    last_app_hash    TEXT    NOT NULL DEFAULT '',
+    last_app_version TEXT    NOT NULL DEFAULT '',
     group_id         INTEGER NOT NULL DEFAULT 0,
     position         INTEGER NOT NULL DEFAULT 0
 );
@@ -46,7 +46,6 @@ CREATE TABLE IF NOT EXISTS release (
     platform         TEXT    NOT NULL UNIQUE,
     version          TEXT    NOT NULL DEFAULT '',
     url              TEXT    NOT NULL DEFAULT '',
-    hash             TEXT    NOT NULL DEFAULT '',
     sha256           TEXT    NOT NULL DEFAULT '',
     notes            TEXT    NOT NULL DEFAULT '',
     launcher_version TEXT    NOT NULL DEFAULT '',
@@ -131,7 +130,51 @@ func (d *DB) createSchema() error {
 	if err := d.ensureColumn("release", "launcher_sha256", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := d.renameAppHashColumn(); err != nil {
+		return err
+	}
+	if err := d.dropReleaseHashColumn(); err != nil {
+		return err
+	}
 	return d.dropLegacySchema()
+}
+
+// renameAppHashColumn turns device.last_app_hash into last_app_version, the
+// field that now holds the version string clients report. A pre-migration row
+// holds a 16-character package digest: it is cleared because as a version it is
+// meaningless and would only be shown as one until the next heartbeat.
+func (d *DB) renameAppHashColumn() error {
+	found, err := d.hasColumn("device", "last_app_hash")
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if _, err := d.conn.Exec("ALTER TABLE device RENAME COLUMN last_app_hash TO last_app_version"); err != nil {
+		return fmt.Errorf("rename device.last_app_hash: %w", err)
+	}
+	if _, err := d.conn.Exec("UPDATE device SET last_app_version = '' WHERE last_app_version <> ''"); err != nil {
+		return fmt.Errorf("clear device.last_app_version: %w", err)
+	}
+	return nil
+}
+
+// dropReleaseHashColumn removes release.hash, the 16-character package digest
+// clients used to report. The version string in release.version is what the
+// control plane compares now; release.sha256 stays for download verification.
+func (d *DB) dropReleaseHashColumn() error {
+	found, err := d.hasColumn("release", "hash")
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if _, err := d.conn.Exec("ALTER TABLE release DROP COLUMN hash"); err != nil {
+		return fmt.Errorf("drop release.hash: %w", err)
+	}
+	return nil
 }
 
 // dropLegacySchema removes what the pre-SQLite import needed. The import is

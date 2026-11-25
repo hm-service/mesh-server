@@ -193,30 +193,30 @@ func TestDerivedStates(t *testing.T) {
 	if got := ConfigState(device); got != "stale" {
 		t.Fatalf("config state = %q, want stale", got)
 	}
-	settings := dbRelease("v1", "aaaa")
+	settings := dbRelease("v1")
 	device.LastPlatform = "windows/amd64"
-	device.LastAppHash = "aaaa"
+	device.LastAppVersion = "v1"
 	if got := AppState(device, settings); got != "current" {
 		t.Fatalf("app state = %q, want current", got)
 	}
-	device.LastAppHash = "cccc"
+	device.LastAppVersion = "v2"
 	if got := AppState(device, settings); got != "stale" {
 		t.Fatalf("app state = %q, want stale", got)
 	}
-	if got := AppState(device, dbRelease("", "")); got != "current" {
+	if got := AppState(device, dbRelease("")); got != "current" {
 		t.Fatalf("app state without a release = %q, want current", got)
 	}
 	// 没有发布时，连平台都还没上报的设备也算 current：不存在可更新到的版本。
 	unknown := device
 	unknown.LastPlatform = ""
-	unknown.LastAppHash = ""
-	if got := AppState(unknown, dbRelease("", "")); got != "current" {
+	unknown.LastAppVersion = ""
+	if got := AppState(unknown, dbRelease("")); got != "current" {
 		t.Fatalf("app state of a device without a platform and no release = %q, want current", got)
 	}
-	if got := AppState(unknown, dbRelease("v1", "aaaa")); got != "stale" {
+	if got := AppState(unknown, dbRelease("v1")); got != "stale" {
 		t.Fatalf("app state of a device without a platform = %q, want stale", got)
 	}
-	if got := ReleaseVersion(dbRelease("", "")); got != "" {
+	if got := ReleaseVersion(dbRelease("")); got != "" {
 		t.Fatalf("release version without a release = %q, want empty", got)
 	}
 }
@@ -224,8 +224,8 @@ func dbDevice(publicID, deviceID string, seenAt int64) db.Device {
 	return db.Device{PublicID: publicID, DeviceID: deviceID, LastSeenAt: seenAt}
 }
 
-func dbRelease(version, hash string) db.Release {
-	return db.Release{Version: version, Hash: hash}
+func dbRelease(version string) db.Release {
+	return db.Release{Version: version}
 }
 
 // TestOpenRehashesStoredConfigs pins F3: a row written with the old normalized

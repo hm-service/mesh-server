@@ -16,7 +16,6 @@ type releaseView struct {
 	Platform        string `json:"platform"`
 	AppVersion      string `json:"app_version"`
 	AppURL          string `json:"app_url"`
-	AppHash         string `json:"app_hash"`
 	AppSHA256       string `json:"app_sha256"`
 	AppNotes        string `json:"app_notes"`
 	LauncherVersion string `json:"launcher_version"`
@@ -47,7 +46,6 @@ func toView(r db.Release) releaseView {
 		Platform:        r.Platform,
 		AppVersion:      r.Version,
 		AppURL:          r.URL,
-		AppHash:         r.Hash,
 		AppSHA256:       r.SHA256,
 		AppNotes:        r.Notes,
 		LauncherVersion: r.LauncherVersion,

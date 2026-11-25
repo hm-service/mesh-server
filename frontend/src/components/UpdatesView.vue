@@ -82,7 +82,6 @@ function clientLine(platform: string): string {
   const value = releaseOf(platform);
   if (!value || !value.app_version) return "尚未发布";
   const parts = [value.app_version];
-  if (value.app_hash) parts.push("hash " + value.app_hash);
   if (value.app_url) parts.push(value.app_url);
   return parts.join(" · ");
 }
@@ -140,7 +139,7 @@ async function saveClient(platform: string) {
   if (!complete(draft)) return;
   const version = draft.version.trim();
   draft.busy = true;
-  draft.hint = "正在解析远程文件…（服务端下载并计算 hash，最长约 60 秒）";
+  draft.hint = "正在解析远程文件…（服务端下载并计算 sha256，最长约 60 秒）";
   try {
     const saved = await api.publishRelease({
       platform,

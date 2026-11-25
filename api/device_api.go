@@ -48,7 +48,7 @@ type heartbeatRequest struct {
 	Signature  string `json:"signature"`
 	Platform   string `json:"platform"`
 	ConfigHash string `json:"configHash"`
-	AppHash    string `json:"appHash"`
+	AppVersion string `json:"appVersion"`
 	// CredentialID 是客户端正在用的凭据；不参与签名，也不影响鉴权。
 	CredentialID string `json:"credentialId"`
 }
@@ -84,7 +84,7 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds heartb
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
 	}
-	signing := core.SigningString(r.Method, r.URL.Path, deviceID, timestamp, nonce, creds.Platform, creds.ConfigHash, creds.AppHash)
+	signing := core.SigningString(r.Method, r.URL.Path, deviceID, timestamp, nonce, creds.Platform, creds.ConfigHash, creds.AppVersion)
 	if err := core.VerifySignature(device.Pubkey, signature, []byte(signing)); err != nil {
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return db.Device{}, false
@@ -210,9 +210,9 @@ func (s *Server) slotTokenValid(device db.Device, token string, now time.Time) b
 	return found && pending.PublicID == device.PublicID && pending.TokenExpiresAt > now.Unix()
 }
 
-// updateInfo points a client at the published build. Version only labels the
-// update in the client UI; app_hash decides that one exists, and sha256 lets the
-// client verify the download after the fact.
+// updateInfo points a client at the published build. Version is compared with
+// the version the device reports; sha256 lets the client verify the download
+// after the fact.
 type updateInfo struct {
 	Version string `json:"version"`
 	URL     string `json:"url"`
@@ -272,7 +272,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.app.RecordHeartbeat(device.PublicID, req.ConfigHash, req.AppHash, req.Platform); err != nil {
+	if err := s.app.RecordHeartbeat(device.PublicID, req.ConfigHash, req.AppVersion, req.Platform); err != nil {
 		s.logger.Error("record heartbeat", "id", device.PublicID, "error", err)
 	}
 	// 更新包按平台发布：Linux 与 Windows 不会互相覆盖。
@@ -283,7 +283,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	configChanged := req.ConfigHash != device.ConfigHash
-	appChanged := release.Hash != "" && req.AppHash != release.Hash
+	appChanged := release.Version != "" && req.AppVersion != release.Version
 	// 启动器不参与签名原文，服务端也就无从比较客户端手里那份，所以只要该平台
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。代价是这种情况没有
 	// 204，三十秒多几十字节。

@@ -106,9 +106,8 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 	}
 }
 
-// TestReleaseExposesFullDigest pins that the 16-character hash clients compare
-// is a prefix of the package digest, and the full sha256 travels next to it so
-// a client can verify what it downloaded.
+// TestReleaseExposesFullDigest pins that the full package sha256 travels to the
+// client so it can verify what it downloaded.
 func TestReleaseExposesFullDigest(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
@@ -123,12 +122,6 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])
-	if len(release.AppHash) != 16 {
-		t.Fatalf("app_hash = %q, want 16 characters", release.AppHash)
-	}
-	if release.AppHash != pkgFull[:16] {
-		t.Fatalf("app_hash = %q, want %q", release.AppHash, pkgFull[:16])
-	}
 	if release.AppSHA256 != pkgFull {
 		t.Fatalf("app_sha256 = %q, want %q", release.AppSHA256, pkgFull)
 	}

@@ -30,14 +30,14 @@ type Device struct {
 	LastSeenAt     int64
 	LastIP         string
 	LastConfigHash string
-	LastAppHash    string
+	LastAppVersion string
 	LastPlatform   string
 	GroupID        int64
 	Position       int64
 }
 
 const deviceColumns = "public_id, name, device_id, hostname, pubkey, config_toml, config_hash, " +
-	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_hash, last_platform, group_id, position"
+	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_version, last_platform, group_id, position"
 
 const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
@@ -49,7 +49,7 @@ func scanDevice(row rowScanner) (Device, error) {
 	var d Device
 	err := row.Scan(&d.PublicID, &d.Name, &d.DeviceID, &d.Hostname, &d.Pubkey,
 		&d.ConfigTOML, &d.ConfigHash, &d.Token, &d.TokenExpiresAt, &d.CreatedAt, &d.LastSeenAt,
-		&d.LastIP, &d.LastConfigHash, &d.LastAppHash, &d.LastPlatform, &d.GroupID, &d.Position)
+		&d.LastIP, &d.LastConfigHash, &d.LastAppVersion, &d.LastPlatform, &d.GroupID, &d.Position)
 	return d, err
 }
 
@@ -161,7 +161,7 @@ func deviceArgs(dev Device) []any {
 	return []any{
 		dev.PublicID, dev.Name, dev.DeviceID, dev.Hostname, dev.Pubkey,
 		dev.ConfigTOML, dev.ConfigHash, dev.Token, dev.TokenExpiresAt, dev.CreatedAt,
-		dev.LastSeenAt, dev.LastIP, dev.LastConfigHash, dev.LastAppHash, dev.LastPlatform,
+		dev.LastSeenAt, dev.LastIP, dev.LastConfigHash, dev.LastAppVersion, dev.LastPlatform,
 		dev.GroupID, dev.Position,
 	}
 }
@@ -186,10 +186,10 @@ func (d *DB) Update(publicID string, mutate func(*Device) error) (Device, error)
 	}
 	if _, err := tx.Exec("UPDATE device SET name=?, device_id=?, hostname=?, pubkey=?, config_toml=?, "+
 		"config_hash=?, token=?, token_expires_at=?, created_at=?, last_seen_at=?, last_ip=?, "+
-		"last_config_hash=?, last_app_hash=?, last_platform=?, group_id=?, position=? WHERE public_id=?",
+		"last_config_hash=?, last_app_version=?, last_platform=?, group_id=?, position=? WHERE public_id=?",
 		device.Name, device.DeviceID, device.Hostname, device.Pubkey, device.ConfigTOML,
 		device.ConfigHash, device.Token, device.TokenExpiresAt, device.CreatedAt, device.LastSeenAt,
-		device.LastIP, device.LastConfigHash, device.LastAppHash, device.LastPlatform, device.GroupID,
+		device.LastIP, device.LastConfigHash, device.LastAppVersion, device.LastPlatform, device.GroupID,
 		device.Position, publicID,
 	); err != nil {
 		return Device{}, fmt.Errorf("update device: %w", err)
@@ -247,11 +247,11 @@ func (d *DB) Touch(publicID string, now int64, ip string) error {
 	return nil
 }
 
-// RecordHeartbeat stores the hashes a device reported together with its
-// last_seen_at.
-func (d *DB) RecordHeartbeat(publicID, configHash, appHash, platform string, now int64) error {
-	res, err := d.conn.Exec("UPDATE device SET last_config_hash = ?, last_app_hash = ?, last_platform = ?, last_seen_at = ? WHERE public_id = ?",
-		configHash, appHash, platform, now, publicID)
+// RecordHeartbeat stores the configuration hash and app version a device
+// reported together with its last_seen_at.
+func (d *DB) RecordHeartbeat(publicID, configHash, appVersion, platform string, now int64) error {
+	res, err := d.conn.Exec("UPDATE device SET last_config_hash = ?, last_app_version = ?, last_platform = ?, last_seen_at = ? WHERE public_id = ?",
+		configHash, appVersion, platform, now, publicID)
 	if err != nil {
 		return fmt.Errorf("record heartbeat: %w", err)
 	}

@@ -54,12 +54,12 @@ export function configStateClass(value: string): string {
 
 /** appStateLabel 只在有新版本可更新时给文案；没有发布或已同步时为空。 */
 export function appStateLabel(device: DeviceSummary): string {
-  if (!device.app_version || device.app_state === "current") return "";
+  if (!device.appVersion || device.appState === "current") return "";
   return "待更新";
 }
 
 export function appStateClass(device: DeviceSummary): string {
-  return device.app_state === "current" ? "state current" : "state update";
+  return device.appState === "current" ? "state current" : "state update";
 }
 
 export function relTime(sec: number, now: number): string {

@@ -21,10 +21,10 @@ const (
 
 // registerRequest is POST /api/v1/register. timestamp、nonce、signature、platform
 // 只有"槽位已经绑定"时才用得上：它们带着本机私钥的签名，证明调用方就是那个
-// 设备。签名覆盖 MESH2\nPOST\n/api/v1/register\n<device_id>\n<timestamp>\n<nonce>\n<platform>\n\n。
+// 设备。签名覆盖 MESH2\nPOST\n/api/v1/register\n<deviceId>\n<timestamp>\n<nonce>\n<platform>\n\n。
 type registerRequest struct {
 	Token     string `json:"token"`
-	DeviceID  string `json:"device_id"`
+	DeviceID  string `json:"deviceId"`
 	Hostname  string `json:"hostname"`
 	Pubkey    string `json:"pubkey"`
 	Timestamp string `json:"timestamp"`
@@ -34,9 +34,9 @@ type registerRequest struct {
 }
 
 type registerResponse struct {
-	DeviceID   string `json:"device_id"`
-	ConfigTOML string `json:"config_toml"`
-	ConfigHash string `json:"config_hash"`
+	DeviceID   string `json:"deviceId"`
+	ConfigTOML string `json:"configToml"`
+	ConfigHash string `json:"configHash"`
 }
 
 // heartbeatRequest 是心跳请求体：认证字段与业务字段放在同一个 JSON 里，
@@ -178,7 +178,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 // registerProofValid reports whether the caller proved it owns the bound slot.
 // A signature with the bound key counts, and so does a registration token that
-// was never used up. Knowing device_id and pubkey is not enough.
+// was never used up. Knowing deviceId and pubkey is not enough.
 func (s *Server) registerProofValid(device db.Device, req registerRequest, now time.Time) bool {
 	if req.Timestamp != "" && req.Nonce != "" && req.Signature != "" {
 		signedAt, err := core.CheckTimestamp(req.Timestamp, now)
@@ -213,7 +213,7 @@ func (s *Server) slotTokenValid(device db.Device, token string, now time.Time) b
 // updateInfo points a client at the published build. Version is only sent to a
 // device reporting an older one (app.NeedsUpdate); sha256 lets the client verify
 // the download after the fact. AutoUpdate 是这个包自己带的选择——发布方决定它
-// 能不能自己装，设备是不是无人值守不参与判断，所以它跟着 app_update 走，永远有值。
+// 能不能自己装，设备是不是无人值守不参与判断，所以它跟着 appUpdate 走，永远有值。
 type updateInfo struct {
 	Version    string `json:"version"`
 	URL        string `json:"url"`
@@ -250,14 +250,14 @@ func launcherOf(release db.Release) *launcherInfo {
 // ConfigB64 是整份 config.toml 的 base64：配置只有几 KB，随心跳一起回去
 // 就不必让客户端再发一次请求。
 type heartbeatResponse struct {
-	ConfigHash string        `json:"config_hash,omitempty"`
-	ConfigB64  string        `json:"config_b64,omitempty"`
-	AppUpdate  *updateInfo   `json:"app_update,omitempty"`
+	ConfigHash string        `json:"configHash,omitempty"`
+	ConfigB64  string        `json:"configB64,omitempty"`
+	AppUpdate  *updateInfo   `json:"appUpdate,omitempty"`
 	Launcher   *launcherInfo `json:"launcher,omitempty"`
 	// 凭据私钥只在签发的那一次响应里出现，之后服务端只剩 id。
 	Credential       string `json:"credential,omitempty"`
-	CredentialID     string `json:"credential_id,omitempty"`
-	CredentialExpiry int64  `json:"credential_expiry,omitempty"`
+	CredentialID     string `json:"credentialId,omitempty"`
+	CredentialExpiry int64  `json:"credentialExpiry,omitempty"`
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {

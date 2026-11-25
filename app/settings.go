@@ -203,11 +203,11 @@ func (a *App) prepareClientSlot(pkg ClientPackage) (db.ClientSlot, error) {
 		return db.ClientSlot{}, err
 	}
 	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
-		return db.ClientSlot{}, invalid("app_notes 最长 %d 字符", maxAppNotesRunes)
+		return db.ClientSlot{}, invalid("appNotes 最长 %d 字符", maxAppNotesRunes)
 	}
 	sha, version, err := a.fetchClientPackage(next.URL)
 	if err != nil {
-		return db.ClientSlot{}, invalid("无法读取 app_url 指向的文件：%v", err)
+		return db.ClientSlot{}, invalid("无法读取 appUrl 指向的文件：%v", err)
 	}
 	// 版本号要与设备上报的版本排序（CompareVersions），否则「是否更新」无从
 	// 判断，只能一直下发或一直不下发。
@@ -232,7 +232,7 @@ func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error)
 	}
 	sha, err := a.fetchDigest(next.URL)
 	if err != nil {
-		return db.LauncherSlot{}, invalid("无法读取 launcher_url 指向的文件：%v", err)
+		return db.LauncherSlot{}, invalid("无法读取 launcherUrl 指向的文件：%v", err)
 	}
 	next.SHA256 = sha
 	return next, nil

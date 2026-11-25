@@ -231,7 +231,7 @@ func TestAdminIssuedCredentialReachesDevice(t *testing.T) {
 		t.Fatalf("admin issue credential = %d, want 200: %s", res.StatusCode, data)
 	}
 	var admin struct {
-		ID string `json:"credential_id"`
+		ID string `json:"credentialId"`
 	}
 	if err := json.Unmarshal(data, &admin); err != nil {
 		t.Fatalf("decode admin credential: %v", err)
@@ -307,7 +307,7 @@ func TestRenewalIsNotRepeated(t *testing.T) {
 // TestConcurrentIssuanceKeepsCredentialPairs pins F2: every answer that did issue
 // a credential must pair the secret with its own id. How many of the concurrent
 // heartbeats issue is up to scheduling: the first one to land creates a row whose
-// created_at starts the 5 minute none cooldown, so the ones that read the table
+// createdAt starts the 5 minute none cooldown, so the ones that read the table
 // afterwards answer 204 by design. The case therefore checks the issued answers
 // (and that at least one exists) instead of requiring every heartbeat to sign.
 func TestConcurrentIssuanceKeepsCredentialPairs(t *testing.T) {
@@ -402,8 +402,8 @@ func TestAdminIssueCredentialReturnsItsOwnID(t *testing.T) {
 	}
 	var issued struct {
 		Credential string `json:"credential"`
-		ID         string `json:"credential_id"`
-		ExpiresAt  int64  `json:"expires_at"`
+		ID         string `json:"credentialId"`
+		ExpiresAt  int64  `json:"expiresAt"`
 	}
 	if err := json.Unmarshal(data, &issued); err != nil {
 		t.Fatalf("decode issued credential: %v", err)
@@ -482,7 +482,7 @@ func TestDeviceDetailExposesCredentialTimesOnly(t *testing.T) {
 	}
 	var issued struct {
 		Secret string `json:"credential"`
-		ID     string `json:"credential_id"`
+		ID     string `json:"credentialId"`
 	}
 	if err := json.Unmarshal(data, &issued); err != nil {
 		t.Fatalf("decode issued credential: %v", err)
@@ -499,6 +499,6 @@ func TestDeviceDetailExposesCredentialTimesOnly(t *testing.T) {
 		t.Fatalf("decode device: %v", err)
 	}
 	if detail.Credential == nil || detail.Credential.IssuedAt == 0 || detail.Credential.ExpiresAt <= detail.Credential.IssuedAt {
-		t.Fatalf("credential view = %+v, want issued_at and expires_at", detail.Credential)
+		t.Fatalf("credential view = %+v, want issuedAt and expiresAt", detail.Credential)
 	}
 }

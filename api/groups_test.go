@@ -20,7 +20,7 @@ type groupAPIView struct {
 // groupedDevice is the part of GET /api/admin/devices the layout tests care about.
 type groupedDevice struct {
 	ID       string `json:"id"`
-	GroupID  int64  `json:"group_id"`
+	GroupID  int64  `json:"groupId"`
 	Position int64  `json:"position"`
 }
 
@@ -126,7 +126,7 @@ func TestDeviceGroupAPI(t *testing.T) {
 	first, _ := createDevice(t, env, "one", testTOML)
 	second, _ := createDevice(t, env, "two", testTOML)
 
-	res, data := env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"group_id": group.ID})
+	res, data := env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"groupId": group.ID})
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT device group = %d, want 204: %s", res.StatusCode, data)
 	}
@@ -135,20 +135,20 @@ func TestDeviceGroupAPI(t *testing.T) {
 		t.Fatalf("device group = %+v, want group %d", got, group.ID)
 	}
 
-	res, data = env.Do("PUT", "/api/admin/devices/"+second+"/group", map[string]any{"group_id": nil})
+	res, data = env.Do("PUT", "/api/admin/devices/"+second+"/group", map[string]any{"groupId": nil})
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT device group null = %d, want 204: %s", res.StatusCode, data)
 	}
 	layout = listDeviceLayout(t, env)
 	if got := layout[second]; got.GroupID != 0 {
-		t.Fatalf("null group_id left device in %+v", got)
+		t.Fatalf("null groupId left device in %+v", got)
 	}
 
-	res, data = env.Do("PUT", "/api/admin/devices/d_missing/group", map[string]any{"group_id": group.ID})
+	res, data = env.Do("PUT", "/api/admin/devices/d_missing/group", map[string]any{"groupId": group.ID})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "not_found") {
 		t.Fatalf("PUT missing device group = %d: %s", res.StatusCode, data)
 	}
-	res, data = env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"group_id": 999})
+	res, data = env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"groupId": 999})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "group_not_found") {
 		t.Fatalf("PUT device into missing group = %d: %s", res.StatusCode, data)
 	}
@@ -160,7 +160,7 @@ func TestDeleteGroupUngroupsDevicesAPI(t *testing.T) {
 	first, _ := createDevice(t, env, "one", testTOML)
 	second, _ := createDevice(t, env, "two", testTOML)
 	for _, id := range []string{first, second} {
-		res, data := env.Do("PUT", "/api/admin/devices/"+id+"/group", map[string]any{"group_id": group.ID})
+		res, data := env.Do("PUT", "/api/admin/devices/"+id+"/group", map[string]any{"groupId": group.ID})
 		if res.StatusCode != http.StatusNoContent {
 			t.Fatalf("PUT %s group = %d: %s", id, res.StatusCode, data)
 		}
@@ -188,9 +188,9 @@ func TestDeviceOrderAPI(t *testing.T) {
 	third, _ := createDevice(t, env, "three", testTOML)
 
 	order := []map[string]any{
-		{"id": first, "group_id": home.ID, "position": 1},
-		{"id": second, "group_id": office.ID, "position": 0},
-		{"id": third, "group_id": home.ID, "position": 0},
+		{"id": first, "groupId": home.ID, "position": 1},
+		{"id": second, "groupId": office.ID, "position": 0},
+		{"id": third, "groupId": home.ID, "position": 0},
 	}
 	res, data := env.Do("PUT", "/api/admin/layout", map[string]any{"devices": order})
 	if res.StatusCode != http.StatusNoContent {
@@ -209,7 +209,7 @@ func TestDeviceOrderAPI(t *testing.T) {
 	}
 
 	// A layout naming a missing group fails whole; the saved one stays.
-	bad := []map[string]any{{"id": first, "group_id": 999, "position": 0}}
+	bad := []map[string]any{{"id": first, "groupId": 999, "position": 0}}
 	res, data = env.Do("PUT", "/api/admin/layout", map[string]any{"devices": bad})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "group_not_found") {
 		t.Fatalf("PUT order into missing group = %d: %s", res.StatusCode, data)

@@ -40,7 +40,7 @@ const sections = computed<Section[]>(() => {
   buckets.set(0, []);
   for (const group of groups) buckets.set(group.id, []);
   for (const device of localDevices.value) {
-    const bucket = buckets.get(device.group_id) ?? buckets.get(0);
+    const bucket = buckets.get(device.groupId) ?? buckets.get(0);
     bucket?.push(device);
   }
   const build = (id: number, name: string): Section => ({
@@ -124,7 +124,7 @@ function readLayout(): DevicePlacement[] | null {
     let position = 0;
     for (const row of element.querySelectorAll<HTMLElement>("[data-device-id]")) {
       const id = row.dataset.deviceId;
-      if (id) layout.push({ id, group_id: section.id, position: position++ });
+      if (id) layout.push({ id, groupId: section.id, position: position++ });
     }
   }
   return layout;
@@ -147,7 +147,7 @@ function applyLayout(layout: DevicePlacement[]) {
   for (const entry of layout) {
     const device = byId.get(entry.id);
     if (!device) continue;
-    device.group_id = entry.group_id;
+    device.groupId = entry.groupId;
     device.position = entry.position;
   }
   localDevices.value = [...localDevices.value];

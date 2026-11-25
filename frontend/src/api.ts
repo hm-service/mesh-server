@@ -5,19 +5,19 @@ export interface DeviceSummary {
   id: string;
   name: string;
   hostname: string;
-  device_id: string;
+  deviceId: string;
   status: "online" | "offline" | "pending";
-  config_hash: string;
-  last_config_hash: string;
-  last_app_version: string;
-  config_state: "current" | "stale";
-  app_state: "current" | "stale";
-  app_version: string;
-  last_platform: string;
-  group_id: number;
+  configHash: string;
+  lastConfigHash: string;
+  lastAppVersion: string;
+  configState: "current" | "stale";
+  appState: "current" | "stale";
+  appVersion: string;
+  lastPlatform: string;
+  groupId: number;
   position: number;
-  created_at: number;
-  last_seen_at: number;
+  createdAt: number;
+  lastSeenAt: number;
   /** identity 由配置里有没有 network_secret 派生：正式节点不用凭据。 */
   identity: NodeIdentity;
   /** ipv4 是配置里写的固定 mesh 地址（可能带前缀长度）；空表示没写。 */
@@ -28,8 +28,8 @@ export interface DeviceSummary {
 
 /** CredentialTimes 是最新一张凭据的可见部分：只有时间，没有私钥。 */
 export interface CredentialTimes {
-  issued_at: number;
-  expires_at: number;
+  issuedAt: number;
+  expiresAt: number;
 }
 
 /** GroupView 是设备分组：position 决定分组在控制台里的先后。 */
@@ -42,49 +42,49 @@ export interface GroupView {
 /** DevicePlacement 是一次拖拽结束后某台设备的新归属与新位置。 */
 export interface DevicePlacement {
   id: string;
-  group_id: number;
+  groupId: number;
   position: number;
 }
 
 export interface DeviceDetail extends DeviceSummary {
   pubkey: string;
-  config_toml: string;
+  configToml: string;
   token: string;
-  token_expires_at: number;
-  last_ip: string;
+  tokenExpiresAt: number;
+  lastIp: string;
   credential: CredentialTimes | null;
 }
 
 /** ReleaseView 是某个平台已发布的两个更新包：客户端包与启动器。 */
 export interface ReleaseView {
   platform: string;
-  app_version: string;
-  app_url: string;
-  app_sha256: string;
-  app_notes: string;
-  /** auto_update 跟着客户端包走：true 时客户端收到这个版本会自己装。 */
-  auto_update: boolean;
-  launcher_version: string;
-  launcher_url: string;
-  launcher_sha256: string;
+  appVersion: string;
+  appUrl: string;
+  appSha256: string;
+  appNotes: string;
+  /** autoUpdate 跟着客户端包走：true 时客户端收到这个版本会自己装。 */
+  autoUpdate: boolean;
+  launcherVersion: string;
+  launcherUrl: string;
+  launcherSha256: string;
 }
 
 /** ReleasePublish 是一次发布要写的槽位；启动器的版本号与地址必须成对给出。 */
 export interface ReleasePublish {
   platform?: string;
   /** 客户端包的版本号不从请求里给：服务端从包内 version.json 读出。 */
-  app_url?: string;
-  app_notes?: string;
+  appUrl?: string;
+  appNotes?: string;
   /** 只随客户端包一起给出，省略即 false（手动安装）。 */
-  auto_update?: boolean;
-  launcher_version?: string;
-  launcher_url?: string;
-  default_toml?: string;
+  autoUpdate?: boolean;
+  launcherVersion?: string;
+  launcherUrl?: string;
+  defaultToml?: string;
 }
 
 /** ReleasesPayload 是管理端看到的全部平台发布状态，外加默认模板。 */
 export interface ReleasesPayload {
-  default_toml: string;
+  defaultToml: string;
   releases: ReleaseView[];
 }
 
@@ -183,8 +183,8 @@ export const api = {
     });
     if (res.status === 401) throw new ApiError(401, "invalid_token");
     if (!res.ok) throw new ApiError(res.status, "");
-    const issued = (await res.json()) as { access_token: string };
-    sessionStorage.setItem(CREDENTIAL_KEY, issued.access_token);
+    const issued = (await res.json()) as { accessToken: string };
+    sessionStorage.setItem(CREDENTIAL_KEY, issued.accessToken);
   },
   logout(): void {
     clearCredential();
@@ -196,12 +196,12 @@ export const api = {
     return jsonRequest<DeviceDetail>("GET", "/api/admin/devices/" + encodeURIComponent(id));
   },
   createDevice(name: string, configToml: string): Promise<{ id: string; token: string }> {
-    return jsonRequest<{ id: string; token: string }>("POST", "/api/admin/devices", { name, config_toml: configToml });
+    return jsonRequest<{ id: string; token: string }>("POST", "/api/admin/devices", { name, configToml: configToml });
   },
-  updateDevice(id: string, name: string, configToml: string): Promise<{ config_hash: string }> {
-    return jsonRequest<{ config_hash: string }>("PUT", "/api/admin/devices/" + encodeURIComponent(id), {
+  updateDevice(id: string, name: string, configToml: string): Promise<{ configHash: string }> {
+    return jsonRequest<{ configHash: string }>("PUT", "/api/admin/devices/" + encodeURIComponent(id), {
       name,
-      config_toml: configToml,
+      configToml: configToml,
     });
   },
   deleteDevice(id: string): Promise<void> {
@@ -218,7 +218,7 @@ export const api = {
     await jsonRequest<unknown>("POST", "/api/admin/devices/" + encodeURIComponent(id) + "/credential");
   },
   setDeviceGroup(id: string, groupId: number | null): Promise<void> {
-    return jsonRequest<void>("PUT", "/api/admin/devices/" + encodeURIComponent(id) + "/group", { group_id: groupId });
+    return jsonRequest<void>("PUT", "/api/admin/devices/" + encodeURIComponent(id) + "/group", { groupId: groupId });
   },
   saveLayout(devices: DevicePlacement[]): Promise<void> {
     return jsonRequest<void>("PUT", "/api/admin/layout", { devices });

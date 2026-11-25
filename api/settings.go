@@ -16,24 +16,24 @@ import (
 // false 表示只提示、等用户手动确认。
 type releaseView struct {
 	Platform        string `json:"platform"`
-	AppVersion      string `json:"app_version"`
-	AppURL          string `json:"app_url"`
-	AppSHA256       string `json:"app_sha256"`
-	AppNotes        string `json:"app_notes"`
-	AutoUpdate      bool   `json:"auto_update"`
-	LauncherVersion string `json:"launcher_version"`
-	LauncherURL     string `json:"launcher_url"`
-	LauncherSHA256  string `json:"launcher_sha256"`
+	AppVersion      string `json:"appVersion"`
+	AppURL          string `json:"appUrl"`
+	AppSHA256       string `json:"appSha256"`
+	AppNotes        string `json:"appNotes"`
+	AutoUpdate      bool   `json:"autoUpdate"`
+	LauncherVersion string `json:"launcherVersion"`
+	LauncherURL     string `json:"launcherUrl"`
+	LauncherSHA256  string `json:"launcherSha256"`
 }
 
 // releasesResponse is the admin view of the release table plus the template.
 type releasesResponse struct {
-	DefaultTOML string        `json:"default_toml"`
+	DefaultTOML string        `json:"defaultToml"`
 	Releases    []releaseView `json:"releases"`
 }
 
 // releaseInput updates one platform through a JSON body. Each slot is published
-// on its own: a client package is addressed by app_url, a launcher by its
+// on its own: a client package is addressed by appUrl, a launcher by its
 // version and URL together.
 //
 // AppVersion only exists to reject it: the published version is the one the
@@ -41,13 +41,13 @@ type releasesResponse struct {
 // ignoring the field would let a caller believe the label it sent was stored.
 type releaseInput struct {
 	Platform        *string `json:"platform"`
-	AppVersion      *string `json:"app_version"`
-	AppURL          *string `json:"app_url"`
-	AppNotes        *string `json:"app_notes"`
-	AutoUpdate      *bool   `json:"auto_update"`
-	LauncherVersion *string `json:"launcher_version"`
-	LauncherURL     *string `json:"launcher_url"`
-	DefaultTOML     *string `json:"default_toml"`
+	AppVersion      *string `json:"appVersion"`
+	AppURL          *string `json:"appUrl"`
+	AppNotes        *string `json:"appNotes"`
+	AutoUpdate      *bool   `json:"autoUpdate"`
+	LauncherVersion *string `json:"launcherVersion"`
+	LauncherURL     *string `json:"launcherUrl"`
+	DefaultTOML     *string `json:"defaultToml"`
 }
 
 func toView(r db.Release) releaseView {
@@ -104,7 +104,7 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AppVersion != nil {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument",
-			"app_version 由包内 version.json 读出，不再作为请求字段")
+			"appVersion 由包内 version.json 读出，不再作为请求字段")
 		return
 	}
 	platform := ""
@@ -116,15 +116,15 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	// 备注与自动安装开关都属于客户端包，没有包可挂时不接受：否则要么写进一行
 	// 没有发布内容的记录，要么被悄悄丢掉，两种都不是调用方要的结果。
 	if req.AppNotes != nil && !client {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "app_notes 必须与 app_url 一起给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "appNotes 必须与 appUrl 一起给出")
 		return
 	}
 	if req.AutoUpdate != nil && !client {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "auto_update 必须与 app_url 一起给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "autoUpdate 必须与 appUrl 一起给出")
 		return
 	}
 	if launcher && (req.LauncherVersion == nil || req.LauncherURL == nil) {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "launcher_version 与 launcher_url 必须同时给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "launcherVersion 与 launcherUrl 必须同时给出")
 		return
 	}
 	if (client || launcher) && platform == "" {
@@ -137,7 +137,7 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		if req.AppNotes != nil {
 			notes = *req.AppNotes
 		}
-		// 省略 auto_update 等于"手动"：每次发布客户端包都会重写这个开关，
+		// 省略 autoUpdate 等于"手动"：每次发布客户端包都会重写这个开关，
 		// 新包默认不让客户端自己装。
 		autoUpdate := false
 		if req.AutoUpdate != nil {

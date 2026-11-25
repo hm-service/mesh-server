@@ -15,20 +15,20 @@ type deviceSummary struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Hostname       string `json:"hostname"`
-	DeviceID       string `json:"device_id"`
+	DeviceID       string `json:"deviceId"`
 	Status         string `json:"status"`
-	ConfigHash     string `json:"config_hash"`
-	LastConfigHash string `json:"last_config_hash"`
-	LastAppVersion string `json:"last_app_version"`
-	ConfigState    string `json:"config_state"`
-	AppState       string `json:"app_state"`
-	AppVersion     string `json:"app_version"`
-	Platform       string `json:"last_platform"`
-	GroupID        int64  `json:"group_id"`
+	ConfigHash     string `json:"configHash"`
+	LastConfigHash string `json:"lastConfigHash"`
+	LastAppVersion string `json:"lastAppVersion"`
+	ConfigState    string `json:"configState"`
+	AppState       string `json:"appState"`
+	AppVersion     string `json:"appVersion"`
+	Platform       string `json:"lastPlatform"`
+	GroupID        int64  `json:"groupId"`
 	Position       int64  `json:"position"`
-	CreatedAt      int64  `json:"created_at"`
-	LastSeenAt     int64  `json:"last_seen_at"`
-	// Identity、IPv4、DHCP 是从 config_toml 派生的展示字段（app.ConfigFactsOf）。
+	CreatedAt      int64  `json:"createdAt"`
+	LastSeenAt     int64  `json:"lastSeenAt"`
+	// Identity、IPv4、DHCP 是从 configToml 派生的展示字段（app.ConfigFactsOf）。
 	Identity string `json:"identity"`
 	IPv4     string `json:"ipv4"`
 	DHCP     bool   `json:"dhcp"`
@@ -75,26 +75,26 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 type deviceDetail struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
-	DeviceID       string `json:"device_id"`
+	DeviceID       string `json:"deviceId"`
 	Hostname       string `json:"hostname"`
 	Pubkey         string `json:"pubkey"`
-	ConfigTOML     string `json:"config_toml"`
-	ConfigHash     string `json:"config_hash"`
+	ConfigTOML     string `json:"configToml"`
+	ConfigHash     string `json:"configHash"`
 	Token          string `json:"token"`
-	TokenExpiresAt int64  `json:"token_expires_at"`
-	CreatedAt      int64  `json:"created_at"`
-	LastSeenAt     int64  `json:"last_seen_at"`
-	LastIP         string `json:"last_ip"`
-	LastConfigHash string `json:"last_config_hash"`
-	LastAppVersion string `json:"last_app_version"`
+	TokenExpiresAt int64  `json:"tokenExpiresAt"`
+	CreatedAt      int64  `json:"createdAt"`
+	LastSeenAt     int64  `json:"lastSeenAt"`
+	LastIP         string `json:"lastIp"`
+	LastConfigHash string `json:"lastConfigHash"`
+	LastAppVersion string `json:"lastAppVersion"`
 	Status         string `json:"status"`
-	ConfigState    string `json:"config_state"`
-	AppState       string `json:"app_state"`
-	AppVersion     string `json:"app_version"`
-	Platform       string `json:"last_platform"`
-	GroupID        int64  `json:"group_id"`
+	ConfigState    string `json:"configState"`
+	AppState       string `json:"appState"`
+	AppVersion     string `json:"appVersion"`
+	Platform       string `json:"lastPlatform"`
+	GroupID        int64  `json:"groupId"`
 	Position       int64  `json:"position"`
-	// Identity、IPv4、DHCP 是从 config_toml 派生的展示字段（app.ConfigFactsOf）。
+	// Identity、IPv4、DHCP 是从 configToml 派生的展示字段（app.ConfigFactsOf）。
 	Identity string `json:"identity"`
 	IPv4     string `json:"ipv4"`
 	DHCP     bool   `json:"dhcp"`
@@ -105,8 +105,8 @@ type deviceDetail struct {
 
 // credentialView 是设备凭据的可见部分：只有时间，没有私钥。
 type credentialView struct {
-	IssuedAt  int64 `json:"issued_at"`
-	ExpiresAt int64 `json:"expires_at"`
+	IssuedAt  int64 `json:"issuedAt"`
+	ExpiresAt int64 `json:"expiresAt"`
 }
 
 func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
@@ -167,7 +167,7 @@ func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
 
 type deviceInput struct {
 	Name       string `json:"name"`
-	ConfigTOML string `json:"config_toml"`
+	ConfigTOML string `json:"configToml"`
 }
 
 type createDeviceResponse struct {
@@ -249,7 +249,7 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]string{"config_hash": updated.ConfigHash})
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"configHash": updated.ConfigHash})
 }
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
@@ -307,9 +307,9 @@ func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"credential":    issued.Secret,
-		"credential_id": issued.ID,
-		"expires_at":    issued.Expiry,
+		"credential":   issued.Secret,
+		"credentialId": issued.ID,
+		"expiresAt":    issued.Expiry,
 	})
 }
 

@@ -35,14 +35,14 @@ type groupPatch struct {
 // deviceGroupInput carries the group of one device; null and 0 both mean
 // ungrouped.
 type deviceGroupInput struct {
-	GroupID *int64 `json:"group_id"`
+	GroupID *int64 `json:"groupId"`
 }
 
 // devicePlacementInput is one entry of PUT /api/admin/layout, the layout the console
 // sends after a drag.
 type devicePlacementInput struct {
 	ID       string `json:"id"`
-	GroupID  *int64 `json:"group_id"`
+	GroupID  *int64 `json:"groupId"`
 	Position int64  `json:"position"`
 }
 

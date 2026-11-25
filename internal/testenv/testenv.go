@@ -164,7 +164,7 @@ func (e *Env) Login() {
 		e.T.Fatalf("auth = %d, want 200: %s", res.StatusCode, body)
 	}
 	var out struct {
-		AccessToken string `json:"access_token"`
+		AccessToken string `json:"accessToken"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil || out.AccessToken == "" {
 		e.T.Fatalf("decode auth response: %v (%s)", err, body)

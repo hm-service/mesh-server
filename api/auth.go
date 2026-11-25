@@ -25,8 +25,8 @@ type authRequest struct {
 // is stateless: the server keeps no per-session state, so revoking one means
 // rotating SESSION_SIGNING_KEY.
 type authResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresAt   int64  `json:"expires_at"`
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   int64  `json:"expiresAt"`
 }
 
 // handleAuth exchanges AUTH_TOKEN for a bearer credential.

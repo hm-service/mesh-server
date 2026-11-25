@@ -18,7 +18,7 @@ network_secret = "seed-secret"
 `
 
 // TestDevicePayloadCarriesConfigFacts pins the fields the console derives from
-// config_toml: the node identity, the fixed mesh address and whether DHCP is on.
+// configToml: the node identity, the fixed mesh address and whether DHCP is on.
 // The list and the detail must agree; the browser depends on both.
 func TestDevicePayloadCarriesConfigFacts(t *testing.T) {
 	env := testenv.New(t)

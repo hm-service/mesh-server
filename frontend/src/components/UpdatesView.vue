@@ -60,8 +60,8 @@ function emptySlot(): SlotDraft {
 function reset(platform: string, payload: ReleasesPayload | null = props.releases): Draft {
   const value = releaseIn(payload, platform);
   drafts[platform] = {
-    launcher: { ...emptySlot(), version: value?.launcher_version ?? "", url: value?.launcher_url ?? "" },
-    client: { ...emptySlot(), url: value?.app_url ?? "", notes: value?.app_notes ?? "", autoUpdate: value?.auto_update ?? false },
+    launcher: { ...emptySlot(), version: value?.launcherVersion ?? "", url: value?.launcherUrl ?? "" },
+    client: { ...emptySlot(), url: value?.appUrl ?? "", notes: value?.appNotes ?? "", autoUpdate: value?.autoUpdate ?? false },
   };
   return drafts[platform] as Draft;
 }
@@ -76,18 +76,18 @@ watch(
 
 function launcherLine(platform: string): string {
   const value = releaseOf(platform);
-  if (!value || !value.launcher_version) return "尚未发布";
-  const parts = [value.launcher_version];
-  if (value.launcher_url) parts.push(value.launcher_url);
+  if (!value || !value.launcherVersion) return "尚未发布";
+  const parts = [value.launcherVersion];
+  if (value.launcherUrl) parts.push(value.launcherUrl);
   return parts.join(" · ");
 }
 
 function clientLine(platform: string): string {
   const value = releaseOf(platform);
-  if (!value || !value.app_version) return "尚未发布";
-  const parts = [value.app_version];
-  if (value.app_url) parts.push(value.app_url);
-  parts.push(value.auto_update ? "自动安装" : "手动安装");
+  if (!value || !value.appVersion) return "尚未发布";
+  const parts = [value.appVersion];
+  if (value.appUrl) parts.push(value.appUrl);
+  parts.push(value.autoUpdate ? "自动安装" : "手动安装");
   return parts.join(" · ");
 }
 
@@ -123,8 +123,8 @@ async function saveLauncher(platform: string) {
   try {
     const saved = await api.publishRelease({
       platform,
-      launcher_version: version,
-      launcher_url: draft.url.trim(),
+      launcherVersion: version,
+      launcherUrl: draft.url.trim(),
     });
     emit("saved", saved);
     reset(platform, saved);
@@ -148,13 +148,13 @@ async function saveClient(platform: string) {
     // 版本号不从表单取：服务端从包内 version.json 读出，这里只回显它。
     const saved = await api.publishRelease({
       platform,
-      app_url: draft.url.trim(),
-      app_notes: draft.notes,
-      auto_update: draft.autoUpdate,
+      appUrl: draft.url.trim(),
+      appNotes: draft.notes,
+      autoUpdate: draft.autoUpdate,
     });
     emit("saved", saved);
     reset(platform, saved);
-    const version = releaseIn(saved, platform)?.app_version ?? "";
+    const version = releaseIn(saved, platform)?.appVersion ?? "";
     emit("toast", "客户端包已发布", version ? platform + " " + version : platform, "ok");
   } catch (err) {
     fail(draft, err);
@@ -167,7 +167,7 @@ async function saveClient(platform: string) {
 async function clearLauncher(platform: string) {
   const draft = drafts[platform]!.launcher;
   const value = releaseOf(platform);
-  if (draft.busy || !value || !value.launcher_version) return;
+  if (draft.busy || !value || !value.launcherVersion) return;
   draft.error = "";
   draft.busy = true;
   try {
@@ -252,7 +252,7 @@ async function clearPlatform(platform: string) {
               {{ drafts[platform]!.launcher.busy ? "解析中…" : "保存" }}
             </button>
             <button
-              v-if="releaseOf(platform)?.launcher_version"
+              v-if="releaseOf(platform)?.launcherVersion"
               class="danger"
               type="button"
               :disabled="drafts[platform]!.launcher.busy"

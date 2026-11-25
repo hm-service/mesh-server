@@ -16,7 +16,7 @@ import (
 
 // TestRegisterIdempotentBranchRequiresCredential pins the fix for the worst hole
 // in the old register flow: the idle branch ran before any token check, so
-// knowing device_id and pubkey was enough to walk away with a config_toml that
+// knowing deviceId and pubkey was enough to walk away with a configToml that
 // carries the network secret.
 func TestRegisterIdempotentBranchRequiresCredential(t *testing.T) {
 	env := testenv.New(t)
@@ -36,7 +36,7 @@ func TestRegisterIdempotentBranchRequiresCredential(t *testing.T) {
 			if status != http.StatusUnauthorized {
 				t.Fatalf("register = %d, want 401: %s", status, body)
 			}
-			if strings.Contains(string(body), "config_toml") || strings.Contains(string(body), "network_secret") {
+			if strings.Contains(string(body), "configToml") || strings.Contains(string(body), "network_secret") {
 				t.Fatalf("the response leaked the configuration: %s", body)
 			}
 		})
@@ -98,7 +98,7 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 	}
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			res, body := env.Do(route.method, route.path, map[string]string{"name": "x", "config_toml": "a = 1\n"})
+			res, body := env.Do(route.method, route.path, map[string]string{"name": "x", "configToml": "a = 1\n"})
 			if res.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("%s %s = %d, want 401: %s", route.method, route.path, res.StatusCode, body)
 			}
@@ -119,13 +119,13 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	file := releasePkg(t, "2026.11.24-3", client)
 	release := putReleases(t, env, map[string]any{
 		"platform": testPlatform,
-		"app_url":  fileServer(t, file),
+		"appUrl":   fileServer(t, file),
 	}).releaseOf(testPlatform)
 
 	pkgSum := sha256.Sum256(file)
 	pkgFull := hex.EncodeToString(pkgSum[:])
 	if release.AppSHA256 != pkgFull {
-		t.Fatalf("app_sha256 = %q, want %q", release.AppSHA256, pkgFull)
+		t.Fatalf("appSha256 = %q, want %q", release.AppSHA256, pkgFull)
 	}
 
 	// The heartbeat carries the same digest to the client.
@@ -138,7 +138,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out.AppUpdate == nil || out.AppUpdate.SHA256 != pkgFull {
-		t.Fatalf("app_update = %+v, want sha256 %q", out.AppUpdate, pkgFull)
+		t.Fatalf("appUpdate = %+v, want sha256 %q", out.AppUpdate, pkgFull)
 	}
 }
 
@@ -151,10 +151,10 @@ func TestPublishRejectsBothSlotsTogether(t *testing.T) {
 	env := testenv.New(t)
 	file := releasePkg(t, "2026.11.25-1", []byte("a whole mesh client binary"))
 	res, body := env.Do("PUT", "/api/admin/releases", map[string]string{
-		"platform":         testPlatform,
-		"app_url":          fileServer(t, file),
-		"launcher_version": "2026.11.25-9",
-		"launcher_url":     "http://127.0.0.1:1/mesh.exe",
+		"platform":        testPlatform,
+		"appUrl":          fileServer(t, file),
+		"launcherVersion": "2026.11.25-9",
+		"launcherUrl":     "http://127.0.0.1:1/mesh.exe",
 	})
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("publish = %d, want 400: %s", res.StatusCode, body)

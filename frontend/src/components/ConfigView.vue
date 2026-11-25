@@ -13,7 +13,7 @@ const error = ref("");
 const busy = ref(false);
 
 // 编辑器显示的是当前生效的模板：DATA_DIR/peer.default.toml，缺失或空白时是内置
-// 模板（GET /api/admin/template 的语义）。只看发布记录里的 default_toml 会在文件不存在
+// 模板（GET /api/admin/template 的语义）。只看发布记录里的 defaultToml 会在文件不存在
 // 时显示成空，和「重置为模板」实际拿到的内容对不上。
 onMounted(async () => {
   try {
@@ -36,7 +36,7 @@ async function save() {
   }
   busy.value = true;
   try {
-    const saved = await api.publishRelease({ default_toml: toml.value });
+    const saved = await api.publishRelease({ defaultToml: toml.value });
     emit("saved", saved);
     emit("toast", "默认模板已保存", "之后新建设备与「重置为模板」都用它", "ok");
   } catch (err) {

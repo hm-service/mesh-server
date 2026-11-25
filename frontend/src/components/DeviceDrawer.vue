@@ -47,20 +47,20 @@ const deleting = ref(false);
 const actionError = ref("");
 
 const groupName = computed(() => {
-  const group = props.groups.find((item) => item.id === device.value?.group_id);
+  const group = props.groups.find((item) => item.id === device.value?.groupId);
   return group?.name ?? "未分组";
 });
 
 const cooling = computed(() => {
   const credential = device.value?.credential;
   if (!credential) return false;
-  return nowSec.value - credential.issued_at < ROTATE_COOLDOWN_SECONDS;
+  return nowSec.value - credential.issuedAt < ROTATE_COOLDOWN_SECONDS;
 });
 
 const coolingMinutes = computed(() => {
   const credential = device.value?.credential;
   if (!credential) return 0;
-  return Math.max(1, Math.ceil((credential.issued_at + ROTATE_COOLDOWN_SECONDS - nowSec.value) / 60));
+  return Math.max(1, Math.ceil((credential.issuedAt + ROTATE_COOLDOWN_SECONDS - nowSec.value) / 60));
 });
 
 const formal = computed(() => device.value?.identity === "formal");
@@ -68,7 +68,7 @@ const formal = computed(() => device.value?.identity === "formal");
 const rotateHint = computed(() => {
   if (formal.value) return "正式节点用 network_secret 认证，不使用凭据，轮换没有意义。";
   if (cooling.value) {
-    return `${relTime(device.value?.credential?.issued_at ?? 0, nowSec.value)}刚签发，约 ${coolingMinutes.value} 分钟后才能再签；冷却内再签只会让等待重新计时。`;
+    return `${relTime(device.value?.credential?.issuedAt ?? 0, nowSec.value)}刚签发，约 ${coolingMinutes.value} 分钟后才能再签；冷却内再签只会让等待重新计时。`;
   }
   return "签发后约 5 分钟冷却结束，设备在下一次心跳拿到新凭据并重启 core；旧凭据在设备确认后失效。";
 });
@@ -80,7 +80,7 @@ const credentialText = computed(() => {
   if (formal.value) return "不使用凭据（正式节点）";
   const credential = device.value.credential;
   if (!credential) return "尚未签发";
-  return `${relTime(credential.issued_at, nowSec.value)}签发 · ${absTime(credential.expires_at)} 到期`;
+  return `${relTime(credential.issuedAt, nowSec.value)}签发 · ${absTime(credential.expiresAt)} 到期`;
 });
 
 async function load() {
@@ -90,7 +90,7 @@ async function load() {
     const detail = await api.getDevice(props.id);
     device.value = detail;
     name.value = detail.name;
-    toml.value = detail.config_toml ?? "";
+    toml.value = detail.configToml ?? "";
     mode.value = "view";
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
@@ -116,7 +116,7 @@ function showError(err: unknown, fallback: string) {
 function startEdit() {
   if (!device.value) return;
   name.value = device.value.name;
-  toml.value = device.value.config_toml;
+  toml.value = device.value.configToml;
   error.value = "";
   mode.value = "edit";
 }
@@ -124,7 +124,7 @@ function startEdit() {
 function cancelEdit() {
   if (!device.value) return;
   name.value = device.value.name;
-  toml.value = device.value.config_toml;
+  toml.value = device.value.configToml;
   error.value = "";
   mode.value = "view";
 }
@@ -167,9 +167,9 @@ async function save() {
     device.value = {
       ...current,
       name: trimmed,
-      config_toml: toml.value,
-      config_hash: saved.config_hash,
-      config_state: saved.config_hash === current.last_config_hash ? "current" : "stale",
+      configToml: toml.value,
+      configHash: saved.configHash,
+      configState: saved.configHash === current.lastConfigHash ? "current" : "stale",
     };
     mode.value = "view";
     emit("toast", "配置已保存", "设备下一轮心跳会拉到新配置并重启 core", "ok");
@@ -252,7 +252,7 @@ async function remove() {
           <div v-if="device" class="drawer-sub">
             <span :class="statusDotClass(device.status)" />
             {{ statusText(device.status) }}
-            <template v-if="device.last_seen_at"> · 最后心跳 {{ relTime(device.last_seen_at, nowSec) }}</template>
+            <template v-if="device.lastSeenAt"> · 最后心跳 {{ relTime(device.lastSeenAt, nowSec) }}</template>
           </div>
         </div>
         <button class="icon-btn" type="button" aria-label="关闭" @click="emit('close')">×</button>
@@ -273,7 +273,7 @@ async function remove() {
             </div>
             <div class="fact">
               <div class="k">设备 ID</div>
-              <div class="v mono">{{ device.device_id || "未注册" }}</div>
+              <div class="v mono">{{ device.deviceId || "未注册" }}</div>
             </div>
             <div class="fact">
               <div class="k">主机名</div>
@@ -285,34 +285,34 @@ async function remove() {
             </div>
             <div class="fact">
               <div class="k">最近 IP</div>
-              <div class="v">{{ device.last_ip || "—" }}</div>
+              <div class="v">{{ device.lastIp || "—" }}</div>
             </div>
             <div class="fact">
               <div class="k">平台</div>
-              <div class="v">{{ device.last_platform || "—" }}</div>
+              <div class="v">{{ device.lastPlatform || "—" }}</div>
             </div>
             <div class="fact">
               <div class="k">配置 hash</div>
-              <div class="v mono">{{ device.config_hash }}</div>
+              <div class="v mono">{{ device.configHash }}</div>
             </div>
             <div class="fact">
               <div class="k">客户端</div>
               <div class="v">
-                <template v-if="device.app_version">
-                  {{ device.app_version }}
+                <template v-if="device.appVersion">
+                  {{ device.appVersion }}
                   <span :class="appStateClass(device)">{{ appStateLabel(device) || "已同步" }}</span>
                 </template>
-                <template v-else-if="device.last_platform">未发布</template>
+                <template v-else-if="device.lastPlatform">未发布</template>
                 <template v-else>未上报平台</template>
               </div>
             </div>
             <div class="fact">
               <div class="k">创建时间</div>
-              <div class="v">{{ absTime(device.created_at) }}</div>
+              <div class="v">{{ absTime(device.createdAt) }}</div>
             </div>
             <div class="fact">
               <div class="k">最后心跳</div>
-              <div class="v">{{ device.last_seen_at ? absTime(device.last_seen_at) : "从未" }}</div>
+              <div class="v">{{ device.lastSeenAt ? absTime(device.lastSeenAt) : "从未" }}</div>
             </div>
             <div class="fact wide">
               <div class="k">凭据</div>
@@ -350,7 +350,7 @@ async function remove() {
           <section class="section">
             <div class="section-head">
               <span class="section-title">配置</span>
-              <span :class="configStateClass(device.config_state)">{{ configStateText(device.config_state) }}</span>
+              <span :class="configStateClass(device.configState)">{{ configStateText(device.configState) }}</span>
               <span class="spacer" />
               <template v-if="mode === 'view'">
                 <button class="ghost" type="button" @click="startEdit">编辑</button>
@@ -362,7 +362,7 @@ async function remove() {
               </template>
             </div>
 
-            <pre v-if="mode === 'view'" class="config-preview">{{ device.config_toml }}</pre>
+            <pre v-if="mode === 'view'" class="config-preview">{{ device.configToml }}</pre>
 
             <div v-else class="edit-form">
               <label class="field-label" for="device-name">设备名称</label>
@@ -405,7 +405,7 @@ async function remove() {
         </ul>
         <div v-if="device.status !== 'online'" class="callout">设备当前离线，凭据会在它恢复心跳后下发。</div>
         <div v-if="device.credential" class="callout">
-          最近签发：{{ absTime(device.credential.issued_at) }}（{{ relTime(device.credential.issued_at, nowSec) }}）
+          最近签发：{{ absTime(device.credential.issuedAt) }}（{{ relTime(device.credential.issuedAt, nowSec) }}）
         </div>
         <div v-if="actionError" class="err">{{ actionError }}</div>
       </ConfirmDialog>

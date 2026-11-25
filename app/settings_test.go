@@ -65,7 +65,7 @@ func TestPublishRefusesInternalAddresses(t *testing.T) {
 	if !errors.As(err, &rejected) {
 		t.Fatalf("publish of a loopback URL = %v, want a validation error", err)
 	}
-	if !strings.Contains(rejected.Message, "无法读取 launcher_url") {
+	if !strings.Contains(rejected.Message, "无法读取 launcherUrl") {
 		t.Fatalf("message = %q, want the launcher slot named", rejected.Message)
 	}
 	if _, found, err := a.Release("windows/amd64"); err != nil || found {

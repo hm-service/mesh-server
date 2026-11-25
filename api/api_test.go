@@ -36,16 +36,16 @@ type deviceSummary struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Hostname       string `json:"hostname"`
-	DeviceID       string `json:"device_id"`
+	DeviceID       string `json:"deviceId"`
 	Status         string `json:"status"`
-	ConfigHash     string `json:"config_hash"`
-	LastConfigHash string `json:"last_config_hash"`
-	LastAppVersion string `json:"last_app_version"`
-	ConfigState    string `json:"config_state"`
-	AppState       string `json:"app_state"`
-	AppVersion     string `json:"app_version"`
-	CreatedAt      int64  `json:"created_at"`
-	LastSeenAt     int64  `json:"last_seen_at"`
+	ConfigHash     string `json:"configHash"`
+	LastConfigHash string `json:"lastConfigHash"`
+	LastAppVersion string `json:"lastAppVersion"`
+	ConfigState    string `json:"configState"`
+	AppState       string `json:"appState"`
+	AppVersion     string `json:"appVersion"`
+	CreatedAt      int64  `json:"createdAt"`
+	LastSeenAt     int64  `json:"lastSeenAt"`
 	Identity       string `json:"identity"`
 	IPv4           string `json:"ipv4"`
 	DHCP           bool   `json:"dhcp"`
@@ -53,25 +53,25 @@ type deviceSummary struct {
 
 // credentialView mirrors the credential part of GET /api/admin/devices/{id}.
 type credentialView struct {
-	IssuedAt  int64 `json:"issued_at"`
-	ExpiresAt int64 `json:"expires_at"`
+	IssuedAt  int64 `json:"issuedAt"`
+	ExpiresAt int64 `json:"expiresAt"`
 }
 
 type deviceDetail struct {
 	ID             string          `json:"id"`
 	Name           string          `json:"name"`
-	DeviceID       string          `json:"device_id"`
+	DeviceID       string          `json:"deviceId"`
 	Hostname       string          `json:"hostname"`
 	Pubkey         string          `json:"pubkey"`
-	ConfigTOML     string          `json:"config_toml"`
-	ConfigHash     string          `json:"config_hash"`
-	LastAppVersion string          `json:"last_app_version"`
-	ConfigState    string          `json:"config_state"`
-	AppState       string          `json:"app_state"`
+	ConfigTOML     string          `json:"configToml"`
+	ConfigHash     string          `json:"configHash"`
+	LastAppVersion string          `json:"lastAppVersion"`
+	ConfigState    string          `json:"configState"`
+	AppState       string          `json:"appState"`
 	Status         string          `json:"status"`
-	LastIP         string          `json:"last_ip"`
-	CreatedAt      int64           `json:"created_at"`
-	LastSeenAt     int64           `json:"last_seen_at"`
+	LastIP         string          `json:"lastIp"`
+	CreatedAt      int64           `json:"createdAt"`
+	LastSeenAt     int64           `json:"lastSeenAt"`
 	Identity       string          `json:"identity"`
 	IPv4           string          `json:"ipv4"`
 	DHCP           bool            `json:"dhcp"`
@@ -84,8 +84,8 @@ type createDeviceResponse struct {
 }
 
 type configResponse struct {
-	ConfigTOML string `json:"config_toml"`
-	ConfigHash string `json:"config_hash"`
+	ConfigTOML string `json:"configToml"`
+	ConfigHash string `json:"configHash"`
 }
 
 type updateInfo struct {
@@ -103,13 +103,13 @@ type launcherInfo struct {
 }
 
 type heartbeatResponse struct {
-	ConfigHash       string        `json:"config_hash,omitempty"`
-	ConfigB64        string        `json:"config_b64,omitempty"`
-	AppUpdate        *updateInfo   `json:"app_update,omitempty"`
+	ConfigHash       string        `json:"configHash,omitempty"`
+	ConfigB64        string        `json:"configB64,omitempty"`
+	AppUpdate        *updateInfo   `json:"appUpdate,omitempty"`
 	Launcher         *launcherInfo `json:"launcher,omitempty"`
 	Credential       string        `json:"credential,omitempty"`
-	CredentialID     string        `json:"credential_id,omitempty"`
-	CredentialExpiry int64         `json:"credential_expiry,omitempty"`
+	CredentialID     string        `json:"credentialId,omitempty"`
+	CredentialExpiry int64         `json:"credentialExpiry,omitempty"`
 }
 
 // testPlatform is the platform key the tests publish and heartbeat with.
@@ -118,19 +118,19 @@ const testPlatform = "windows/amd64"
 // releaseView mirrors one entry of GET /api/admin/releases.
 type releaseView struct {
 	Platform        string `json:"platform"`
-	AppVersion      string `json:"app_version"`
-	AppURL          string `json:"app_url"`
-	AppSHA256       string `json:"app_sha256"`
-	AppNotes        string `json:"app_notes"`
-	AutoUpdate      bool   `json:"auto_update"`
-	LauncherVersion string `json:"launcher_version"`
-	LauncherURL     string `json:"launcher_url"`
-	LauncherSHA256  string `json:"launcher_sha256"`
+	AppVersion      string `json:"appVersion"`
+	AppURL          string `json:"appUrl"`
+	AppSHA256       string `json:"appSha256"`
+	AppNotes        string `json:"appNotes"`
+	AutoUpdate      bool   `json:"autoUpdate"`
+	LauncherVersion string `json:"launcherVersion"`
+	LauncherURL     string `json:"launcherUrl"`
+	LauncherSHA256  string `json:"launcherSha256"`
 }
 
 // releasesResponse mirrors GET /api/admin/releases.
 type releasesResponse struct {
-	DefaultTOML string        `json:"default_toml"`
+	DefaultTOML string        `json:"defaultToml"`
 	Releases    []releaseView `json:"releases"`
 }
 
@@ -151,7 +151,7 @@ func signedRegisterBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, 
 	stamp := fmt.Sprintf("%d", ts)
 	msg := core.SigningString("POST", "/api/v1/register", deviceID, stamp, nonce, testPlatform, "", "")
 	body, err := json.Marshal(map[string]string{
-		"device_id": deviceID,
+		"deviceId":  deviceID,
 		"hostname":  hostname,
 		"pubkey":    base64.StdEncoding.EncodeToString(pubkey),
 		"timestamp": stamp,
@@ -226,7 +226,7 @@ func signed(t *testing.T, env *testenv.Env, method, path string, body []byte, he
 
 func createDevice(t *testing.T, env *testenv.Env, name, toml string) (id, token string) {
 	t.Helper()
-	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": name, "config_toml": toml})
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": name, "configToml": toml})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("create device = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -243,10 +243,10 @@ func createDevice(t *testing.T, env *testenv.Env, name, toml string) (id, token 
 func register(t *testing.T, env *testenv.Env, token, deviceID, hostname string, pub ed25519.PublicKey) (int, []byte) {
 	t.Helper()
 	res, data := env.Do("POST", "/api/v1/register", map[string]string{
-		"token":     token,
-		"device_id": deviceID,
-		"hostname":  hostname,
-		"pubkey":    base64.StdEncoding.EncodeToString(pub),
+		"token":    token,
+		"deviceId": deviceID,
+		"hostname": hostname,
+		"pubkey":   base64.StdEncoding.EncodeToString(pub),
 	})
 	return res.StatusCode, data
 }
@@ -414,12 +414,12 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		t.Fatalf("register config = %+v", first)
 	}
 
-	// The token is single use: another device_id cannot register with it.
+	// The token is single use: another deviceId cannot register with it.
 	if status, _ := register(t, env, token, "device-2", "OTHER", pub); status != http.StatusUnauthorized {
 		t.Fatalf("reused token = %d, want 401", status)
 	}
 
-	// The same device_id and pubkey are idempotent, but only with a valid
+	// The same deviceId and pubkey are idempotent, but only with a valid
 	// credential: the signature is made with the key the slot is bound to.
 	body := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", pub, env.Clock.Now().Unix(), newNonce(&nonces))
 	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
@@ -434,7 +434,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		t.Fatalf("idempotent register = %+v, want %+v", again, first)
 	}
 
-	// The same device_id with another pubkey conflicts, once the credential of
+	// The same deviceId with another pubkey conflicts, once the credential of
 	// the bound key has been presented.
 	otherPub, _ := newKeypair(t)
 	status, _ = register(t, env, "", "device-1", "DESKTOP-1", otherPub)
@@ -564,9 +564,9 @@ func putReleases(t *testing.T, env *testenv.Env, fields map[string]any) releases
 func publishExternal(t *testing.T, env *testenv.Env, platform, notes string, pkg []byte) releaseView {
 	t.Helper()
 	return putReleases(t, env, map[string]any{
-		"platform":  platform,
-		"app_url":   fileServer(t, pkg),
-		"app_notes": notes,
+		"platform": platform,
+		"appUrl":   fileServer(t, pkg),
+		"appNotes": notes,
 	}).releaseOf(platform)
 }
 
@@ -574,9 +574,9 @@ func publishExternal(t *testing.T, env *testenv.Env, platform, notes string, pkg
 func publishLauncher(t *testing.T, env *testenv.Env, platform, version string, launcher []byte) releaseView {
 	t.Helper()
 	return putReleases(t, env, map[string]any{
-		"platform":         platform,
-		"launcher_version": version,
-		"launcher_url":     fileServer(t, launcher),
+		"platform":        platform,
+		"launcherVersion": version,
+		"launcherUrl":     fileServer(t, launcher),
 	}).releaseOf(platform)
 }
 
@@ -591,7 +591,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 
-	// Publish a build so app_version has a value to compare against.
+	// Publish a build so appVersion has a value to compare against.
 	build := releasePkg(t, "2026.11.24-4", []byte("client build one"))
 	release := publishExternal(t, env, testPlatform, "修复窄屏布局", build)
 	sum := sha256.Sum256(build)
@@ -612,7 +612,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("heartbeat with current state = %d (%s), want 204 and no body", res.StatusCode, data)
 	}
 
-	// Only the app differs: app_update without config_hash.
+	// Only the app differs: appUpdate without configHash.
 	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.23-1")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("app-only heartbeat = %d, want 200: %s", res.StatusCode, data)
@@ -620,39 +620,39 @@ func TestHeartbeatSemantics(t *testing.T) {
 	got := decode(data)
 	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA}
 	if got.ConfigHash != "" || got.AppUpdate == nil || *got.AppUpdate != wantUpdate {
-		t.Fatalf("app-only heartbeat = %+v, want only app_update %+v", got, wantUpdate)
+		t.Fatalf("app-only heartbeat = %+v, want only appUpdate %+v", got, wantUpdate)
 	}
-	if strings.Contains(string(data), `"config_hash"`) {
-		t.Fatalf("app-only heartbeat body = %s, want no config_hash", data)
+	if strings.Contains(string(data), `"configHash"`) {
+		t.Fatalf("app-only heartbeat body = %s, want no configHash", data)
 	}
 
-	// Only the config differs: config_hash without update.
+	// Only the config differs: configHash without update.
 	res, data = heartbeat(t, env, dev, &nonces, "0000000000000000", release.AppVersion)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("config-only heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}
 	got = decode(data)
 	if got.AppUpdate != nil || got.ConfigHash != dev.configHash {
-		t.Fatalf("config-only heartbeat = %+v, want config_hash %q", got, dev.configHash)
+		t.Fatalf("config-only heartbeat = %+v, want configHash %q", got, dev.configHash)
 	}
 	// 整份 config.toml 随心跳一起回去，客户端不必再发一次请求。
 	if raw, err := base64.StdEncoding.DecodeString(got.ConfigB64); err != nil || string(raw) != testTOML {
 		t.Fatalf("config payload = %q (%v), want %q", got.ConfigB64, err, testTOML)
 	}
-	if strings.Contains(string(data), `"app_update"`) {
-		t.Fatalf("config-only heartbeat body = %s, want no app_update", data)
+	if strings.Contains(string(data), `"appUpdate"`) {
+		t.Fatalf("config-only heartbeat body = %s, want no appUpdate", data)
 	}
 
 	// Both differ: both fields.
 	res, data = heartbeat(t, env, dev, &nonces, "0000000000000000", "2026.11.23-1")
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.ConfigHash != dev.configHash || got.AppUpdate == nil || *got.AppUpdate != wantUpdate {
-		t.Fatalf("full heartbeat = %d %+v, want config_hash and app_update", res.StatusCode, got)
+		t.Fatalf("full heartbeat = %d %+v, want configHash and appUpdate", res.StatusCode, got)
 	}
 
 	// 改配置后，下一次心跳带回来的就是新的一份。
 	const newTOML = `hostname = "laptop"`
-	res, data = env.Do("PUT", "/api/admin/devices/"+dev.internalID, map[string]string{"name": "laptop", "config_toml": newTOML})
+	res, data = env.Do("PUT", "/api/admin/devices/"+dev.internalID, map[string]string{"name": "laptop", "configToml": newTOML})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("update device = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -661,13 +661,13 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("decode update: %v", err)
 	}
 	newHash := core.Hash(newTOML)
-	if updated["config_hash"] != newHash || len(newHash) != 16 {
-		t.Fatalf("update config_hash = %q, want %q with 16 characters", updated["config_hash"], newHash)
+	if updated["configHash"] != newHash || len(newHash) != 16 {
+		t.Fatalf("update configHash = %q, want %q with 16 characters", updated["configHash"], newHash)
 	}
 	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, release.AppVersion)
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.ConfigHash != newHash {
-		t.Fatalf("heartbeat after config update = %d %+v, want config_hash %q", res.StatusCode, got, newHash)
+		t.Fatalf("heartbeat after config update = %d %+v, want configHash %q", res.StatusCode, got, newHash)
 	}
 	if raw, err := base64.StdEncoding.DecodeString(got.ConfigB64); err != nil || string(raw) != newTOML {
 		t.Fatalf("new config payload = %q (%v), want %q", got.ConfigB64, err, newTOML)
@@ -678,12 +678,12 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("heartbeat after config update = %d (%s), want 204", res.StatusCode, data)
 	}
 
-	// Publishing another build flips app_version and the update comes back.
+	// Publishing another build flips appVersion and the update comes back.
 	next := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-1", []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppVersion)
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
-		t.Fatalf("heartbeat after release = %d %+v, want only app_update %q", res.StatusCode, got, next.AppURL)
+		t.Fatalf("heartbeat after release = %d %+v, want only appUpdate %q", res.StatusCode, got, next.AppURL)
 	}
 }
 
@@ -831,7 +831,7 @@ func TestDeviceLimitReturnsConflict(t *testing.T) {
 	for i := range app.MaxDevices {
 		createDevice(t, env, fmt.Sprintf("dev-%03d", i), testTOML)
 	}
-	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "overflow", "config_toml": testTOML})
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "overflow", "configToml": testTOML})
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("device over limit = %d, want 409: %s", res.StatusCode, data)
 	}
@@ -894,12 +894,12 @@ func TestReleaseRoundTrip(t *testing.T) {
 	externalPkg := releasePkg(t, "2026.11.24-4", []byte("external mesh client binary"))
 	rawURL := fileServer(t, externalPkg)
 	saved := putReleases(t, env, map[string]any{
-		"platform":     testPlatform,
-		"default_toml": toml,
-		"app_url":      rawURL,
-		"app_notes":    "修复窄屏布局",
+		"platform":    testPlatform,
+		"defaultToml": toml,
+		"appUrl":      rawURL,
+		"appNotes":    "修复窄屏布局",
 	})
-	// The label is the one inside the package; app_sha256 describes the bytes
+	// The label is the one inside the package; appSha256 describes the bytes
 	// clients download.
 	got := saved.releaseOf(testPlatform)
 	pkgSum := sha256.Sum256(externalPkg)
@@ -931,7 +931,7 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 
 	// Editing only the template keeps the release.
-	revised := putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": `hostname = "only-template"`})
+	revised := putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": `hostname = "only-template"`})
 	if r := revised.releaseOf(testPlatform); r.AppVersion != "2026.11.24-4" {
 		t.Fatalf("template-only save = %+v, want the release kept", revised)
 	}
@@ -946,7 +946,7 @@ func TestReleaseRoundTrip(t *testing.T) {
 }
 
 // TestAutoUpdateFollowsThePackage pins the package-level switch: it is stored
-// with the client package, travels to clients inside app_update, is rewritten by
+// with the client package, travels to clients inside appUpdate, is rewritten by
 // every client-package publish (omitted means manual), and cannot be set on a
 // platform that has no package to attach it to.
 func TestAutoUpdateFollowsThePackage(t *testing.T) {
@@ -956,19 +956,19 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 
 	build := releasePkg(t, "2026.11.26-1", []byte("client build one"))
 	saved := putReleases(t, env, map[string]any{
-		"platform":    testPlatform,
-		"app_url":     fileServer(t, build),
-		"auto_update": true,
+		"platform":   testPlatform,
+		"appUrl":     fileServer(t, build),
+		"autoUpdate": true,
 	}).releaseOf(testPlatform)
 	if saved.AppVersion != "2026.11.26-1" {
 		t.Fatalf("published version = %q, want the one in version.json", saved.AppVersion)
 	}
 	if !saved.AutoUpdate {
-		t.Fatalf("published release = %+v, want auto_update", saved)
+		t.Fatalf("published release = %+v, want autoUpdate", saved)
 	}
 	// The switch is data, not a request-time decoration.
 	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || !stored.AutoUpdate {
-		t.Fatalf("stored release = %+v, found %v, %v; want auto_update", stored, found, err)
+		t.Fatalf("stored release = %+v, found %v, %v; want autoUpdate", stored, found, err)
 	}
 
 	// The client learns the policy together with the update itself.
@@ -978,10 +978,10 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 		t.Fatalf("decode heartbeat: %v", err)
 	}
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || !got.AppUpdate.AutoUpdate {
-		t.Fatalf("heartbeat = %d %+v, want app_update with autoUpdate", res.StatusCode, got)
+		t.Fatalf("heartbeat = %d %+v, want appUpdate with autoUpdate", res.StatusCode, got)
 	}
 
-	// No app_update, no autoUpdate: the field does not ride on other responses.
+	// No appUpdate, no autoUpdate: the field does not ride on other responses.
 	res, data = heartbeat(t, env, dev, &nonces, "0000000000000000", "2026.11.26-1")
 	var onlyConfig heartbeatResponse
 	if err := json.Unmarshal(data, &onlyConfig); err != nil {
@@ -1000,19 +1000,19 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	// A new package starts manual unless the admin says otherwise.
 	next := putReleases(t, env, map[string]any{
 		"platform": testPlatform,
-		"app_url":  fileServer(t, releasePkg(t, "2026.11.26-2", []byte("client build two"))),
+		"appUrl":   fileServer(t, releasePkg(t, "2026.11.26-2", []byte("client build two"))),
 	}).releaseOf(testPlatform)
 	if next.AutoUpdate || next.AppVersion != "2026.11.26-2" {
 		t.Fatalf("republished package = %+v, want it back to manual", next)
 	}
 
 	// The switch cannot be flipped on its own: it has no package to belong to.
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]any{"platform": testPlatform, "auto_update": true})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]any{"platform": testPlatform, "autoUpdate": true})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_argument") {
-		t.Fatalf("lone auto_update = %d: %s, want 400 invalid_argument", res.StatusCode, data)
+		t.Fatalf("lone autoUpdate = %d: %s, want 400 invalid_argument", res.StatusCode, data)
 	}
 	if stored, _, err := env.App.Release(testPlatform); err != nil || stored.AutoUpdate {
-		t.Fatalf("rejected auto_update changed the row: %+v, %v", stored, err)
+		t.Fatalf("rejected autoUpdate changed the row: %+v, %v", stored, err)
 	}
 }
 
@@ -1037,7 +1037,7 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 	}
 	// 启动器只有完整摘要，没有可比较的版本号。
 	if len(launcher.LauncherSHA256) != 64 {
-		t.Fatalf("launcher_sha256 = %q, want 64 characters", launcher.LauncherSHA256)
+		t.Fatalf("launcherSha256 = %q, want 64 characters", launcher.LauncherSHA256)
 	}
 	// The client slot survived the launcher publish untouched.
 	if launcher.AppVersion != client.AppVersion || launcher.AppURL != client.AppURL ||
@@ -1117,27 +1117,27 @@ func TestLauncherRejectsIncompletePublish(t *testing.T) {
 	}{
 		{
 			name:   "version without url",
-			fields: map[string]string{"platform": testPlatform, "launcher_version": "2026.11.25-36"},
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36"},
 			want:   "同时给出",
 		},
 		{
 			name:   "url without version",
-			fields: map[string]string{"platform": testPlatform, "launcher_url": "http://example.com/mesh.exe"},
+			fields: map[string]string{"platform": testPlatform, "launcherUrl": "http://example.com/mesh.exe"},
 			want:   "同时给出",
 		},
 		{
 			name:   "non-http url",
-			fields: map[string]string{"platform": testPlatform, "launcher_version": "2026.11.25-36", "launcher_url": "ftp://example.com/mesh.exe"},
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "ftp://example.com/mesh.exe"},
 			want:   "http(s)",
 		},
 		{
 			name:   "unreachable url",
-			fields: map[string]string{"platform": testPlatform, "launcher_version": "2026.11.25-36", "launcher_url": "http://127.0.0.1:1/mesh.exe"},
-			want:   "无法读取 launcher_url",
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "http://127.0.0.1:1/mesh.exe"},
+			want:   "无法读取 launcherUrl",
 		},
 		{
 			name:   "missing platform",
-			fields: map[string]string{"launcher_version": "2026.11.25-36", "launcher_url": "http://example.com/mesh.exe"},
+			fields: map[string]string{"launcherVersion": "2026.11.25-36", "launcherUrl": "http://example.com/mesh.exe"},
 			want:   "platform",
 		},
 	}
@@ -1180,14 +1180,14 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 		return out
 	}
 
-	// Only the config changed: no app_update, but the launcher still arrives.
+	// Only the config changed: no appUpdate, but the launcher still arrives.
 	res, data := heartbeat(t, env, dev, &nonces, "0000000000000000", release.AppVersion)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("config-only heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}
 	got := decode(data)
 	if got.AppUpdate != nil {
-		t.Fatalf("config-only heartbeat = %+v, want no app_update", got)
+		t.Fatalf("config-only heartbeat = %+v, want no appUpdate", got)
 	}
 	if got.Launcher == nil || *got.Launcher != wantLauncher {
 		t.Fatalf("launcher = %+v, want %+v", got.Launcher, wantLauncher)
@@ -1203,7 +1203,7 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 	}
 	got = decode(data)
 	if got.AppUpdate == nil || got.Launcher == nil || got.Launcher.SHA256 != wantLauncher.SHA256 {
-		t.Fatalf("app-only heartbeat = %+v, want app_update and launcher", got)
+		t.Fatalf("app-only heartbeat = %+v, want appUpdate and launcher", got)
 	}
 
 	// Nothing changed, but a launcher is published: 200 carrying only the
@@ -1236,11 +1236,11 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 func TestReleaseRejectsIncompletePublish(t *testing.T) {
 	env := testenv.New(t)
 
-	// app_version is not an input any more: the version is read from the
+	// appVersion is not an input any more: the version is read from the
 	// package, so a request carrying it is rejected instead of half-used.
-	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "2026.11.24-4"})
+	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "appVersion": "2026.11.24-4"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "version.json") {
-		t.Fatalf("app_version as input = %d: %s, want 400 naming version.json", res.StatusCode, data)
+		t.Fatalf("appVersion as input = %d: %s, want 400 naming version.json", res.StatusCode, data)
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("rejected publish was stored: found %v, %v", found, err)
@@ -1249,28 +1249,28 @@ func TestReleaseRejectsIncompletePublish(t *testing.T) {
 	// Notes and the auto-install switch are properties of a client package;
 	// neither can be published on its own.
 	for name, body := range map[string]map[string]any{
-		"app_notes":   {"platform": testPlatform, "app_notes": "只写备注"},
-		"auto_update": {"platform": testPlatform, "auto_update": true},
+		"appNotes":   {"platform": testPlatform, "appNotes": "只写备注"},
+		"autoUpdate": {"platform": testPlatform, "autoUpdate": true},
 	} {
 		res, data := env.Do("PUT", "/api/admin/releases", body)
-		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "app_url") {
-			t.Fatalf("%s without app_url = %d: %s", name, res.StatusCode, data)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "appUrl") {
+			t.Fatalf("%s without appUrl = %d: %s", name, res.StatusCode, data)
 		}
 	}
 
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_url": "ftp://example.com/a.tar.zst"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "appUrl": "ftp://example.com/a.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "http(s)") {
 		t.Fatalf("non-http url = %d: %s", res.StatusCode, data)
 	}
 
 	// A URL the server cannot read is rejected.
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_url": "http://127.0.0.1:1/mesh-client.tar.zst"})
-	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "无法读取 app_url") {
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "appUrl": "http://127.0.0.1:1/mesh-client.tar.zst"})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "无法读取 appUrl") {
 		t.Fatalf("unreachable url = %d: %s", res.StatusCode, data)
 	}
 
 	// The platform key is required.
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"app_url": "http://example.com/a.tar.zst"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"appUrl": "http://example.com/a.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "platform") {
 		t.Fatalf("missing platform = %d: %s", res.StatusCode, data)
 	}
@@ -1286,10 +1286,10 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 	good := releasePkg(t, "2026.11.26-11", []byte("client build"))
 	saved := putReleases(t, env, map[string]any{
 		"platform": testPlatform,
-		"app_url":  fileServer(t, good),
+		"appUrl":   fileServer(t, good),
 	}).releaseOf(testPlatform)
 	if saved.AppVersion != "2026.11.26-11" {
-		t.Fatalf("app_version = %q, want the version inside the package", saved.AppVersion)
+		t.Fatalf("appVersion = %q, want the version inside the package", saved.AppVersion)
 	}
 
 	noManifest := tarZst(t, map[string][]byte{
@@ -1321,7 +1321,7 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			res, data := env.Do("PUT", "/api/admin/releases", map[string]string{
 				"platform": testPlatform,
-				"app_url":  fileServer(t, tc.pkg),
+				"appUrl":   fileServer(t, tc.pkg),
 			})
 			if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), tc.want) {
 				t.Fatalf("publish = %d: %s, want 400 containing %q", res.StatusCode, data, tc.want)
@@ -1338,7 +1338,7 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 // (CONTRACT.md 1.5): an update goes out only when the device reports a build
 // older than the published one. -9 is older than -11 even though string order
 // says the opposite, and a device ahead of the published build stays current so
-// auto_update cannot loop on an old package.
+// autoUpdate cannot loop on an old package.
 func TestHeartbeatOnlyUpgrades(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
@@ -1369,10 +1369,10 @@ func TestHeartbeatOnlyUpgrades(t *testing.T) {
 		t.Fatalf("decode heartbeat: %v", err)
 	}
 	if got.AppUpdate == nil || got.AppUpdate.Version != release.AppVersion {
-		t.Fatalf("older heartbeat = %+v, want app_update %q", got, release.AppVersion)
+		t.Fatalf("older heartbeat = %+v, want appUpdate %q", got, release.AppVersion)
 	}
 	if row := detail(); row.AppState != "stale" {
-		t.Fatalf("app_state of an older device = %q, want stale", row.AppState)
+		t.Fatalf("appState of an older device = %q, want stale", row.AppState)
 	}
 
 	// 设备比发布新（回滚过发布、手工装过新包）：不下发，控制台算 current。
@@ -1386,12 +1386,12 @@ func TestHeartbeatOnlyUpgrades(t *testing.T) {
 
 	// 日期先于当日序号：前一天的构建即使序号更大也更旧。
 	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-99")
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(data), `"app_update"`) {
-		t.Fatalf("previous-day heartbeat = %d: %s, want app_update", res.StatusCode, data)
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(data), `"appUpdate"`) {
+		t.Fatalf("previous-day heartbeat = %d: %s, want appUpdate", res.StatusCode, data)
 	}
 }
 
-// TestBlankTemplateRestoresBuiltin pins F5: a blank default_toml deletes the
+// TestBlankTemplateRestoresBuiltin pins F5: a blank defaultToml deletes the
 // custom template file. A missing file already means "use the embedded
 // template", so the save has a defined effect instead of silently doing
 // nothing, and there is exactly one representation of "no custom template".
@@ -1400,7 +1400,7 @@ func TestBlankTemplateRestoresBuiltin(t *testing.T) {
 	path := filepath.Join(env.DataDir, "peer.default.toml")
 	const custom = `hostname = "custom"`
 
-	putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": custom})
+	putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
 	if raw, err := os.ReadFile(path); err != nil || string(raw) != custom {
 		t.Fatalf("peer.default.toml = %q, %v; want the saved template", raw, err)
 	}
@@ -1409,11 +1409,11 @@ func TestBlankTemplateRestoresBuiltin(t *testing.T) {
 		if blank != "" {
 			// Put the custom template back, so the second round proves the
 			// whitespace-only value acts the same way as the empty one.
-			putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": custom})
+			putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
 		}
-		saved := putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": blank})
+		saved := putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": blank})
 		if saved.DefaultTOML != "" {
-			t.Fatalf("default_toml after a blank save = %q, want empty", saved.DefaultTOML)
+			t.Fatalf("defaultToml after a blank save = %q, want empty", saved.DefaultTOML)
 		}
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("blank save left peer.default.toml behind: %v", err)
@@ -1436,7 +1436,7 @@ func TestSavedTemplateAppliesToNewDevices(t *testing.T) {
 	env := testenv.New(t)
 	const custom = `hostname = "from-settings"
 ipv4 = "10.126.126.9/24"`
-	putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": custom})
+	putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
 
 	// The create dialog prefills from GET /api/admin/template.
 	res, data := env.Do("GET", "/api/admin/template", nil)

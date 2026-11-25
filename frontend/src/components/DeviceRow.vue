@@ -17,7 +17,7 @@ const props = defineProps<{ device: DeviceSummary }>();
 const emit = defineEmits<{ open: [id: string] }>();
 
 const seen = computed(() =>
-  props.device.last_seen_at ? relTime(props.device.last_seen_at, nowSec.value) : "从未",
+  props.device.lastSeenAt ? relTime(props.device.lastSeenAt, nowSec.value) : "从未",
 );
 </script>
 
@@ -36,7 +36,7 @@ const seen = computed(() =>
         <span class="nm">{{ device.name }}</span>
         <span v-if="device.identity === 'formal'" class="tag">正式</span>
       </div>
-      <span class="sub">{{ device.hostname || device.device_id || "未注册" }}</span>
+      <span class="sub">{{ device.hostname || device.deviceId || "未注册" }}</span>
     </div>
     <div class="cell addr" data-label="地址">{{ meshAddress(device) }}</div>
     <div class="cell live" data-label="状态">
@@ -44,14 +44,14 @@ const seen = computed(() =>
       {{ statusText(device.status) }}
     </div>
     <div class="cell cfg" data-label="配置">
-      <span :class="configStateClass(device.config_state)">{{ configStateText(device.config_state) }}</span>
+      <span :class="configStateClass(device.configState)">{{ configStateText(device.configState) }}</span>
     </div>
     <div class="cell app" data-label="版本">
-      <template v-if="device.app_version">
-        <span class="version">{{ device.app_version }}</span>
+      <template v-if="device.appVersion">
+        <span class="version">{{ device.appVersion }}</span>
         <span v-if="appStateLabel(device)" :class="appStateClass(device)">{{ appStateLabel(device) }}</span>
       </template>
-      <span v-else-if="device.last_platform" class="muted">未发布</span>
+      <span v-else-if="device.lastPlatform" class="muted">未发布</span>
       <span v-else class="muted">—</span>
     </div>
     <div class="cell seen" data-label="最后在线">{{ seen }}</div>

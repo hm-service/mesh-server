@@ -207,15 +207,18 @@ func TestNoneCooldown(t *testing.T) {
 	}
 }
 
-// TestConcurrentIssuanceKeepsCredentialPairs pins F2: concurrent heartbeats may
-// each issue a credential, but every answer must pair a secret with the id it was
-// generated for.
+// TestConcurrentIssuanceKeepsCredentialPairs pins F2: every answer that did issue
+// a credential must pair the secret with its own id. How many of the concurrent
+// heartbeats issue is up to scheduling: the first one to land creates a row whose
+// created_at starts the 5 minute none cooldown, so the ones that read the table
+// afterwards answer 204 by design. The case therefore checks the issued answers
+// (and that at least one exists) instead of requiring every heartbeat to sign.
 func TestConcurrentIssuanceKeepsCredentialPairs(t *testing.T) {
 	env := testenv.New(t, testenv.WithCredentialCLI())
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	// 先让设备有一张凭据并把冷却走完：否则首轮并发里先插入记录的那条会让
-	// 其余几条命中 none 冷却，断言「每条都签发」就变成了时序赌博。
+	// 先让设备有一张凭据并把冷却走完：这样 6 条并发里会有若干条真的走到签发，
+	// 串台窗口才是被压到的那段代码。
 	if res, data := credentialHeartbeat(t, env, dev, &nonces, "none"); res.StatusCode != http.StatusOK {
 		t.Fatalf("initial heartbeat = %d: %s", res.StatusCode, data)
 	}
@@ -261,24 +264,33 @@ func TestConcurrentIssuanceKeepsCredentialPairs(t *testing.T) {
 	wg.Wait()
 
 	seen := make(map[string]struct{}, rounds)
+	issued := 0
 	for i := range requests {
 		if failures[i] != nil {
 			t.Fatalf("heartbeat %d: %v", i, failures[i])
 		}
-		if statuses[i] != http.StatusOK {
-			t.Fatalf("heartbeat %d = %d, want 200", i, statuses[i])
+		switch statuses[i] {
+		case http.StatusOK:
+			answer := answers[i]
+			if answer.Credential == "" || answer.CredentialID == "" {
+				t.Fatalf("heartbeat %d = %+v, want a credential", i, answer)
+			}
+			if owner := fakecli.Owner(answer.Credential); owner != answer.CredentialID {
+				t.Fatalf("heartbeat %d answered id %q with the secret generated for %q", i, answer.CredentialID, owner)
+			}
+			if _, dup := seen[answer.CredentialID]; dup {
+				t.Fatalf("credential id %q was issued twice", answer.CredentialID)
+			}
+			seen[answer.CredentialID] = struct{}{}
+			issued++
+		case http.StatusNoContent:
+			// 冷却：先落库的那条让 rest 读到了「刚签过」，按设计不签。
+		default:
+			t.Fatalf("heartbeat %d = %d, want 200 or 204", i, statuses[i])
 		}
-		answer := answers[i]
-		if answer.Credential == "" || answer.CredentialID == "" {
-			t.Fatalf("heartbeat %d = %+v, want a credential", i, answer)
-		}
-		if owner := fakecli.Owner(answer.Credential); owner != answer.CredentialID {
-			t.Fatalf("heartbeat %d answered id %q with the secret generated for %q", i, answer.CredentialID, owner)
-		}
-		if _, dup := seen[answer.CredentialID]; dup {
-			t.Fatalf("credential id %q was issued twice", answer.CredentialID)
-		}
-		seen[answer.CredentialID] = struct{}{}
+	}
+	if issued == 0 {
+		t.Fatal("no concurrent heartbeat issued a credential, the case checked nothing")
 	}
 }
 

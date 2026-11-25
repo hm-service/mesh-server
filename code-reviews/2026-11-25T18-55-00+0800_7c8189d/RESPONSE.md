@@ -1,7 +1,7 @@
 # mesh-server 修复响应（评审 2026-11-25T18-55-00+0800_7c8189d）
 
 - **响应对象**：同目录 [`REVIEW.md`](REVIEW.md)（评审 commit `7c8189d`；P0 0 / P1 0 / P2 4 / P3 5，F1–F9）
-- **响应时间**：2026-11-25 19:21 +08:00（Asia/Shanghai）；19:25 按 lead 决策补 `none` 签发冷却，19:29 把空串判断提前到读库之前，均在同一提交里
+- **响应时间**：2026-11-25 19:21 +08:00（Asia/Shanghai）；19:25 按 lead 决策补 `none` 签发冷却，19:29 把空串判断提前到读库之前，19:32 并发用例改为容忍冷却回 204，均在同一提交里
 - **修复提交**：本目录与下列改动一起提交，commit message 引用 `2026-11-25T18-55-00+0800_7c8189d`
 - **环境**：Windows + pwsh 7；`go version go1.27.4 windows/amd64`（`C:\Program Files\Go\bin` 前置）；`GOPROXY=https://goproxy.cn,direct`；`pnpm 12.23.0`
 - **约束遵守**：只改 `server/` 内文件，以及根目录 `CONTRACT.md` 1.5 的凭据段与 `DESIGN.md` 凭据段的一句冷却说明；未改 `client/`；未部署、未连种子、未跑 podman/CI、未动 k8s 线上状态。
@@ -38,7 +38,7 @@
 
 **修复**：`IssueCredential` 返回 `app.IssuedCredential{ID, Secret, Expiry}`，三个值都取自本次 `generate` 的结果；心跳与管理端签发接口都用这个返回值组装响应，删掉了签发后再查一次库的两处（原 `issueCredentialIfNeeded` 末尾与 `handleIssueCredential` 里的 `LatestCredential`）。
 
-**验证**：[api/credential_test.go:213](../../api/credential_test.go#L213) `TestConcurrentIssuanceKeepsCredentialPairs`：6 条并发心跳，逐条断言「响应里的私钥就是响应里那个 id 签出来的」（假 CLI 把 id 编进私钥，测试解出来比对）且 6 个 id 互不相同；[app/credential_test.go:35](../../app/credential_test.go#L35) `TestIssueCredentialReturnsItsOwnID`、[api/credential_test.go:287](../../api/credential_test.go#L287) `TestAdminIssueCredentialReturnsItsOwnID` 覆盖 app 层与管理端。探针第二段 `mismatched_pairs=0`（修复前 2）。
+**验证**：[api/credential_test.go:213](../../api/credential_test.go#L213) `TestConcurrentIssuanceKeepsCredentialPairs`：6 条并发心跳，凡签发了的（200）逐条断言「响应里的私钥就是响应里那个 id 签出来的」（假 CLI 把 id 编进私钥，测试解出来比对）且 id 互不相同；冷却命中回 204 的按设计跳过，只要求至少一条签发。并发里谁先落库由调度决定，只有它之前的读能过冷却，所以不能断言每条都 200——那正是这条用例最初在 Linux CI 上挂掉的原因；维护性上它验的是「已签发的那些没有串台」；[app/credential_test.go:35](../../app/credential_test.go#L35) `TestIssueCredentialReturnsItsOwnID`、[api/credential_test.go:287](../../api/credential_test.go#L287) `TestAdminIssueCredentialReturnsItsOwnID` 覆盖 app 层与管理端。探针第二段 `mismatched_pairs=0`（修复前 2）。
 
 ### [P2][F3] `config_hash` 存量行迁移
 

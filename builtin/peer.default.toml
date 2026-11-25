@@ -12,10 +12,11 @@
 # ET_LOCAL_PRIVATE_KEY）或 ET_CREDENTIAL 指明身份，两者都会把这一段整体覆盖，
 # 配置里写的 enabled 不会生效。
 
-# dhcp = true：地址由网络里的 DHCP 分配，多台设备不会撞车。
-# 要固定地址：先把 dhcp 改成 false（或删掉这一行），再放开下面那行——
-# dhcp 还开着时 core 会忽略这里写的 ipv4。
-dhcp = true
+# 地址由控制面固定分配：新建设备时必须把下面注释掉的 ipv4 打开，填一个
+# 全网唯一的地址（形如 "10.126.126.100/24"），与 dhcp = false 一起写进配置。
+# dhcp 不支持：Windows 客户端用的 mini 内核没有编译 dhcp-ipv4 特性，开着也
+# 拿不到地址；EasyTier 自带的 DHCP 只按在线对端避让，会与掉线设备撞地址。
+dhcp = false
 
 # STUN 用我们自建的 47.108.249.34:3478，不用上游默认的公共 STUN 列表
 # （txt:stun.easytier.cn 等）；tcp 与 v6 两项显式清空，只走自建的 UDP。

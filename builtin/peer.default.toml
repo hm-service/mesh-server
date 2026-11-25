@@ -16,6 +16,13 @@
 # 要固定地址：先把 dhcp 改成 false（或删掉这一行），再放开下面那行——
 # dhcp 还开着时 core 会忽略这里写的 ipv4。
 dhcp = true
+
+# STUN 用我们自建的 47.108.249.34:3478，不用上游默认的公共 STUN 列表
+# （txt:stun.easytier.cn 等）；tcp 与 v6 两项显式清空，只走自建的 UDP。
+stun_servers = ["47.108.249.34:3478"]
+tcp_stun_servers = []
+stun_servers_v6 = []
+
 # ipv4 = "10.126.126.100/24"
 
 [network_identity]
@@ -24,9 +31,11 @@ dhcp = true
 network_name = "test-net"
 
 [flags]
-# 必须全网一致，两端算法不同时握手直接失败。等价于启动参数
-# --encryption-algorithm，可选 chacha20 / aes-gcm / aes-256-gcm。
-encryption_algorithm = "chacha20"
+# 必须全网一致，而且必须是 aes-gcm：算法由每个节点自己决定“我发出去的包用什么”，
+# 对端必须能解。Windows 客户端用的 mini 内核没编 chacha20 后端，一端写 chacha20、
+# 另一端是 mini 就会 session invalidated，现象是“已连接”但节点表里只有自己。
+# 等价于启动参数 --encryption-algorithm。
+encryption_algorithm = "aes-gcm"
 
 # 三级种子（ali / tencent / ali-zyf），每级都写 udp 与 tcp 两条连接目标：core 对每条
 # 各自重连，udp 延迟低、能打洞，tcp 在 udp 被屏蔽或打不通时兜底。用域名而不是 IP，

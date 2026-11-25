@@ -39,7 +39,6 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | 方法 | 路径 | 认证 |
 | --- | --- | --- |
 | POST | `/api/auth` | 无 |
-| GET | `/api/v1/health` | 无（只回 `{ok:true}`） |
 | POST | `/api/v1/register` | token 或设备签名（在请求体里） |
 | POST | `/api/v1/heartbeat` | 设备签名（在请求体里） |
 | GET | `/api/admin/template` | Bearer |

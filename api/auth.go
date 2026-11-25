@@ -64,9 +64,3 @@ func (s *Server) holdAuthFloor(start time.Time) {
 		s.sleep(floor - elapsed)
 	}
 }
-
-// handleHealth reports that the console is reachable. It carries no
-// authentication state: the admin surface always requires a credential.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}

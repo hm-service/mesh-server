@@ -155,9 +155,7 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
 	s.route(mux, "DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
 	// Device-facing public API. It shares nothing with the admin surface: its own
-	// gate, no bearer, and the device key in the request body. /api/v1/health is
-	// here because it is polled by devices, not by the console.
-	s.route(mux, "GET", "/api/v1/health", s.withGate(s.deviceGate, s.handleHealth))
+	// gate, no bearer, and the device key in the request body.
 	s.route(mux, "POST", "/api/v1/register", s.withGate(s.deviceGate, s.handleRegister))
 	s.route(mux, "POST", "/api/v1/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
 	// Console pages and their assets.

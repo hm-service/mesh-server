@@ -106,26 +106,6 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 	}
 }
 
-// TestHealthCarriesNoAuthState pins that the no_auth flag is gone from the
-// health payload: the console can no longer be told to skip its login page.
-func TestHealthCarriesNoAuthState(t *testing.T) {
-	env := testenv.New(t, testenv.WithoutLogin())
-	res, body := env.Do("GET", "/api/v1/health", nil)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("health = %d, want 200: %s", res.StatusCode, body)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("decode health: %v", err)
-	}
-	if payload["ok"] != true {
-		t.Fatalf("health = %s, want ok", body)
-	}
-	if _, present := payload["no_auth"]; present {
-		t.Fatalf("health still reports no_auth: %s", body)
-	}
-}
-
 // TestReleaseExposesFullDigest pins that the 16-character hash clients compare
 // is a prefix of the package digest, and the full sha256 travels next to it so
 // a client can verify what it downloaded.

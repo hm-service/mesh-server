@@ -1,19 +1,46 @@
-# 模板：新设备默认由网络 DHCP 分配地址，多台设备不会撞车。
+# 默认 EasyTier 配置：控制面用它预填“新建设备”对话框，管理员保存后就是该设备的
+# config.toml，客户端原样写盘并作为 core 的 -c 参数。
+#
+# 这份模板只描述网络，不描述节点身份。身份由客户端启动 core 时按“配置里有没有
+# network_secret”选择：有 secret 走 --secure-mode + ET_LOCAL_PRIVATE_KEY，没有则用
+# 控制面签发的 ET_CREDENTIAL。
+#
+# 不要在这里加 [secure_mode]：客户端启动 core 时一定用 --secure-mode（配
+# ET_LOCAL_PRIVATE_KEY）或 ET_CREDENTIAL 指明身份，两者都会把这一段整体覆盖，
+# 配置里写的 enabled 不会生效。单独拿这份 TOML 起 core 时，enabled = true 却没有
+# 私钥的节点会被随机生成一把 X25519 私钥，节点身份每次都变。
+
+# dhcp = true：地址由网络里的 DHCP 分配，多台设备不会撞车。
+# 要固定地址：先把 dhcp 改成 false（或删掉这一行），再放开下面那行——
+# dhcp 还开着时 core 会忽略这里写的 ipv4。
 dhcp = true
-# 要固定地址就放开下面这行，并换成池子里没人用的地址。
 # ipv4 = "10.126.126.100/24"
 
 [network_identity]
+# 全网一致的网络名，不同 network_name 的节点不在同一个网络里。
 network_name = "test-net"
-network_secret = "test-secret-2026"
-
-# 注意：这个段只设置开关，私钥由客户端启动 core 时用 --secure-mode 生成。
-[secure_mode]
-enabled = true
+# 全网共享口令，由管理员在“配置”页填成与种子相同的值；真实值不进 git、不进内置
+# 模板，这里只是占位符。不能留空：留空时客户端会把这台设备当成凭据节点（没有凭据
+# 就起不了 core），core 也会拿空口令派生网络摘要，知道网络名的人都能进。
+network_secret = "REPLACE_WITH_NETWORK_SECRET"
 
 [flags]
-# 加密算法必须全网一致；TOML 里就是这个字段，等价于 --encryption-algorithm。
+# 必须全网一致，两端算法不同时握手直接失败。等价于启动参数
+# --encryption-algorithm，可选 chacha20 / aes-gcm / aes-256-gcm。
 encryption_algorithm = "chacha20"
 
+# 三级种子（ali / tencent / ali-zyf），每级都写 udp 与 tcp 两条连接目标：core 对每条
+# 各自重连，udp 延迟低、能打洞，tcp 在 udp 被屏蔽或打不通时兜底。用域名而不是 IP，
+# 种子换地址时不必逐台设备改配置。
 [[peer]]
-uri = "tcp://172.19.230.131:11010"
+uri = "udp://wg0.daveny.cn:11010"
+[[peer]]
+uri = "tcp://wg0.daveny.cn:11010"
+[[peer]]
+uri = "udp://wg1.daveny.cn:11010"
+[[peer]]
+uri = "tcp://wg1.daveny.cn:11010"
+[[peer]]
+uri = "udp://wg2.daveny.cn:11010"
+[[peer]]
+uri = "tcp://wg2.daveny.cn:11010"

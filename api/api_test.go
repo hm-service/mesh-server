@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 
 	"mesh-server/app"
+	"mesh-server/builtin"
 	"mesh-server/core"
 	"mesh-server/internal/testenv"
 )
@@ -204,7 +206,8 @@ func newNonce(counter *int64) string {
 	return fmt.Sprintf("%032x", *counter)
 }
 
-// signed sends one request carrying device signature headers.
+// signed sends one prepared request. The device signature travels in the body;
+// headers only carries business headers.
 func signed(t *testing.T, env *testenv.Env, method, path string, body []byte, headers map[string]string) (*http.Response, []byte) {
 	t.Helper()
 	var reader io.Reader
@@ -276,17 +279,23 @@ func registerDevice(t *testing.T, env *testenv.Env, name, toml string) registere
 	return registeredDevice{internalID: id, deviceID: deviceID, priv: priv, configTOML: toml, configHash: wantHash}
 }
 
-// releasePkg packs client bytes into the tar.zst the launcher installs. The
-// package must carry the kernel beside the client.
-func releasePkg(t *testing.T, client []byte) []byte {
+// tarZst packs entries into the tar.zst the launcher installs. The archive root
+// is the content of bin/, exactly as client/cmd/pack writes it.
+func tarZst(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	var buf bytes.Buffer
 	zw, err := zstd.NewWriter(&buf)
 	if err != nil {
 		t.Fatalf("zstd writer: %v", err)
 	}
 	tw := tar.NewWriter(zw)
-	write := func(name string, data []byte) {
+	for _, name := range names {
+		data := entries[name]
 		hdr := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("tar header %s: %v", name, err)
@@ -295,8 +304,6 @@ func releasePkg(t *testing.T, client []byte) []byte {
 			t.Fatalf("tar write %s: %v", name, err)
 		}
 	}
-	write("mesh-client.exe", client)
-	write("bin/easytier-core.exe", []byte("core"))
 	if err := tw.Close(); err != nil {
 		t.Fatalf("tar close: %v", err)
 	}
@@ -304,6 +311,21 @@ func releasePkg(t *testing.T, client []byte) []byte {
 		t.Fatalf("zstd close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// releasePkg packs the client beside the kernel it needs and the version.json
+// manifest that states the version the package was built as.
+func releasePkg(t *testing.T, version string, client []byte) []byte {
+	t.Helper()
+	manifest, err := json.Marshal(map[string]any{"version": version, "files": map[string]string{}})
+	if err != nil {
+		t.Fatalf("marshal version.json: %v", err)
+	}
+	return tarZst(t, map[string][]byte{
+		"mesh-client.exe":   client,
+		"easytier-core.exe": []byte("core"),
+		"version.json":      manifest,
+	})
 }
 
 // fileServer serves body at every path so external URL releases are testable.
@@ -538,13 +560,13 @@ func putReleases(t *testing.T, env *testenv.Env, fields map[string]any) releases
 }
 
 // publishExternal points the platform at a served package and returns its view.
-func publishExternal(t *testing.T, env *testenv.Env, platform, version, notes string, pkg []byte) releaseView {
+// The published version is the one releasePkg wrote into the package.
+func publishExternal(t *testing.T, env *testenv.Env, platform, notes string, pkg []byte) releaseView {
 	t.Helper()
 	return putReleases(t, env, map[string]any{
-		"platform":    platform,
-		"app_version": version,
-		"app_url":     fileServer(t, pkg),
-		"app_notes":   notes,
+		"platform":  platform,
+		"app_url":   fileServer(t, pkg),
+		"app_notes": notes,
 	}).releaseOf(platform)
 }
 
@@ -570,8 +592,8 @@ func TestHeartbeatSemantics(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 
 	// Publish a build so app_version has a value to compare against.
-	build := releasePkg(t, []byte("client build one"))
-	release := publishExternal(t, env, testPlatform, "2026.11.24-4", "修复窄屏布局", build)
+	build := releasePkg(t, "2026.11.24-4", []byte("client build one"))
+	release := publishExternal(t, env, testPlatform, "修复窄屏布局", build)
 	sum := sha256.Sum256(build)
 	wantSHA := hex.EncodeToString(sum[:])
 
@@ -657,7 +679,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 
 	// Publishing another build flips app_version and the update comes back.
-	next := publishExternal(t, env, testPlatform, "2026.11.25-1", "", releasePkg(t, []byte("client build two")))
+	next := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-1", []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppVersion)
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
@@ -671,7 +693,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishExternal(t, env, testPlatform, "2026.11.24-4", "", releasePkg(t, []byte("client build one")))
+	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.24-4", []byte("client build one")))
 
 	summary := func() deviceSummary {
 		t.Helper()
@@ -869,22 +891,20 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 
 	const toml = `hostname = "saved-by-settings"`
-	externalPkg := releasePkg(t, []byte("external mesh client binary"))
+	externalPkg := releasePkg(t, "2026.11.24-4", []byte("external mesh client binary"))
 	rawURL := fileServer(t, externalPkg)
 	saved := putReleases(t, env, map[string]any{
 		"platform":     testPlatform,
 		"default_toml": toml,
-		"app_version":  "0.3.0",
 		"app_url":      rawURL,
 		"app_notes":    "修复窄屏布局",
 	})
-	// app_sha256 describes the package for download verification; the version
-	// string is what the control plane compares, so a kernel-only change must
-	// still read as an update.
+	// The label is the one inside the package; app_sha256 describes the bytes
+	// clients download.
 	got := saved.releaseOf(testPlatform)
 	pkgSum := sha256.Sum256(externalPkg)
 	wantPkg := hex.EncodeToString(pkgSum[:])
-	if saved.DefaultTOML != toml || got.AppVersion != "0.3.0" || got.AppURL != rawURL ||
+	if saved.DefaultTOML != toml || got.AppVersion != "2026.11.24-4" || got.AppURL != rawURL ||
 		got.AppNotes != "修复窄屏布局" || got.AppSHA256 != wantPkg {
 		t.Fatalf("save response = %+v, want sha256 %s", saved, wantPkg)
 	}
@@ -906,13 +926,13 @@ func TestReleaseRoundTrip(t *testing.T) {
 	if string(raw) != toml {
 		t.Fatalf("peer.default.toml = %q, want %q", raw, toml)
 	}
-	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Version != "0.3.0" || stored.URL != rawURL {
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Version != "2026.11.24-4" || stored.URL != rawURL {
 		t.Fatalf("stored release = %+v, found %v, %v", stored, found, err)
 	}
 
 	// Editing only the template keeps the release.
 	revised := putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": `hostname = "only-template"`})
-	if r := revised.releaseOf(testPlatform); r.AppVersion != "0.3.0" {
+	if r := revised.releaseOf(testPlatform); r.AppVersion != "2026.11.24-4" {
 		t.Fatalf("template-only save = %+v, want the release kept", revised)
 	}
 
@@ -934,13 +954,15 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 
-	build := releasePkg(t, []byte("client build one"))
+	build := releasePkg(t, "2026.11.26-1", []byte("client build one"))
 	saved := putReleases(t, env, map[string]any{
 		"platform":    testPlatform,
-		"app_version": "2026.11.26-1",
 		"app_url":     fileServer(t, build),
 		"auto_update": true,
 	}).releaseOf(testPlatform)
+	if saved.AppVersion != "2026.11.26-1" {
+		t.Fatalf("published version = %q, want the one in version.json", saved.AppVersion)
+	}
 	if !saved.AutoUpdate {
 		t.Fatalf("published release = %+v, want auto_update", saved)
 	}
@@ -977,9 +999,8 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 
 	// A new package starts manual unless the admin says otherwise.
 	next := putReleases(t, env, map[string]any{
-		"platform":    testPlatform,
-		"app_version": "2026.11.26-2",
-		"app_url":     fileServer(t, build),
+		"platform": testPlatform,
+		"app_url":  fileServer(t, releasePkg(t, "2026.11.26-2", []byte("client build two"))),
 	}).releaseOf(testPlatform)
 	if next.AutoUpdate || next.AppVersion != "2026.11.26-2" {
 		t.Fatalf("republished package = %+v, want it back to manual", next)
@@ -996,13 +1017,13 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 }
 
 // TestReleaseSlotsAreIndependent covers the two artifacts one platform
-// publishes: the launcher is a single file next to the install root, the client
-// package a tar.zst under the version directory. Each slot is published and
-// cleared on its own and neither touches the other.
+// publishes: the launcher is a single file in the install root, the client
+// package a tar.zst unpacked into bin/. Each slot is published and cleared on
+// its own and neither touches the other.
 func TestReleaseSlotsAreIndependent(t *testing.T) {
 	env := testenv.New(t)
 
-	client := publishExternal(t, env, testPlatform, "2026.11.25-36", "客户端更新", releasePkg(t, []byte("client build")))
+	client := publishExternal(t, env, testPlatform, "客户端更新", releasePkg(t, "2026.11.25-36", []byte("client build")))
 	if client.LauncherVersion != "" || client.LauncherURL != "" || client.LauncherSHA256 != "" {
 		t.Fatalf("publishing the client package also filled the launcher slot: %+v", client)
 	}
@@ -1025,7 +1046,7 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 	}
 
 	// A new client package leaves the launcher slot in place.
-	next := publishExternal(t, env, testPlatform, "2026.11.26-1", "", releasePkg(t, []byte("client build two")))
+	next := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.26-1", []byte("client build two")))
 	if next.AppVersion != "2026.11.26-1" || next.LauncherVersion != launcher.LauncherVersion ||
 		next.LauncherURL != launcher.LauncherURL || next.LauncherSHA256 != launcher.LauncherSHA256 {
 		t.Fatalf("client publish changed the launcher slot: %+v", next)
@@ -1068,7 +1089,7 @@ func TestReleaseSlotsKeepOnlyPublishedRows(t *testing.T) {
 	}
 
 	// The plain delete takes both slots of the platform.
-	publishExternal(t, env, testPlatform, "2026.11.25-36", "", releasePkg(t, []byte("client build")))
+	publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-36", []byte("client build")))
 	publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher"))
 	res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform, nil)
 	if res.StatusCode != http.StatusOK {
@@ -1146,7 +1167,7 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishExternal(t, env, testPlatform, "2026.11.25-36", "", releasePkg(t, []byte("client build")))
+	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-36", []byte("client build")))
 	launcher := publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher one"))
 	wantLauncher := launcherInfo{Version: "2026.11.25-36", URL: launcher.LauncherURL, SHA256: launcher.LauncherSHA256}
 
@@ -1176,7 +1197,7 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 	}
 
 	// A client package update carries both fields.
-	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "0000000000000000")
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.20-1")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("app-only heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -1200,7 +1221,7 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 	if res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform+"?slot=launcher", nil); res.StatusCode != http.StatusOK {
 		t.Fatalf("clear launcher = %d: %s", res.StatusCode, data)
 	}
-	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "0000000000000000")
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.20-1")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("heartbeat after clearing the launcher = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -1215,37 +1236,199 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 func TestReleaseRejectsIncompletePublish(t *testing.T) {
 	env := testenv.New(t)
 
-	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0"})
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("version without url = %d, want 400: %s", res.StatusCode, data)
-	}
-	if !strings.Contains(string(data), "invalid_argument") || !strings.Contains(string(data), "同时给出") {
-		t.Fatalf("version without url body = %s", data)
+	// app_version is not an input any more: the version is read from the
+	// package, so a request carrying it is rejected instead of half-used.
+	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "2026.11.24-4"})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "version.json") {
+		t.Fatalf("app_version as input = %d: %s, want 400 naming version.json", res.StatusCode, data)
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("rejected publish was stored: found %v, %v", found, err)
 	}
 
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_url": "http://example.com/a.tar.zst"})
-	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "同时给出") {
-		t.Fatalf("url without version = %d: %s", res.StatusCode, data)
+	// Notes and the auto-install switch are properties of a client package;
+	// neither can be published on its own.
+	for name, body := range map[string]map[string]any{
+		"app_notes":   {"platform": testPlatform, "app_notes": "只写备注"},
+		"auto_update": {"platform": testPlatform, "auto_update": true},
+	} {
+		res, data := env.Do("PUT", "/api/admin/releases", body)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "app_url") {
+			t.Fatalf("%s without app_url = %d: %s", name, res.StatusCode, data)
+		}
 	}
 
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0", "app_url": "ftp://example.com/a.tar.zst"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_url": "ftp://example.com/a.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "http(s)") {
 		t.Fatalf("non-http url = %d: %s", res.StatusCode, data)
 	}
 
 	// A URL the server cannot read is rejected.
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_version": "0.3.0", "app_url": "http://127.0.0.1:1/mesh-client.tar.zst"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "app_url": "http://127.0.0.1:1/mesh-client.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "无法读取 app_url") {
 		t.Fatalf("unreachable url = %d: %s", res.StatusCode, data)
 	}
 
 	// The platform key is required.
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"app_version": "0.3.0", "app_url": "http://example.com/a.tar.zst"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"app_url": "http://example.com/a.tar.zst"})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "platform") {
 		t.Fatalf("missing platform = %d: %s", res.StatusCode, data)
+	}
+}
+
+// TestClientPackageVersionComesFromThePackage pins the new publish shape: the
+// version is whatever version.json inside the package declares, and a package
+// that has none, or names something the control plane cannot order, is rejected
+// rather than stored under a guess.
+func TestClientPackageVersionComesFromThePackage(t *testing.T) {
+	env := testenv.New(t)
+
+	good := releasePkg(t, "2026.11.26-11", []byte("client build"))
+	saved := putReleases(t, env, map[string]any{
+		"platform": testPlatform,
+		"app_url":  fileServer(t, good),
+	}).releaseOf(testPlatform)
+	if saved.AppVersion != "2026.11.26-11" {
+		t.Fatalf("app_version = %q, want the version inside the package", saved.AppVersion)
+	}
+
+	noManifest := tarZst(t, map[string][]byte{
+		"mesh-client.exe":   []byte("client build"),
+		"easytier-core.exe": []byte("core"),
+	})
+	unorderable, err := json.Marshal(map[string]any{
+		"version": "build-2026-11-26",
+		"files":   map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("marshal version.json: %v", err)
+	}
+	badLabel := tarZst(t, map[string][]byte{
+		"mesh-client.exe": []byte("client build"),
+		"version.json":    unorderable,
+	})
+
+	cases := []struct {
+		name string
+		pkg  []byte
+		want string
+	}{
+		{name: "missing manifest", pkg: noManifest, want: "version.json"},
+		{name: "unorderable version", pkg: badLabel, want: "YYYY.MM.DD-N"},
+		{name: "not a tar.zst", pkg: []byte("not a package"), want: "更新包"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, data := env.Do("PUT", "/api/admin/releases", map[string]string{
+				"platform": testPlatform,
+				"app_url":  fileServer(t, tc.pkg),
+			})
+			if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), tc.want) {
+				t.Fatalf("publish = %d: %s, want 400 containing %q", res.StatusCode, data, tc.want)
+			}
+			stored, found, err := env.App.Release(testPlatform)
+			if err != nil || !found || stored.Version != "2026.11.26-11" {
+				t.Fatalf("rejected package changed the row: %+v, found %v, %v", stored, found, err)
+			}
+		})
+	}
+}
+
+// TestHeartbeatOnlyUpgrades pins the version-order rule of the heartbeat
+// (CONTRACT.md 1.5): an update goes out only when the device reports a build
+// older than the published one. -9 is older than -11 even though string order
+// says the opposite, and a device ahead of the published build stays current so
+// auto_update cannot loop on an old package.
+func TestHeartbeatOnlyUpgrades(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.26-11", []byte("client build")))
+
+	detail := func() deviceDetail {
+		t.Helper()
+		res, data := env.Do("GET", "/api/admin/devices/"+dev.internalID, nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("get device = %d: %s", res.StatusCode, data)
+		}
+		var out deviceDetail
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode device: %v", err)
+		}
+		return out
+	}
+
+	// 第 9 号构建比第 11 号旧，但字符串序把 "-9" 排在 "-11" 之后：只有按
+	// (日期, 当日序号) 比较才会下发。
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-9")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("older heartbeat = %d, want 200: %s", res.StatusCode, data)
+	}
+	var got heartbeatResponse
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	if got.AppUpdate == nil || got.AppUpdate.Version != release.AppVersion {
+		t.Fatalf("older heartbeat = %+v, want app_update %q", got, release.AppVersion)
+	}
+	if row := detail(); row.AppState != "stale" {
+		t.Fatalf("app_state of an older device = %q, want stale", row.AppState)
+	}
+
+	// 设备比发布新（回滚过发布、手工装过新包）：不下发，控制台算 current。
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-12")
+	if res.StatusCode != http.StatusNoContent || len(data) != 0 {
+		t.Fatalf("newer heartbeat = %d (%s), want 204 and no body", res.StatusCode, data)
+	}
+	if row := detail(); row.AppState != "current" || row.LastAppVersion != "2026.11.26-12" {
+		t.Fatalf("newer device = %+v, want current", row)
+	}
+
+	// 日期先于当日序号：前一天的构建即使序号更大也更旧。
+	res, data = heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-99")
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(data), `"app_update"`) {
+		t.Fatalf("previous-day heartbeat = %d: %s, want app_update", res.StatusCode, data)
+	}
+}
+
+// TestBlankTemplateRestoresBuiltin pins F5: a blank default_toml deletes the
+// custom template file. A missing file already means "use the embedded
+// template", so the save has a defined effect instead of silently doing
+// nothing, and there is exactly one representation of "no custom template".
+func TestBlankTemplateRestoresBuiltin(t *testing.T) {
+	env := testenv.New(t)
+	path := filepath.Join(env.DataDir, "peer.default.toml")
+	const custom = `hostname = "custom"`
+
+	putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": custom})
+	if raw, err := os.ReadFile(path); err != nil || string(raw) != custom {
+		t.Fatalf("peer.default.toml = %q, %v; want the saved template", raw, err)
+	}
+
+	for _, blank := range []string{"", "   \n\t\n"} {
+		if blank != "" {
+			// Put the custom template back, so the second round proves the
+			// whitespace-only value acts the same way as the empty one.
+			putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": custom})
+		}
+		saved := putReleases(t, env, map[string]any{"platform": testPlatform, "default_toml": blank})
+		if saved.DefaultTOML != "" {
+			t.Fatalf("default_toml after a blank save = %q, want empty", saved.DefaultTOML)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("blank save left peer.default.toml behind: %v", err)
+		}
+		// GET /api/admin/template falls back to the embedded template.
+		res, data := env.Do("GET", "/api/admin/template", nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET template = %d: %s", res.StatusCode, data)
+		}
+		var tmpl struct {
+			TOML string `json:"toml"`
+		}
+		if err := json.Unmarshal(data, &tmpl); err != nil || tmpl.TOML != builtin.DefaultTemplate() {
+			t.Fatalf("template after a blank save = %q (%v), want the embedded one", tmpl.TOML, err)
+		}
 	}
 }
 

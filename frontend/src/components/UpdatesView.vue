@@ -12,23 +12,27 @@ const emit = defineEmits<{
 // 会发布的平台。服务端已有的平台也一并列出来，所有平台同时铺开，不做切换。
 const KNOWN = ["windows/amd64", "linux/amd64"];
 
-/** SlotDraft 是一个槽位的编辑状态：启动器与客户端包各自提交、各自报错。 */
+/** SlotDraft 是两个槽位共用的编辑状态：各自提交、各自报错。 */
 interface SlotDraft {
-  version: string;
   url: string;
-  notes: string;
   busy: boolean;
   error: string;
   hint: string;
 }
 
-/** ClientDraft 是客户端包槽位：autoUpdate 跟着这个包一起发布。 */
+/** LauncherDraft 是启动器槽位：裸二进制没有清单，版本号由发布者填写。 */
+interface LauncherDraft extends SlotDraft {
+  version: string;
+}
+
+/** ClientDraft 是客户端包槽位：版本号由服务端从包内 version.json 读出，autoUpdate 跟着这个包一起发布。 */
 interface ClientDraft extends SlotDraft {
+  notes: string;
   autoUpdate: boolean;
 }
 
 interface Draft {
-  launcher: SlotDraft;
+  launcher: LauncherDraft;
   client: ClientDraft;
 }
 
@@ -49,7 +53,7 @@ function releaseOf(platform: string): ReleaseView | null {
 }
 
 function emptySlot(): SlotDraft {
-  return { version: "", url: "", notes: "", busy: false, error: "", hint: "" };
+  return { url: "", busy: false, error: "", hint: "" };
 }
 
 // 每个平台各存两份草稿；保存后按服务端返回的发布内容重置，不保留半截编辑。
@@ -57,13 +61,7 @@ function reset(platform: string, payload: ReleasesPayload | null = props.release
   const value = releaseIn(payload, platform);
   drafts[platform] = {
     launcher: { ...emptySlot(), version: value?.launcher_version ?? "", url: value?.launcher_url ?? "" },
-    client: {
-      ...emptySlot(),
-      version: value?.app_version ?? "",
-      url: value?.app_url ?? "",
-      notes: value?.app_notes ?? "",
-      autoUpdate: value?.auto_update ?? false,
-    },
+    client: { ...emptySlot(), url: value?.app_url ?? "", notes: value?.app_notes ?? "", autoUpdate: value?.auto_update ?? false },
   };
   return drafts[platform] as Draft;
 }
@@ -101,12 +99,8 @@ function fail(slot: SlotDraft, err: unknown) {
   slot.error = err instanceof Error ? err.message : "操作失败";
 }
 
-/** complete 校验两个必填输入，错误写回该槽位。 */
-function complete(slot: SlotDraft): boolean {
-  if (!slot.version.trim()) {
-    slot.error = "请填写版本号";
-    return false;
-  }
+/** requireURL 校验下载地址，错误写回该槽位。 */
+function requireURL(slot: SlotDraft): boolean {
   if (!slot.url.trim()) {
     slot.error = "请填写下载地址";
     return false;
@@ -118,7 +112,11 @@ async function saveLauncher(platform: string) {
   const draft = drafts[platform]!.launcher;
   if (draft.busy) return;
   draft.error = "";
-  if (!complete(draft)) return;
+  if (!draft.version.trim()) {
+    draft.error = "请填写版本号";
+    return;
+  }
+  if (!requireURL(draft)) return;
   const version = draft.version.trim();
   draft.busy = true;
   draft.hint = "正在解析远程文件…（服务端下载并计算 sha256，最长约 60 秒）";
@@ -143,21 +141,21 @@ async function saveClient(platform: string) {
   const draft = drafts[platform]!.client;
   if (draft.busy) return;
   draft.error = "";
-  if (!complete(draft)) return;
-  const version = draft.version.trim();
+  if (!requireURL(draft)) return;
   draft.busy = true;
-  draft.hint = "正在解析远程文件…（服务端下载并计算 sha256，最长约 60 秒）";
+  draft.hint = "正在解析远程文件…（服务端下载、读出包内版本并计算 sha256，最长约 60 秒）";
   try {
+    // 版本号不从表单取：服务端从包内 version.json 读出，这里只回显它。
     const saved = await api.publishRelease({
       platform,
-      app_version: version,
       app_url: draft.url.trim(),
       app_notes: draft.notes,
       auto_update: draft.autoUpdate,
     });
     emit("saved", saved);
     reset(platform, saved);
-    emit("toast", "客户端包已发布", platform + " " + version, "ok");
+    const version = releaseIn(saved, platform)?.app_version ?? "";
+    emit("toast", "客户端包已发布", version ? platform + " " + version : platform, "ok");
   } catch (err) {
     fail(draft, err);
   } finally {
@@ -271,18 +269,7 @@ async function clearPlatform(platform: string) {
             <span class="slot-state" :title="clientLine(platform)">{{ clientLine(platform) }}</span>
           </div>
           <div class="form-grid">
-            <div class="field">
-              <label :for="platform + '-version'">版本号</label>
-              <input
-                :id="platform + '-version'"
-                v-model="drafts[platform]!.client.version"
-                type="text"
-                maxlength="64"
-                placeholder="2026.11.25-12"
-                autocomplete="off"
-              />
-            </div>
-            <div class="field">
+            <div class="field full">
               <label :for="platform + '-url'">下载地址</label>
               <input
                 :id="platform + '-url'"
@@ -291,6 +278,7 @@ async function clearPlatform(platform: string) {
                 placeholder="https://…/mesh-client.tar.zst"
                 autocomplete="off"
               />
+              <span class="hint">版本号不在这里填：服务端从包内 version.json 读出，发布后按它比较设备版本。</span>
             </div>
             <div class="field full">
               <label :for="platform + '-notes'">说明（可选，随更新下发给客户端）</label>

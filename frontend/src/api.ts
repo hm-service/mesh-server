@@ -69,10 +69,10 @@ export interface ReleaseView {
   launcher_sha256: string;
 }
 
-/** ReleasePublish 是一次发布要写的槽位；每个槽位的版本号与地址必须成对给出。 */
+/** ReleasePublish 是一次发布要写的槽位；启动器的版本号与地址必须成对给出。 */
 export interface ReleasePublish {
   platform?: string;
-  app_version?: string;
+  /** 客户端包的版本号不从请求里给：服务端从包内 version.json 读出。 */
   app_url?: string;
   app_notes?: string;
   /** 只随客户端包一起给出，省略即 false（手动安装）。 */

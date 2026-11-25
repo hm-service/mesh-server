@@ -33,7 +33,12 @@ type releasesResponse struct {
 }
 
 // releaseInput updates one platform through a JSON body. Each slot is published
-// on its own: the version and URL of a slot must arrive together.
+// on its own: a client package is addressed by app_url, a launcher by its
+// version and URL together.
+//
+// AppVersion only exists to reject it: the published version is the one the
+// package's version.json declares, read while the digest is computed. Silently
+// ignoring the field would let a caller believe the label it sent was stored.
 type releaseInput struct {
 	Platform        *string `json:"platform"`
 	AppVersion      *string `json:"app_version"`
@@ -97,20 +102,25 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", "请求内容不合法")
 		return
 	}
+	if req.AppVersion != nil {
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument",
+			"app_version 由包内 version.json 读出，不再作为请求字段")
+		return
+	}
 	platform := ""
 	if req.Platform != nil {
 		platform = strings.TrimSpace(*req.Platform)
 	}
-	client := req.AppVersion != nil || req.AppURL != nil
+	client := req.AppURL != nil
 	launcher := req.LauncherVersion != nil || req.LauncherURL != nil
-	if client && (req.AppVersion == nil || req.AppURL == nil) {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "app_version 与 app_url 必须同时给出")
+	// 备注与自动安装开关都属于客户端包，没有包可挂时不接受：否则要么写进一行
+	// 没有发布内容的记录，要么被悄悄丢掉，两种都不是调用方要的结果。
+	if req.AppNotes != nil && !client {
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "app_notes 必须与 app_url 一起给出")
 		return
 	}
-	// 这个开关属于客户端包，没有包可挂时不接受单独的 auto_update：否则要么写进
-	// 一行没有发布内容的记录，要么被悄悄丢掉，两种都不是调用方要的结果。
 	if req.AutoUpdate != nil && !client {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "auto_update 必须与 app_version、app_url 一起给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "auto_update 必须与 app_url 一起给出")
 		return
 	}
 	if launcher && (req.LauncherVersion == nil || req.LauncherURL == nil) {
@@ -133,7 +143,7 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		if req.AutoUpdate != nil {
 			autoUpdate = *req.AutoUpdate
 		}
-		publish.Client = &db.ClientSlot{Version: *req.AppVersion, URL: *req.AppURL, Notes: notes, AutoUpdate: autoUpdate}
+		publish.Client = &app.ClientPackage{URL: *req.AppURL, Notes: notes, AutoUpdate: autoUpdate}
 	}
 	if launcher {
 		publish.Launcher = &db.LauncherSlot{Version: *req.LauncherVersion, URL: *req.LauncherURL}

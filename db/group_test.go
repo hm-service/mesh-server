@@ -114,8 +114,8 @@ func TestDeleteGroupUngroupsDevices(t *testing.T) {
 	if err := d.DeleteGroup(group.ID); err != nil {
 		t.Fatalf("DeleteGroup() error: %v", err)
 	}
-	if n, err := d.Count(); err != nil || n != 2 {
-		t.Fatalf("Count() = %d, %v; want the devices kept", n, err)
+	if devices, err := d.List(); err != nil || len(devices) != 2 {
+		t.Fatalf("devices = %d, %v; want the two devices kept", len(devices), err)
 	}
 	for _, id := range []string{"d_1", "d_2"} {
 		device, err := d.Get(id)

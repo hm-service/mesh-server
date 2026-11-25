@@ -22,13 +22,6 @@ type credentialIssuer struct {
 	rpcAddr string
 }
 
-// issuedCredential 是种子返回的一张凭据。
-type issuedCredential struct {
-	ID     string
-	Secret string
-	Expiry int64
-}
-
 // credentialCLITimeout 是单次 cli 调用的上限。签发要等种子生成密钥，留够余量。
 const credentialCLITimeout = 15 * time.Second
 
@@ -58,15 +51,15 @@ func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
 
 // generate 让种子签发一张新凭据。
 // credential_id 用 uuid4：种子对同一个 id 是幂等的，续期必须换 id 才会换密钥。
-func (c *credentialIssuer) generate(ctx context.Context, ttl time.Duration) (issuedCredential, error) {
+func (c *credentialIssuer) generate(ctx context.Context, ttl time.Duration) (IssuedCredential, error) {
 	id, err := newCredentialID()
 	if err != nil {
-		return issuedCredential{}, err
+		return IssuedCredential{}, err
 	}
 	out, err := c.run(ctx, "-o", "json", "credential", "generate",
 		"--ttl", strconv.Itoa(int(ttl.Seconds())), "--credential-id", id)
 	if err != nil {
-		return issuedCredential{}, err
+		return IssuedCredential{}, err
 	}
 	var raw struct {
 		ID     string `json:"credential_id"`
@@ -74,13 +67,13 @@ func (c *credentialIssuer) generate(ctx context.Context, ttl time.Duration) (iss
 		Expiry string `json:"expiry_unix"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return issuedCredential{}, fmt.Errorf("解析签发结果失败: %w", err)
+		return IssuedCredential{}, fmt.Errorf("解析签发结果失败: %w", err)
 	}
 	expiry, err := strconv.ParseInt(strings.TrimSpace(raw.Expiry), 10, 64)
 	if err != nil || raw.Secret == "" {
-		return issuedCredential{}, fmt.Errorf("签发结果缺少密钥或到期时间")
+		return IssuedCredential{}, fmt.Errorf("签发结果缺少密钥或到期时间")
 	}
-	return issuedCredential{ID: raw.ID, Secret: raw.Secret, Expiry: expiry}, nil
+	return IssuedCredential{ID: raw.ID, Secret: raw.Secret, Expiry: expiry}, nil
 }
 
 // revoke 让种子撤掉一张凭据，全网会在几秒内断开使用它的节点。
@@ -182,7 +175,7 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if err := a.database.CreateCredential(issued.ID, publicID, issued.Expiry, a.now().Unix()); err != nil {
 		return IssuedCredential{}, err
 	}
-	return IssuedCredential{ID: issued.ID, Secret: issued.Secret, Expiry: issued.Expiry}, nil
+	return issued, nil
 }
 
 // RevokeCredential 撤销设备的全部凭据，并清掉记录。设备名下没有凭据时什么

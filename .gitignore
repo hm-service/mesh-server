@@ -16,9 +16,3 @@
 # 部署用 Secret：与本仓库的 k8s.mesh-server.yaml 拼成一份清单再 play，绝不入库
 k8s.mesh-server.secret.yaml
 k8s.mesh-server.deploy.yaml
-
-# 旧的编译产物
-/mesh-server
-/mesh-server.exe
-/mesh-server-linux
-dist/

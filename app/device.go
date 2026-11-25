@@ -327,20 +327,17 @@ func ConfigState(d db.Device) string {
 	return "stale"
 }
 
-// AppState reports whether the device runs the version published for its
-// platform. With nothing published for that platform there is nothing to update
-// to, so it counts as current, even for a device that has never reported a
-// platform (CONTRACT.md 1.4).
+// AppState reports whether the device already runs a build at least as new as
+// the one published for its platform (CONTRACT.md 1.4). With nothing published
+// there is nothing to update to, so it counts as current, even for a device that
+// has never reported a platform. A device running a newer build than the
+// published one counts as current as well: the control plane only ever asks a
+// client to upgrade (NeedsUpdate).
 func AppState(d db.Device, r db.Release) string {
-	if r.Version == "" || d.LastAppVersion == r.Version {
-		return "current"
+	if NeedsUpdate(d.LastAppVersion, r.Version) {
+		return "stale"
 	}
-	return "stale"
-}
-
-// ReleaseVersion labels the published build; empty when nothing is published.
-func ReleaseVersion(r db.Release) string {
-	return r.Version
+	return "current"
 }
 
 // newDeviceID returns an unused short id. The space is small on purpose: the id

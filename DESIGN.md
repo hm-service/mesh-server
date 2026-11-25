@@ -16,7 +16,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 - 从源码出镜像用 `Dockerfile`（多阶段，`ghcr.io/hm-service/mesh-server:<yyyy-MM-dd>` 与 `latest`，`linux/amd64` + `linux/arm64`；最后一个阶段带进 `easytier-cli`，见第 6 节）；
 - `Dockerfile.runtime` 是离线兜底：把交叉编译好的 `linux/amd64` 二进制放在同目录，在目标机本地出镜像，不依赖镜像仓库。它没有 `easytier-cli`，用它时 `ET_CLI` 留空，或者自己把 CLI 打进镜像；
 - 容器只跑一个二进制，根文件系统可只读，唯一可写路径是 `DATA_DIR`（默认 `/data`）；
-- 应用不做 TLS，反向代理负责终止 TLS、限速与域名；应用只认 `HOST`/`X-Forwarded-Proto` 与可信反代传来的客户端地址；
+- 应用不做 TLS，反向代理负责终止 TLS、限速与域名；应用的监听地址只来自 `HOST`/`PORT`，客户端地址只在请求来自 `TRUSTED_PROXIES` 内的反代时采信 `X-Forwarded-For`/`X-Real-IP`；
 - 探针：`/livez` 恒 200；`/readyz` 校验 `DATA_DIR` 权限（0700）并往 SQLite 写删 `__probe` 表，失败返回 503；`READYZ_TOKEN` 为空时不做鉴权，但探针会写 `__probe` 表，部署里必须设置，否则谁都能触发写入。
 
 ## 2. 页面
@@ -28,7 +28,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 | --- | --- |
 | 设备 | 按分组排的表：名称与主机名、mesh 地址、在线状态、配置是否同步、客户端版本、最后在线；行内拖拽排序与改分组。详情抽屉里编辑配置（含「重置为模板」）、轮换凭据、签发注册令牌、撤销设备 |
 | 默认模板 | 当前生效的默认 EasyTier 模板（`DATA_DIR/peer.default.toml`，缺失或空白时展示内置模板）；保存写回该文件 |
-| 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址；客户端包槽位另有「自动安装」复选框，列表行显示该平台当前是自动还是手动 |
+| 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址；客户端包的版本号从包内 `version.json` 读出，不在表单里填；该槽位另有「自动安装」复选框，列表行显示该平台当前是自动还是手动 |
 
 鉴权只有 `AUTH_TOKEN` 一种形态：登录页提交它，换回一个 24 小时的无状态 Bearer 凭证；没有跳过登录的开关。
 
@@ -64,7 +64,7 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 DATA_DIR/
   mesh.db              SQLite（WAL、synchronous=FULL）
   mesh.db-wal / -shm
-  peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600）
+  peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600；不存在时用内置模板）
   server.log           JSON 行日志，4MB 高水位裁剪到 2MB（0600）
 ```
 
@@ -104,7 +104,7 @@ CREATE TABLE device_group (
 CREATE TABLE release (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     platform         TEXT NOT NULL UNIQUE,        -- GOOS/GOARCH
-    version          TEXT NOT NULL DEFAULT '',    -- 客户端包版本号
+    version          TEXT NOT NULL DEFAULT '',    -- 客户端包版本号，取自包内 version.json
     url              TEXT NOT NULL DEFAULT '',
     sha256           TEXT NOT NULL DEFAULT '',    -- 客户端包完整摘要，客户端校验下载
     notes            TEXT NOT NULL DEFAULT '',
@@ -139,7 +139,7 @@ CREATE INDEX credential_device ON credential (device_public_id);
 | 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长（`api` 包内常量，不提供关闭开关） |
 | 设备面 | Ed25519 请求签名（`MESH2` 八行原文）+ 300 秒时间窗 + nonce 重放缓存；普通节点在 mesh 里的身份是种子签发的凭据，控制面只留 `credential_id` 与到期时间 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
-| 发布包 | 客户端包：`app_version`（版本号）用于判定，`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
+| 发布包 | 客户端包：版本号取自包内 `version.json`（必须与 `YYYY.MM.DD-N` 一致），发布时连包一起校验；`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
 | 发布下载 | 服务端下载发布地址时拒绝回环、私网、链路本地、组播与未指定地址（`net.Dialer.Control` 逐个连接校验），最多 5 次重定向且每一跳重新校验，不走代理 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |

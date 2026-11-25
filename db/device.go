@@ -78,15 +78,6 @@ func (d *DB) List() ([]Device, error) {
 	return out, nil
 }
 
-// Count returns the number of device slots in use.
-func (d *DB) Count() (int, error) {
-	var n int
-	if err := d.conn.QueryRow("SELECT COUNT(*) FROM device").Scan(&n); err != nil {
-		return 0, fmt.Errorf("count devices: %w", err)
-	}
-	return n, nil
-}
-
 // Get returns the device with public id.
 func (d *DB) Get(publicID string) (Device, error) {
 	device, err := scanDevice(d.conn.QueryRow("SELECT "+deviceColumns+" FROM device WHERE public_id = ?", publicID))

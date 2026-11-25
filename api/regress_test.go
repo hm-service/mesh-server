@@ -90,8 +90,11 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 		{"PUT", "/api/admin/devices/d_000000"},
 		{"DELETE", "/api/admin/devices/d_000000"},
 		{"POST", "/api/admin/devices/d_000000/token"},
+		{"POST", "/api/admin/devices/d_000000/credential"},
+		{"DELETE", "/api/admin/devices/d_000000/credential"},
 		{"GET", "/api/admin/releases"},
 		{"PUT", "/api/admin/releases"},
+		{"DELETE", "/api/admin/releases/windows/amd64"},
 	}
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -113,11 +116,10 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 	client := []byte("a whole mesh client binary")
-	file := releasePkg(t, client)
+	file := releasePkg(t, "2026.11.24-3", client)
 	release := putReleases(t, env, map[string]any{
-		"platform":    testPlatform,
-		"app_version": "2026.11.24-3",
-		"app_url":     fileServer(t, file),
+		"platform": testPlatform,
+		"app_url":  fileServer(t, file),
 	}).releaseOf(testPlatform)
 
 	pkgSum := sha256.Sum256(file)
@@ -127,7 +129,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	}
 
 	// The heartbeat carries the same digest to the client.
-	res, body := heartbeat(t, env, dev, &nonces, dev.configHash, "0000000000000000")
+	res, body := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.23-1")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("heartbeat = %d: %s", res.StatusCode, body)
 	}
@@ -147,10 +149,9 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 // confirmed.
 func TestPublishRejectsBothSlotsTogether(t *testing.T) {
 	env := testenv.New(t)
-	file := releasePkg(t, []byte("a whole mesh client binary"))
+	file := releasePkg(t, "2026.11.25-1", []byte("a whole mesh client binary"))
 	res, body := env.Do("PUT", "/api/admin/releases", map[string]string{
 		"platform":         testPlatform,
-		"app_version":      "2026.11.25-1",
 		"app_url":          fileServer(t, file),
 		"launcher_version": "2026.11.25-9",
 		"launcher_url":     "http://127.0.0.1:1/mesh.exe",

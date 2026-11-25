@@ -31,9 +31,9 @@ type Release struct {
 	LauncherSHA256  string
 }
 
-// ClientSlot is the client package slot of one platform: the address clients
-// download from, the digest of the bytes behind it and the policy attached to
-// this package.
+// ClientSlot is the client package slot of one platform: the version the
+// package's manifest declares, the address clients download from, the digest of
+// the bytes behind it and the policy attached to this package.
 type ClientSlot struct {
 	Version    string
 	URL        string

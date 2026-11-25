@@ -91,12 +91,6 @@ func Open(dataDir string, opts Options) (*App, error) {
 		database.Close()
 		return nil, err
 	}
-	if purged, err := a.database.PurgeExpiredTokens(a.now().Unix()); err != nil {
-		database.Close()
-		return nil, err
-	} else if purged > 0 {
-		slog.Info("expired registration tokens purged", "count", purged)
-	}
 	return a, nil
 }
 
@@ -131,7 +125,8 @@ func (a *App) templatePath() string {
 	return filepath.Join(a.dataDir, templateName)
 }
 
-// purgeLoop clears expired registration tokens in the background.
+// PurgeExpiredTokens clears registration tokens whose validity has ended; the
+// ticker started in main.go calls it every minute.
 func (a *App) PurgeExpiredTokens() error {
 	purged, err := a.database.PurgeExpiredTokens(a.now().Unix())
 	if err != nil {
@@ -142,6 +137,7 @@ func (a *App) PurgeExpiredTokens() error {
 	}
 	return nil
 }
+
 func trimName(s string) string { return strings.TrimSpace(s) }
 
 func isBlank(s string) bool { return strings.TrimSpace(s) == "" }

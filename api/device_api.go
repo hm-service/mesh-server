@@ -210,10 +210,10 @@ func (s *Server) slotTokenValid(device db.Device, token string, now time.Time) b
 	return found && pending.PublicID == device.PublicID && pending.TokenExpiresAt > now.Unix()
 }
 
-// updateInfo points a client at the published build. Version is compared with
-// the version the device reports; sha256 lets the client verify the download
-// after the fact. AutoUpdate 是这个包自己带的选择——发布方决定它能不能自己装，
-// 设备是不是无人值守不参与判断，所以它跟着 app_update 走，永远有值。
+// updateInfo points a client at the published build. Version is only sent to a
+// device reporting an older one (app.NeedsUpdate); sha256 lets the client verify
+// the download after the fact. AutoUpdate 是这个包自己带的选择——发布方决定它
+// 能不能自己装，设备是不是无人值守不参与判断，所以它跟着 app_update 走，永远有值。
 type updateInfo struct {
 	Version    string `json:"version"`
 	URL        string `json:"url"`
@@ -233,14 +233,15 @@ type launcherInfo struct {
 }
 
 // launcherOf is the launcher slot of release as a heartbeat field; nil when the
-// platform has no launcher published.
-func launcherOf(r *http.Request, release db.Release) *launcherInfo {
+// platform has no launcher published. The URL is stored absolute (publishing
+// requires one), so it travels to the client unchanged.
+func launcherOf(release db.Release) *launcherInfo {
 	if release.LauncherSHA256 == "" {
 		return nil
 	}
 	return &launcherInfo{
 		Version: release.LauncherVersion,
-		URL:     absoluteURL(r, release.LauncherURL),
+		URL:     release.LauncherURL,
 		SHA256:  release.LauncherSHA256,
 	}
 }
@@ -285,11 +286,13 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	configChanged := req.ConfigHash != device.ConfigHash
-	appChanged := release.Version != "" && req.AppVersion != release.Version
+	// 只有设备上报的版本低于发布版本才算需要更新：设备版本更高（回滚过发布、
+	// 手工装过新包）时按 current 处理，不能让它每 30 秒被要求装同一个旧包。
+	appChanged := app.NeedsUpdate(req.AppVersion, release.Version)
 	// 启动器不参与签名原文，服务端也就无从比较客户端手里那份，所以只要该平台
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。代价是这种情况没有
 	// 204，三十秒多几十字节。
-	launcher := launcherOf(r, release)
+	launcher := launcherOf(release)
 	// 设备上报的 id 与最新签发的一致，说明它已经换上新凭据并重启过 core，
 	// 这时才吊销其余的。早一步吊销会让还没拿到新凭据的设备失联。
 	// "none" 表示它手里没有凭据（那张新签的还没被用上），空串是旧客户端或
@@ -317,7 +320,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if appChanged {
 		resp.AppUpdate = &updateInfo{
 			Version:    release.Version,
-			URL:        absoluteURL(r, release.URL),
+			URL:        release.URL,
 			Notes:      release.Notes,
 			SHA256:     release.SHA256,
 			AutoUpdate: release.AutoUpdate,

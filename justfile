@@ -19,7 +19,7 @@ default:
 frontend:
     cd frontend && pnpm install --frozen-lockfile && pnpm build
 
-# 造占位 frontend/dist/STUB，让 go:embed 能编译；占位版跑起来 /admin 是 404、/readyz 是 503
+# 造占位 frontend/dist/STUB，让 go:embed 能编译；占位版跑起来 /admin 是 404，/readyz 仍是 200（就绪只看 DATA_DIR 与数据库）
 frontend-stub:
     @mkdir -p frontend/dist
     @test -f frontend/dist/index.html || touch frontend/dist/STUB

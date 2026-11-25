@@ -193,13 +193,12 @@ func (e *Env) Do(method, path string, body any) (*http.Response, []byte) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	e.Authorize(req)
+	e.authorize(req)
 	return e.send(req, method, path)
 }
 
-// Authorize attaches the bearer credential to a hand-built request, so tests
-// that can not go through Do (multipart, custom headers) stay authenticated.
-func (e *Env) Authorize(req *http.Request) {
+// authorize attaches the bearer credential to a request built by Do.
+func (e *Env) authorize(req *http.Request) {
 	if e.credential != "" {
 		req.Header.Set("Authorization", "Bearer "+e.credential)
 	}

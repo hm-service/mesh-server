@@ -193,15 +193,20 @@ func TestDerivedStates(t *testing.T) {
 	if got := ConfigState(device); got != "stale" {
 		t.Fatalf("config state = %q, want stale", got)
 	}
-	settings := dbRelease("v1")
+	settings := dbRelease("2026.11.24-4")
 	device.LastPlatform = "windows/amd64"
-	device.LastAppVersion = "v1"
+	device.LastAppVersion = "2026.11.24-4"
 	if got := AppState(device, settings); got != "current" {
 		t.Fatalf("app state = %q, want current", got)
 	}
-	device.LastAppVersion = "v2"
+	device.LastAppVersion = "2026.11.23-9"
 	if got := AppState(device, settings); got != "stale" {
 		t.Fatalf("app state = %q, want stale", got)
+	}
+	// 比发布新（回滚过发布、手工装过新包）也是 current：控制面只要求升级。
+	device.LastAppVersion = "2026.11.25-1"
+	if got := AppState(device, settings); got != "current" {
+		t.Fatalf("app state of a newer device = %q, want current", got)
 	}
 	if got := AppState(device, dbRelease("")); got != "current" {
 		t.Fatalf("app state without a release = %q, want current", got)
@@ -213,11 +218,8 @@ func TestDerivedStates(t *testing.T) {
 	if got := AppState(unknown, dbRelease("")); got != "current" {
 		t.Fatalf("app state of a device without a platform and no release = %q, want current", got)
 	}
-	if got := AppState(unknown, dbRelease("v1")); got != "stale" {
+	if got := AppState(unknown, dbRelease("2026.11.24-4")); got != "stale" {
 		t.Fatalf("app state of a device without a platform = %q, want stale", got)
-	}
-	if got := ReleaseVersion(dbRelease("")); got != "" {
-		t.Fatalf("release version without a release = %q, want empty", got)
 	}
 }
 func dbDevice(publicID, deviceID string, seenAt int64) db.Device {

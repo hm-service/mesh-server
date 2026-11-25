@@ -5,9 +5,8 @@ metadata:
     name: mesh-server-env
 data:
     TZ: "Asia/Shanghai"
-    # 容器跑在宿主网络里：控制面要直接调种子回环上的 management RPC。
-    HOST: "10.8.0.1"
-    PORT: "11000"
+    HOST: "0.0.0.0"
+    PORT: "8080"
     DATA_DIR: "/data"
     # 回环给探针，10.89.2.0/24 是 apps 网络：nginx-proxy-manager 从这里回源，
     # 只有它的地址可信，X-Forwarded-For 才会被用来记 client_ip。
@@ -41,16 +40,15 @@ metadata:
     labels:
         app: mesh-server
 spec:
-    # host 网络是临时的：等种子侧的凭据链路跑通，再换回独立的网络命名空间。
-    hostNetwork: true
     restartPolicy: Always
     terminationGracePeriodSeconds: 30
 
     containers:
         - name: app
           # 本地构建的镜像（见 Dockerfile.runtime），不从仓库拉取。
-          image: localhost/mesh-server:latest
-          imagePullPolicy: Never
+          # 镜像由 GitHub Actions 构建并推到 GHCR，部署机只负责拉取。
+          image: ghcr.io/hm-service/mesh-server:latest
+          imagePullPolicy: Always
 
           securityContext:
               allowPrivilegeEscalation: false
@@ -63,10 +61,11 @@ spec:
               - secretRef:
                     name: mesh-server-secrets
 
-          # host 网络下端口就是宿主上的端口，nginx-proxy-manager 直接连 10.8.0.1:11000。
+          # 唯一入口：容器内的 8080 —— nginx-proxy-manager 在同一个 apps 网络里
+          # 按名字连，对外是 https://mesh.daveny.cn。
           ports:
               - name: http
-                containerPort: 11000
+                containerPort: 8080
                 protocol: TCP
 
           resources:

@@ -337,7 +337,9 @@ func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID s
 		s.logger.Error("load credential", "id", publicID, "error", err)
 		return "", "", 0
 	case latest.CredentialID != reportedID:
-		need = true
+		// 已经给过一张，而设备又说不出自己在用哪张：它多半是还不支持凭据的
+		// 旧版本。这时不能再签，否则每轮心跳都会多一张。
+		need = reportedID != ""
 	case latest.ExpiresAt-s.app.Now().Unix() < int64(app.CredentialRenewBefore.Seconds()):
 		need = true
 	}

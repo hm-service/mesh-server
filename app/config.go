@@ -1,0 +1,71 @@
+package app
+
+import (
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// 节点身份由配置里有没有 network_secret 决定（CONTRACT.md 2.1）：正式节点用
+// secure_mode 的节点私钥认证，不用凭据；其余节点用控制面签发的凭据。
+const (
+	// IdentityFormal 是配置里带 network_secret 的正式节点（含管理节点）。
+	IdentityFormal = "formal"
+	// IdentityCredential 是凭据节点：身份来自签发的 config/credential.json。
+	IdentityCredential = "credential"
+)
+
+// ConfigFacts 是一份设备配置里控制台要显示的事实。它是派生值，不落库：
+// 配置改了，事实跟着变。
+type ConfigFacts struct {
+	// Identity 是 IdentityFormal 或 IdentityCredential。
+	Identity string
+	// IPv4 是配置里写的固定 mesh 地址（可能带前缀长度）；空表示没写。
+	IPv4 string
+	// DHCP 是配置里显式的 dhcp = true。为真时 core 忽略 IPv4。
+	DHCP bool
+}
+
+// configFile 只声明控制台要读的字段，其余内容原样交给 easytier-core。
+// ipv4 既可能是字符串也可能是数组，所以按 any 解。
+type configFile struct {
+	IPv4            any    `toml:"ipv4"`
+	DHCP            *bool  `toml:"dhcp"`
+	NetworkSecret   string `toml:"network_secret"`
+	NetworkIdentity *struct {
+		NetworkSecret string `toml:"network_secret"`
+	} `toml:"network_identity"`
+}
+
+// ConfigFactsOf derives what the console shows from a device configuration.
+// 解析不了时按凭据节点、无固定地址处理：控制台只拿它显示，签发的判断在
+// IssueCredential 里另有一次，两者用的是同一个函数。
+func ConfigFactsOf(configTOML string) ConfigFacts {
+	facts := ConfigFacts{Identity: IdentityCredential}
+	var file configFile
+	if _, err := toml.Decode(configTOML, &file); err != nil {
+		return facts
+	}
+	if strings.TrimSpace(file.NetworkSecret) != "" ||
+		(file.NetworkIdentity != nil && strings.TrimSpace(file.NetworkIdentity.NetworkSecret) != "") {
+		facts.Identity = IdentityFormal
+	}
+	facts.IPv4 = firstIPv4(file.IPv4)
+	facts.DHCP = file.DHCP != nil && *file.DHCP
+	return facts
+}
+
+// firstIPv4 取第一个非空地址：easytier 允许把 ipv4 写成数组。
+func firstIPv4(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}

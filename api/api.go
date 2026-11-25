@@ -132,31 +132,34 @@ func (s *Server) Handler() http.Handler {
 	// Probes are the only routes without a session or device guard.
 	s.route(mux, "GET", "/livez", s.handleLivez)
 	s.route(mux, "GET", "/readyz", s.withGate(s.readyzGate, s.handleReadyz))
-	// Admin surface.
+	// 登录是唯一不带前缀的管理入口：它自己就是凭据的来源，放进 /api/admin 没有意义。
 	s.route(mux, "POST", "/api/auth", s.withGate(s.authGate, s.handleAuth))
-	s.route(mux, "GET", "/api/health", s.withGate(s.apiGate, s.handleHealth))
-	s.route(mux, "GET", "/api/template", s.admin(s.handleTemplate))
-	s.route(mux, "GET", "/api/devices", s.admin(s.handleListDevices))
-	s.route(mux, "POST", "/api/devices", s.admin(s.handleCreateDevice))
-	s.route(mux, "GET", "/api/devices/{id}", s.admin(s.handleGetDevice))
-	s.route(mux, "PUT", "/api/devices/{id}", s.admin(s.handleUpdateDevice))
-	s.route(mux, "DELETE", "/api/devices/{id}", s.admin(s.handleDeleteDevice))
-	s.route(mux, "POST", "/api/devices/{id}/token", s.admin(s.handleIssueToken))
-	s.route(mux, "POST", "/api/devices/{id}/credential", s.admin(s.handleIssueCredential))
-	s.route(mux, "DELETE", "/api/devices/{id}/credential", s.admin(s.handleRevokeCredential))
-	s.route(mux, "PUT", "/api/devices/{id}/group", s.admin(s.handleSetDeviceGroup))
-	s.route(mux, "PUT", "/api/layout", s.admin(s.handleDeviceLayout))
+	// Admin surface: everything under /api/admin is bearer-guarded.
+	s.route(mux, "GET", "/api/admin/template", s.admin(s.handleTemplate))
+	s.route(mux, "GET", "/api/admin/devices", s.admin(s.handleListDevices))
+	s.route(mux, "POST", "/api/admin/devices", s.admin(s.handleCreateDevice))
+	s.route(mux, "GET", "/api/admin/devices/{id}", s.admin(s.handleGetDevice))
+	s.route(mux, "PUT", "/api/admin/devices/{id}", s.admin(s.handleUpdateDevice))
+	s.route(mux, "DELETE", "/api/admin/devices/{id}", s.admin(s.handleDeleteDevice))
+	s.route(mux, "POST", "/api/admin/devices/{id}/token", s.admin(s.handleIssueToken))
+	s.route(mux, "POST", "/api/admin/devices/{id}/credential", s.admin(s.handleIssueCredential))
+	s.route(mux, "DELETE", "/api/admin/devices/{id}/credential", s.admin(s.handleRevokeCredential))
+	s.route(mux, "PUT", "/api/admin/devices/{id}/group", s.admin(s.handleSetDeviceGroup))
+	s.route(mux, "PUT", "/api/admin/layout", s.admin(s.handleDeviceLayout))
 	// Device groups and the layout the console saves after a drag.
-	s.route(mux, "GET", "/api/groups", s.admin(s.handleListGroups))
-	s.route(mux, "POST", "/api/groups", s.admin(s.handleCreateGroup))
-	s.route(mux, "PUT", "/api/groups/{id}", s.admin(s.handleUpdateGroup))
-	s.route(mux, "DELETE", "/api/groups/{id}", s.admin(s.handleDeleteGroup))
+	s.route(mux, "GET", "/api/admin/groups", s.admin(s.handleListGroups))
+	s.route(mux, "POST", "/api/admin/groups", s.admin(s.handleCreateGroup))
+	s.route(mux, "PUT", "/api/admin/groups/{id}", s.admin(s.handleUpdateGroup))
+	s.route(mux, "DELETE", "/api/admin/groups/{id}", s.admin(s.handleDeleteGroup))
 	s.route(mux, "GET", "/api/admin/releases", s.admin(s.handleListReleases))
 	s.route(mux, "PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
 	s.route(mux, "DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
-	// Device-facing API signed by the device key.
-	s.route(mux, "POST", "/api/register", s.withGate(s.deviceGate, s.handleRegister))
-	s.route(mux, "POST", "/api/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
+	// Device-facing public API. It shares nothing with the admin surface: its own
+	// gate, no bearer, and the device key in the request body. /api/v1/health is
+	// here because it is polled by devices, not by the console.
+	s.route(mux, "GET", "/api/v1/health", s.withGate(s.deviceGate, s.handleHealth))
+	s.route(mux, "POST", "/api/v1/register", s.withGate(s.deviceGate, s.handleRegister))
+	s.route(mux, "POST", "/api/v1/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
 	// Console pages and their assets.
 	s.route(mux, "GET", "/admin", s.withGate(s.staticGate, s.handleIndex))
 	s.route(mux, "GET", "/admin/{path...}", s.withGate(s.staticGate, s.handleAsset))

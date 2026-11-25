@@ -11,7 +11,7 @@ import (
 	"mesh-server/httpx"
 )
 
-// groupView is one row of GET /api/groups.
+// groupView is one row of GET /api/admin/groups.
 type groupView struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
@@ -38,7 +38,7 @@ type deviceGroupInput struct {
 	GroupID *int64 `json:"group_id"`
 }
 
-// devicePlacementInput is one entry of PUT /api/layout, the layout the console
+// devicePlacementInput is one entry of PUT /api/admin/layout, the layout the console
 // sends after a drag.
 type devicePlacementInput struct {
 	ID       string `json:"id"`

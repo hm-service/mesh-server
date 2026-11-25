@@ -200,3 +200,21 @@ func TestRevokeCredentialRequiresChannel(t *testing.T) {
 		t.Fatalf("DeleteDevice() of a device without credentials = %v, want success", err)
 	}
 }
+
+// TestIssueCredentialRefusesFormalNode pins that a formal node never gets a
+// credential: it authenticates with network_secret, the secret would be
+// discarded, and the trusted list on the seed would keep a credential nobody
+// holds.
+func TestIssueCredentialRefusesFormalNode(t *testing.T) {
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("seed", "[network_identity]\nnetwork_secret = \"s\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.IssueCredential(context.Background(), device.PublicID); !errors.Is(err, ErrFormalNode) {
+		t.Fatalf("IssueCredential() = %v, want ErrFormalNode", err)
+	}
+	if _, err := a.LatestCredential(device.PublicID); !errors.Is(err, db.ErrCredentialNotFound) {
+		t.Fatalf("LatestCredential() = %v, want ErrCredentialNotFound", err)
+	}
+}

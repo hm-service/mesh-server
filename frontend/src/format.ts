@@ -1,4 +1,4 @@
-import type { DeviceSummary } from "./api";
+import type { DeviceSummary, NodeIdentity } from "./api";
 
 /** 拦截最常见的一类配置错误：把网段当成节点地址填进 ipv4。 */
 export function validateToml(text: string): string | null {
@@ -18,19 +18,30 @@ export function statusText(status: string): string {
   return "离线";
 }
 
-export function statusClass(status: string): string {
-  if (status === "online") return "badge on";
-  if (status === "pending") return "badge warn";
-  return "badge off";
+export function statusDotClass(status: string): string {
+  if (status === "online") return "dot";
+  if (status === "pending") return "dot pending";
+  return "dot off";
 }
 
-export function shortHash(hash: string): string {
-  return hash ? hash.slice(0, 8) : "—";
+/** meshAddress 是列表里显示的地址：DHCP 分配时显示 DHCP，固定地址去掉前缀长度。 */
+export function meshAddress(device: DeviceSummary): string {
+  if (device.dhcp) return "DHCP";
+  return stripPrefix(device.ipv4) || "—";
 }
 
-export function shortDeviceID(id: string): string {
-  if (!id) return "未注册";
-  return id.slice(0, 8) + "…" + id.slice(-4);
+export function fixedAddress(device: DeviceSummary): string {
+  if (device.dhcp) return "DHCP 分配";
+  return device.ipv4 || "—";
+}
+
+function stripPrefix(addr: string): string {
+  const slash = addr.indexOf("/");
+  return slash === -1 ? addr : addr.slice(0, slash);
+}
+
+export function identityText(identity: NodeIdentity): string {
+  return identity === "formal" ? "正式节点" : "凭据节点";
 }
 
 export function configStateText(value: string): string {
@@ -38,21 +49,22 @@ export function configStateText(value: string): string {
 }
 
 export function configStateClass(value: string): string {
-  return value === "current" ? "badge on" : "badge warn";
+  return value === "current" ? "state current" : "state stale";
 }
 
-export function appStateText(device: DeviceSummary): string {
-  if (device.app_state === "current") return "已同步";
-  return device.app_version ? "待更新 → " + device.app_version : "待更新";
+/** appStateLabel 只在有新版本可更新时给文案；没有发布或已同步时为空。 */
+export function appStateLabel(device: DeviceSummary): string {
+  if (!device.app_version || device.app_state === "current") return "";
+  return "待更新";
 }
 
 export function appStateClass(device: DeviceSummary): string {
-  return device.app_state === "current" ? "badge on" : "badge warn";
+  return device.app_state === "current" ? "state current" : "state update";
 }
 
 export function relTime(sec: number, now: number): string {
   const diff = Math.max(0, now - sec);
-  if (diff < 60) return diff + "s 前";
+  if (diff < 60) return diff + " 秒前";
   if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
   if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
   return Math.floor(diff / 86400) + " 天前";
@@ -62,4 +74,3 @@ export function absTime(sec: number): string {
   if (!sec) return "—";
   return new Date(sec * 1000).toLocaleString("zh-CN", { hour12: false });
 }
-

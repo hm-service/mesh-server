@@ -10,14 +10,14 @@ import (
 	"mesh-server/internal/testenv"
 )
 
-// groupAPIView mirrors one row of GET /api/groups.
+// groupAPIView mirrors one row of GET /api/admin/groups.
 type groupAPIView struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	Position int64  `json:"position"`
 }
 
-// groupedDevice is the part of GET /api/devices the layout tests care about.
+// groupedDevice is the part of GET /api/admin/devices the layout tests care about.
 type groupedDevice struct {
 	ID       string `json:"id"`
 	GroupID  int64  `json:"group_id"`
@@ -26,9 +26,9 @@ type groupedDevice struct {
 
 func createGroup(t *testing.T, env *testenv.Env, name string) groupAPIView {
 	t.Helper()
-	res, data := env.Do("POST", "/api/groups", map[string]string{"name": name})
+	res, data := env.Do("POST", "/api/admin/groups", map[string]string{"name": name})
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("POST /api/groups = %d, want 200: %s", res.StatusCode, data)
+		t.Fatalf("POST /api/admin/groups = %d, want 200: %s", res.StatusCode, data)
 	}
 	var group groupAPIView
 	if err := json.Unmarshal(data, &group); err != nil {
@@ -42,9 +42,9 @@ func createGroup(t *testing.T, env *testenv.Env, name string) groupAPIView {
 
 func listGroups(t *testing.T, env *testenv.Env) []groupAPIView {
 	t.Helper()
-	res, data := env.Do("GET", "/api/groups", nil)
+	res, data := env.Do("GET", "/api/admin/groups", nil)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/groups = %d: %s", res.StatusCode, data)
+		t.Fatalf("GET /api/admin/groups = %d: %s", res.StatusCode, data)
 	}
 	var groups []groupAPIView
 	if err := json.Unmarshal(data, &groups); err != nil {
@@ -55,9 +55,9 @@ func listGroups(t *testing.T, env *testenv.Env) []groupAPIView {
 
 func listDeviceLayout(t *testing.T, env *testenv.Env) map[string]groupedDevice {
 	t.Helper()
-	res, data := env.Do("GET", "/api/devices", nil)
+	res, data := env.Do("GET", "/api/admin/devices", nil)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/devices = %d: %s", res.StatusCode, data)
+		t.Fatalf("GET /api/admin/devices = %d: %s", res.StatusCode, data)
 	}
 	var devices []groupedDevice
 	if err := json.Unmarshal(data, &devices); err != nil {
@@ -82,7 +82,7 @@ func TestGroupAPI(t *testing.T) {
 		t.Fatalf("groups after create = %+v", groups)
 	}
 
-	res, data := env.Do("PUT", "/api/groups/"+itoa(office.ID), map[string]any{"name": "办公室", "position": 4})
+	res, data := env.Do("PUT", "/api/admin/groups/"+itoa(office.ID), map[string]any{"name": "办公室", "position": 4})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("PUT group = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -98,23 +98,23 @@ func TestGroupAPI(t *testing.T) {
 		t.Fatalf("group order after move = %+v", groups)
 	}
 
-	res, data = env.Do("PUT", "/api/groups/999", map[string]string{"name": "x"})
+	res, data = env.Do("PUT", "/api/admin/groups/999", map[string]string{"name": "x"})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "group_not_found") {
 		t.Fatalf("PUT unknown group = %d: %s", res.StatusCode, data)
 	}
-	res, data = env.Do("POST", "/api/groups", map[string]string{"name": "  "})
+	res, data = env.Do("POST", "/api/admin/groups", map[string]string{"name": "  "})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_request") {
 		t.Fatalf("POST blank group = %d: %s", res.StatusCode, data)
 	}
 
-	res, data = env.Do("DELETE", "/api/groups/"+itoa(office.ID), nil)
+	res, data = env.Do("DELETE", "/api/admin/groups/"+itoa(office.ID), nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE group = %d, want 204: %s", res.StatusCode, data)
 	}
 	if groups = listGroups(t, env); len(groups) != 1 || groups[0].ID != home.ID {
 		t.Fatalf("groups after delete = %+v", groups)
 	}
-	res, data = env.Do("DELETE", "/api/groups/"+itoa(office.ID), nil)
+	res, data = env.Do("DELETE", "/api/admin/groups/"+itoa(office.ID), nil)
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "group_not_found") {
 		t.Fatalf("DELETE missing group = %d: %s", res.StatusCode, data)
 	}
@@ -126,7 +126,7 @@ func TestDeviceGroupAPI(t *testing.T) {
 	first, _ := createDevice(t, env, "one", testTOML)
 	second, _ := createDevice(t, env, "two", testTOML)
 
-	res, data := env.Do("PUT", "/api/devices/"+first+"/group", map[string]any{"group_id": group.ID})
+	res, data := env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"group_id": group.ID})
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT device group = %d, want 204: %s", res.StatusCode, data)
 	}
@@ -135,7 +135,7 @@ func TestDeviceGroupAPI(t *testing.T) {
 		t.Fatalf("device group = %+v, want group %d", got, group.ID)
 	}
 
-	res, data = env.Do("PUT", "/api/devices/"+second+"/group", map[string]any{"group_id": nil})
+	res, data = env.Do("PUT", "/api/admin/devices/"+second+"/group", map[string]any{"group_id": nil})
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT device group null = %d, want 204: %s", res.StatusCode, data)
 	}
@@ -144,11 +144,11 @@ func TestDeviceGroupAPI(t *testing.T) {
 		t.Fatalf("null group_id left device in %+v", got)
 	}
 
-	res, data = env.Do("PUT", "/api/devices/d_missing/group", map[string]any{"group_id": group.ID})
+	res, data = env.Do("PUT", "/api/admin/devices/d_missing/group", map[string]any{"group_id": group.ID})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "not_found") {
 		t.Fatalf("PUT missing device group = %d: %s", res.StatusCode, data)
 	}
-	res, data = env.Do("PUT", "/api/devices/"+first+"/group", map[string]any{"group_id": 999})
+	res, data = env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"group_id": 999})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "group_not_found") {
 		t.Fatalf("PUT device into missing group = %d: %s", res.StatusCode, data)
 	}
@@ -160,12 +160,12 @@ func TestDeleteGroupUngroupsDevicesAPI(t *testing.T) {
 	first, _ := createDevice(t, env, "one", testTOML)
 	second, _ := createDevice(t, env, "two", testTOML)
 	for _, id := range []string{first, second} {
-		res, data := env.Do("PUT", "/api/devices/"+id+"/group", map[string]any{"group_id": group.ID})
+		res, data := env.Do("PUT", "/api/admin/devices/"+id+"/group", map[string]any{"group_id": group.ID})
 		if res.StatusCode != http.StatusNoContent {
 			t.Fatalf("PUT %s group = %d: %s", id, res.StatusCode, data)
 		}
 	}
-	if res, data := env.Do("DELETE", "/api/groups/"+itoa(group.ID), nil); res.StatusCode != http.StatusNoContent {
+	if res, data := env.Do("DELETE", "/api/admin/groups/"+itoa(group.ID), nil); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE group = %d: %s", res.StatusCode, data)
 	}
 	layout := listDeviceLayout(t, env)
@@ -192,7 +192,7 @@ func TestDeviceOrderAPI(t *testing.T) {
 		{"id": second, "group_id": office.ID, "position": 0},
 		{"id": third, "group_id": home.ID, "position": 0},
 	}
-	res, data := env.Do("PUT", "/api/layout", map[string]any{"devices": order})
+	res, data := env.Do("PUT", "/api/admin/layout", map[string]any{"devices": order})
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT layout = %d, want 204: %s", res.StatusCode, data)
 	}
@@ -210,7 +210,7 @@ func TestDeviceOrderAPI(t *testing.T) {
 
 	// A layout naming a missing group fails whole; the saved one stays.
 	bad := []map[string]any{{"id": first, "group_id": 999, "position": 0}}
-	res, data = env.Do("PUT", "/api/layout", map[string]any{"devices": bad})
+	res, data = env.Do("PUT", "/api/admin/layout", map[string]any{"devices": bad})
 	if res.StatusCode != http.StatusNotFound || !strings.Contains(string(data), "group_not_found") {
 		t.Fatalf("PUT order into missing group = %d: %s", res.StatusCode, data)
 	}
@@ -218,7 +218,7 @@ func TestDeviceOrderAPI(t *testing.T) {
 		t.Fatalf("rejected order changed the layout: %+v", got)
 	}
 
-	res, data = env.Do("PUT", "/api/layout", map[string]any{"devices": []map[string]any{}})
+	res, data = env.Do("PUT", "/api/admin/layout", map[string]any{"devices": []map[string]any{}})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_request") {
 		t.Fatalf("PUT empty layout = %d: %s", res.StatusCode, data)
 	}
@@ -230,12 +230,12 @@ func TestGroupRoutesRequireSession(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/api/groups"},
-		{"POST", "/api/groups"},
-		{"PUT", "/api/groups/1"},
-		{"DELETE", "/api/groups/1"},
-		{"PUT", "/api/devices/d_000000/group"},
-		{"PUT", "/api/layout"},
+		{"GET", "/api/admin/groups"},
+		{"POST", "/api/admin/groups"},
+		{"PUT", "/api/admin/groups/1"},
+		{"DELETE", "/api/admin/groups/1"},
+		{"PUT", "/api/admin/devices/d_000000/group"},
+		{"PUT", "/api/admin/layout"},
 	}
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {

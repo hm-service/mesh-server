@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from "vue";
 import Sortable from "sortablejs";
 import { api, ApiError, type DevicePlacement, type DeviceSummary, type GroupView } from "../api";
-import DeviceCard from "./DeviceCard.vue";
+import DeviceRow from "./DeviceRow.vue";
 
 const props = defineProps<{ devices: DeviceSummary[]; groups: GroupView[] }>();
 const emit = defineEmits<{
@@ -21,16 +21,17 @@ interface Section {
 
 const localDevices = ref<DeviceSummary[]>([]);
 const localGroups = ref<GroupView[]>([]);
-const detailed = ref(true);
-const creating = ref(false);
+const creatingGroup = ref(false);
 const newGroupName = ref("");
 const editingGroup = ref<number | null>(null);
 const editingName = ref("");
+const confirmingGroup = ref<number | null>(null);
 const busy = ref(false);
 const dragging = ref(false);
 
 const sortables = new Map<number, Sortable>();
 let dragOrigin: { item: HTMLElement; parent: HTMLElement; next: Node | null } | null = null;
+let lastDragEnd = 0;
 
 /** 未分组固定在第一个分区，其余按 position 排列。 */
 const sections = computed<Section[]>(() => {
@@ -52,9 +53,10 @@ const sections = computed<Section[]>(() => {
 });
 
 const counts = computed(() => {
+  const total = localDevices.value.length;
   const online = localDevices.value.filter((d) => d.status === "online").length;
   const pending = localDevices.value.filter((d) => d.status === "pending").length;
-  const parts = [localDevices.value.length + " 台", online + " 在线"];
+  const parts = [total + " 台设备", online + " 在线"];
   if (pending > 0) parts.push(pending + " 待注册");
   return parts.join(" · ");
 });
@@ -64,6 +66,8 @@ watch(
   (next) => {
     if (dragging.value || busy.value) return;
     localDevices.value = next.map((device) => ({ ...device }));
+    // 设备从空变成非空时表格才出现，新容器要补挂拖拽。
+    void nextTick(() => mountSortables());
   },
   { immediate: true },
 );
@@ -118,8 +122,8 @@ function readLayout(): DevicePlacement[] | null {
     const element = document.querySelector<HTMLElement>(`[data-sortable-group="${section.id}"]`);
     if (!element) return null;
     let position = 0;
-    for (const card of element.querySelectorAll<HTMLElement>("[data-device-id]")) {
-      const id = card.dataset.deviceId;
+    for (const row of element.querySelectorAll<HTMLElement>("[data-device-id]")) {
+      const id = row.dataset.deviceId;
       if (id) layout.push({ id, group_id: section.id, position: position++ });
     }
   }
@@ -134,6 +138,7 @@ function finishDrag() {
   // 原处，再让响应式数据驱动重排；提交失败时数据回滚即可恢复原样。
   if (origin) origin.parent.insertBefore(origin.item, origin.next);
   dragging.value = false;
+  lastDragEnd = Date.now();
   if (layout) void saveLayout(layout);
 }
 
@@ -166,6 +171,12 @@ async function saveLayout(layout: DevicePlacement[]) {
   }
 }
 
+function openDevice(id: string) {
+  // 拖拽松手后浏览器还会补一个 click；刚拖过就不要再打开详情。
+  if (Date.now() - lastDragEnd < 250) return;
+  emit("open", id);
+}
+
 function reportError(err: unknown, title: string) {
   if (err instanceof ApiError && err.status === 401) {
     emit("unauthorized");
@@ -180,7 +191,7 @@ async function createGroup() {
   try {
     await api.createGroup(name);
     newGroupName.value = "";
-    creating.value = false;
+    creatingGroup.value = false;
     emit("refresh");
   } catch (err) {
     reportError(err, "创建分组失败");
@@ -190,6 +201,7 @@ async function createGroup() {
 function startRename(section: Section) {
   editingGroup.value = section.id;
   editingName.value = section.name;
+  confirmingGroup.value = null;
 }
 
 async function submitRename(section: Section) {
@@ -206,9 +218,9 @@ async function submitRename(section: Section) {
 }
 
 async function removeGroup(section: Section) {
-  if (!window.confirm("删除分组「" + section.name + "」？组内设备会回到未分组。")) return;
   try {
     await api.deleteGroup(section.id);
+    confirmingGroup.value = null;
     emit("refresh");
   } catch (err) {
     reportError(err, "删除分组失败");
@@ -216,6 +228,11 @@ async function removeGroup(section: Section) {
 }
 
 onMounted(() => {
+  mountSortables();
+});
+
+// 新建分组、设备从空变非空都会让新的 .rows 出现；每次更新补挂一次，幂等。
+onUpdated(() => {
   mountSortables();
 });
 
@@ -228,72 +245,75 @@ onBeforeUnmount(() => {
 <template>
   <section class="page">
     <div class="page-head">
-      <h1>设备列表</h1>
-      <span class="count">{{ counts }}</span>
-    </div>
-    <div class="toolbar">
-      <span class="label">拖动卡片调整顺序，拖到其它分区即改变分组</span>
-      <button type="button" @click="emit('refresh')">刷新</button>
-      <button type="button" @click="creating = !creating">新建分组</button>
-      <label class="switch">
-        <span>显示详情</span>
-        <input v-model="detailed" type="checkbox" />
-      </label>
-    </div>
-    <div v-if="creating" class="toolbar create-group">
-      <input
-        v-model="newGroupName"
-        type="text"
-        maxlength="64"
-        placeholder="分组名称"
-        @keyup.enter="createGroup"
-      />
-      <button class="primary" type="button" @click="createGroup">创建</button>
-      <button type="button" @click="creating = false; newGroupName = ''">取消</button>
+      <div>
+        <h1 class="page-title">设备</h1>
+        <p class="page-sub">
+          {{ counts }}<template v-if="localDevices.length"> · 拖动行可排序，拖到其它分组即改归属</template>
+        </p>
+      </div>
+      <div class="page-actions">
+        <button type="button" @click="emit('refresh')">刷新</button>
+        <button type="button" @click="creatingGroup = !creatingGroup">新建分组</button>
+        <button class="primary" type="button" @click="emit('create')">新建设备</button>
+      </div>
     </div>
 
-    <section v-for="section in sections" :key="section.id" class="group">
-      <div class="toolbar group-head">
-        <template v-if="editingGroup === section.id">
-          <input
-            v-model="editingName"
-            type="text"
-            maxlength="64"
-            @keyup.enter="submitRename(section)"
-            @keyup.escape="editingGroup = null"
-            @blur="submitRename(section)"
-          />
-        </template>
-        <template v-else>
-          <span class="gname">{{ section.name }}</span>
-          <span class="label">{{ section.devices.length }} 台</span>
-        </template>
-        <template v-if="section.id !== 0">
-          <span class="spacer" />
-          <button v-if="editingGroup !== section.id" type="button" @click="startRename(section)">改名</button>
-          <button v-if="editingGroup !== section.id" class="danger" type="button" @click="removeGroup(section)">
-            删除
-          </button>
-        </template>
+    <form v-if="creatingGroup" class="inline-form" @submit.prevent="createGroup">
+      <input v-model="newGroupName" type="text" maxlength="64" placeholder="分组名称" autocomplete="off" />
+      <button class="primary" type="submit" :disabled="!newGroupName.trim()">创建</button>
+      <button type="button" @click="creatingGroup = false; newGroupName = ''">取消</button>
+    </form>
+
+    <div v-if="localDevices.length" class="table">
+      <div class="thead" aria-hidden="true">
+        <span>设备</span>
+        <span>mesh 地址</span>
+        <span>状态</span>
+        <span>配置</span>
+        <span>版本</span>
+        <span>最后在线</span>
+        <span></span>
       </div>
-      <div class="board">
-        <div class="cards" :data-sortable-group="section.id">
-          <DeviceCard
-            v-for="device in section.devices"
-            :key="device.id"
-            :data-device-id="device.id"
-            :device="device"
-            :detailed="detailed"
-            @open="emit('open', $event)"
-          />
+      <section v-for="section in sections" :key="section.id" class="group">
+        <div class="group-head">
+          <template v-if="editingGroup === section.id">
+            <input
+              v-model="editingName"
+              type="text"
+              maxlength="64"
+              @keydown.enter.prevent="submitRename(section)"
+              @keydown.esc="editingGroup = null"
+              @blur="submitRename(section)"
+            />
+            <button class="ghost" type="button" @click="editingGroup = null">取消</button>
+          </template>
+          <template v-else>
+            <span class="group-name">{{ section.name }}</span>
+            <span class="group-count">{{ section.devices.length }} 台</span>
+            <div class="group-actions">
+              <template v-if="confirmingGroup === section.id">
+                <span class="group-count">删除后组内设备回到未分组</span>
+                <button class="ghost danger" type="button" @click="removeGroup(section)">确认删除</button>
+                <button class="ghost" type="button" @click="confirmingGroup = null">取消</button>
+              </template>
+              <template v-else-if="section.id !== 0">
+                <button class="ghost" type="button" @click="startRename(section)">改名</button>
+                <button class="ghost danger" type="button" @click="confirmingGroup = section.id">删除</button>
+              </template>
+            </div>
+          </template>
         </div>
-        <div v-if="section.id === 0" class="new-row">
-          <article class="card new" @click="emit('create')">
-            <div class="plus">＋</div>
-            <div class="txt">新建设备</div>
-          </article>
+        <div class="rows" :data-sortable-group="section.id">
+          <div v-if="!section.devices.length" class="rows-empty">拖设备到这里</div>
+          <DeviceRow v-for="device in section.devices" :key="device.id" :device="device" @open="openDevice" />
         </div>
-      </div>
-    </section>
+      </section>
+    </div>
+
+    <div v-else class="empty-state">
+      <h2>还没有设备</h2>
+      <p>用默认模板新建设备，把生成的一次性令牌交给客户端完成注册。</p>
+      <button class="primary" type="button" @click="emit('create')">新建设备</button>
+    </div>
   </section>
 </template>

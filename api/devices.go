@@ -10,7 +10,7 @@ import (
 	"mesh-server/httpx"
 )
 
-// deviceSummary is one row of GET /api/devices (CONTRACT.md 1.4).
+// deviceSummary is one row of GET /api/admin/devices (CONTRACT.md 1.4).
 type deviceSummary struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -28,6 +28,10 @@ type deviceSummary struct {
 	Position       int64  `json:"position"`
 	CreatedAt      int64  `json:"created_at"`
 	LastSeenAt     int64  `json:"last_seen_at"`
+	// Identity、IPv4、DHCP 是从 config_toml 派生的展示字段（app.ConfigFactsOf）。
+	Identity string `json:"identity"`
+	IPv4     string `json:"ipv4"`
+	DHCP     bool   `json:"dhcp"`
 }
 
 // releaseFor returns the build published for the device's platform; an empty
@@ -42,6 +46,7 @@ func releaseFor(releases []db.Release, platform string) db.Release {
 }
 
 func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
+	facts := app.ConfigFactsOf(d.ConfigTOML)
 	return deviceSummary{
 		ID:             d.PublicID,
 		Name:           d.Name,
@@ -59,10 +64,13 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 		Position:       d.Position,
 		CreatedAt:      d.CreatedAt,
 		LastSeenAt:     d.LastSeenAt,
+		Identity:       facts.Identity,
+		IPv4:           facts.IPv4,
+		DHCP:           facts.DHCP,
 	}
 }
 
-// deviceDetail is the full device record GET /api/devices/{id} returns, plus
+// deviceDetail is the full device record GET /api/admin/devices/{id} returns, plus
 // the derived status fields the console shows.
 type deviceDetail struct {
 	ID             string `json:"id"`
@@ -86,9 +94,23 @@ type deviceDetail struct {
 	Platform       string `json:"last_platform"`
 	GroupID        int64  `json:"group_id"`
 	Position       int64  `json:"position"`
+	// Identity、IPv4、DHCP 是从 config_toml 派生的展示字段（app.ConfigFactsOf）。
+	Identity string `json:"identity"`
+	IPv4     string `json:"ipv4"`
+	DHCP     bool   `json:"dhcp"`
+	// Credential 是最新一张凭据的签发时间与到期时间；没有凭据时是 null。
+	// 私钥从不出现在这里。
+	Credential *credentialView `json:"credential"`
+}
+
+// credentialView 是设备凭据的可见部分：只有时间，没有私钥。
+type credentialView struct {
+	IssuedAt  int64 `json:"issued_at"`
+	ExpiresAt int64 `json:"expires_at"`
 }
 
 func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
+	facts := app.ConfigFactsOf(d.ConfigTOML)
 	return deviceDetail{
 		ID:             d.PublicID,
 		Name:           d.Name,
@@ -111,6 +133,9 @@ func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
 		Platform:       d.LastPlatform,
 		GroupID:        d.GroupID,
 		Position:       d.Position,
+		Identity:       facts.Identity,
+		IPv4:           facts.IPv4,
+		DHCP:           facts.DHCP,
 	}
 }
 
@@ -189,7 +214,19 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, detailOf(device, release, s.app.Now()))
+	detail := detailOf(device, release, s.app.Now())
+	credential, err := s.app.LatestCredential(device.PublicID)
+	switch {
+	case errors.Is(err, db.ErrCredentialNotFound):
+		// 还没有凭据：保持 null，界面显示「无凭据」。
+	case err != nil:
+		s.logger.Error("read credential", "id", device.PublicID, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal")
+		return
+	default:
+		detail.Credential = &credentialView{IssuedAt: credential.CreatedAt, ExpiresAt: credential.ExpiresAt}
+	}
+	httpx.WriteJSON(w, http.StatusOK, detail)
 }
 
 func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +293,10 @@ func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, app.ErrNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	case errors.Is(err, app.ErrFormalNode):
+		httpx.WriteErrorDetail(w, http.StatusConflict, "formal_node",
+			"这台设备是正式节点（配置里有 network_secret），不使用凭据，轮换没有意义")
 		return
 	case errors.Is(err, app.ErrCredentialChannelUnconfigured):
 		writeCredentialChannelUnconfigured(w)

@@ -44,23 +44,36 @@ type deviceSummary struct {
 	AppVersion     string `json:"app_version"`
 	CreatedAt      int64  `json:"created_at"`
 	LastSeenAt     int64  `json:"last_seen_at"`
+	Identity       string `json:"identity"`
+	IPv4           string `json:"ipv4"`
+	DHCP           bool   `json:"dhcp"`
+}
+
+// credentialView mirrors the credential part of GET /api/admin/devices/{id}.
+type credentialView struct {
+	IssuedAt  int64 `json:"issued_at"`
+	ExpiresAt int64 `json:"expires_at"`
 }
 
 type deviceDetail struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	DeviceID    string `json:"device_id"`
-	Hostname    string `json:"hostname"`
-	Pubkey      string `json:"pubkey"`
-	ConfigTOML  string `json:"config_toml"`
-	ConfigHash  string `json:"config_hash"`
-	LastAppHash string `json:"last_app_hash"`
-	ConfigState string `json:"config_state"`
-	AppState    string `json:"app_state"`
-	Status      string `json:"status"`
-	LastIP      string `json:"last_ip"`
-	CreatedAt   int64  `json:"created_at"`
-	LastSeenAt  int64  `json:"last_seen_at"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	DeviceID    string          `json:"device_id"`
+	Hostname    string          `json:"hostname"`
+	Pubkey      string          `json:"pubkey"`
+	ConfigTOML  string          `json:"config_toml"`
+	ConfigHash  string          `json:"config_hash"`
+	LastAppHash string          `json:"last_app_hash"`
+	ConfigState string          `json:"config_state"`
+	AppState    string          `json:"app_state"`
+	Status      string          `json:"status"`
+	LastIP      string          `json:"last_ip"`
+	CreatedAt   int64           `json:"created_at"`
+	LastSeenAt  int64           `json:"last_seen_at"`
+	Identity    string          `json:"identity"`
+	IPv4        string          `json:"ipv4"`
+	DHCP        bool            `json:"dhcp"`
+	Credential  *credentialView `json:"credential"`
 }
 
 type createDeviceResponse struct {
@@ -128,12 +141,12 @@ func (r releasesResponse) releaseOf(platform string) releaseView {
 	return releaseView{}
 }
 
-// signedRegisterBody builds POST /api/register carrying a signature from the
+// signedRegisterBody builds POST /api/v1/register carrying a signature from the
 // bound key: that is how an already bound slot proves it is the same device.
 func signedRegisterBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, hostname string, pubkey []byte, ts int64, nonce string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
-	msg := core.SigningString("POST", "/api/register", deviceID, stamp, nonce, testPlatform, "", "")
+	msg := core.SigningString("POST", "/api/v1/register", deviceID, stamp, nonce, testPlatform, "", "")
 	body, err := json.Marshal(map[string]string{
 		"device_id": deviceID,
 		"hostname":  hostname,
@@ -160,7 +173,7 @@ func heartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce, configHa
 func signedHeartbeatBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, platform string, ts int64, nonce, configHash, appHash string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
-	msg := core.SigningString("POST", "/api/heartbeat", deviceID, stamp, nonce, platform, configHash, appHash)
+	msg := core.SigningString("POST", "/api/v1/heartbeat", deviceID, stamp, nonce, platform, configHash, appHash)
 	body, err := json.Marshal(map[string]string{
 		"deviceId":   deviceID,
 		"timestamp":  stamp,
@@ -209,7 +222,7 @@ func signed(t *testing.T, env *testenv.Env, method, path string, body []byte, he
 
 func createDevice(t *testing.T, env *testenv.Env, name, toml string) (id, token string) {
 	t.Helper()
-	res, data := env.Do("POST", "/api/devices", map[string]string{"name": name, "config_toml": toml})
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": name, "config_toml": toml})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("create device = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -225,7 +238,7 @@ func createDevice(t *testing.T, env *testenv.Env, name, toml string) (id, token 
 
 func register(t *testing.T, env *testenv.Env, token, deviceID, hostname string, pub ed25519.PublicKey) (int, []byte) {
 	t.Helper()
-	res, data := env.Do("POST", "/api/register", map[string]string{
+	res, data := env.Do("POST", "/api/v1/register", map[string]string{
 		"token":     token,
 		"device_id": deviceID,
 		"hostname":  hostname,
@@ -310,13 +323,13 @@ func TestAuthRequiresCorrectToken(t *testing.T) {
 		t.Fatalf("wrong token = %d, want 401", res.StatusCode)
 	}
 	anonymous := &http.Client{Transport: env.Server.Client().Transport}
-	res, err := anonymous.Get(env.Server.URL + "/api/devices")
+	res, err := anonymous.Get(env.Server.URL + "/api/admin/devices")
 	if err != nil {
-		t.Fatalf("anonymous GET /api/devices: %v", err)
+		t.Fatalf("anonymous GET /api/admin/devices: %v", err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("anonymous GET /api/devices = %d, want 401", res.StatusCode)
+		t.Fatalf("anonymous GET /api/admin/devices = %d, want 401", res.StatusCode)
 	}
 }
 
@@ -326,7 +339,7 @@ func TestCredentialExpires(t *testing.T) {
 	env := testenv.New(t)
 	env.Clock.Advance(25 * time.Hour)
 
-	res, _ := env.Do("GET", "/api/devices", nil)
+	res, _ := env.Do("GET", "/api/admin/devices", nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("list devices with an expired credential = %d, want 401", res.StatusCode)
 	}
@@ -349,7 +362,7 @@ func TestTamperedCredentialIsRejected(t *testing.T) {
 	signature[0] ^= 0x01
 	tampered := good[:dot+1] + base64.RawURLEncoding.EncodeToString(signature)
 
-	req, err := http.NewRequest("GET", env.Server.URL+"/api/devices", nil)
+	req, err := http.NewRequest("GET", env.Server.URL+"/api/admin/devices", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -386,7 +399,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	// The same device_id and pubkey are idempotent, but only with a valid
 	// credential: the signature is made with the key the slot is bound to.
 	body := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", pub, env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data := env.Do("POST", "/api/register", json.RawMessage(body))
+	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed idempotent register = %d: %s", res.StatusCode, data)
 	}
@@ -406,7 +419,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		t.Fatalf("unsigned conflict attempt = %d, want 401", status)
 	}
 	conflictBody := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", otherPub, env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data = env.Do("POST", "/api/register", json.RawMessage(conflictBody))
+	res, data = env.Do("POST", "/api/v1/register", json.RawMessage(conflictBody))
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("pubkey conflict = %d, want 409: %s", res.StatusCode, data)
 	}
@@ -447,7 +460,7 @@ func TestSignatureTampering(t *testing.T) {
 
 	// A correctly signed heartbeat passes.
 	body := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
-	res, data := signed(t, env, "POST", "/api/heartbeat", body, nil)
+	res, data := signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("valid heartbeat = %d, want 204: %s", res.StatusCode, data)
 	}
@@ -455,7 +468,7 @@ func TestSignatureTampering(t *testing.T) {
 	// Changing a signed field after signing breaks the signature.
 	tampered := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
 	tampered = bytes.Replace(tampered, []byte(dev.configHash), []byte("tampered"), 1)
-	res, _ = signed(t, env, "POST", "/api/heartbeat", tampered, nil)
+	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", tampered, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("tampered config hash = %d, want 401", res.StatusCode)
 	}
@@ -463,7 +476,7 @@ func TestSignatureTampering(t *testing.T) {
 	// The platform is part of what was signed.
 	otherPlatform := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
 	otherPlatform = bytes.Replace(otherPlatform, []byte(testPlatform), []byte("linux/arm64"), 1)
-	res, _ = signed(t, env, "POST", "/api/heartbeat", otherPlatform, nil)
+	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", otherPlatform, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("tampered platform = %d, want 401", res.StatusCode)
 	}
@@ -471,7 +484,7 @@ func TestSignatureTampering(t *testing.T) {
 	// Stale and future timestamps are outside the 300s window.
 	for _, ts := range []int64{now - 301, now + 301} {
 		stale := heartbeatBody(t, dev, ts, newNonce(&nonces), dev.configHash, "")
-		res, _ = signed(t, env, "POST", "/api/heartbeat", stale, nil)
+		res, _ = signed(t, env, "POST", "/api/v1/heartbeat", stale, nil)
 		if res.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("timestamp %d = %d, want 401", ts, res.StatusCode)
 		}
@@ -479,7 +492,7 @@ func TestSignatureTampering(t *testing.T) {
 
 	// An unknown device id cannot authenticate even with a valid key.
 	unknown := signedHeartbeatBody(t, "dev-unknown", dev.priv, testPlatform, now, newNonce(&nonces), dev.configHash, "")
-	res, _ = signed(t, env, "POST", "/api/heartbeat", unknown, nil)
+	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", unknown, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unknown device = %d, want 401", res.StatusCode)
 	}
@@ -492,18 +505,18 @@ func TestNonceReplayIsRejected(t *testing.T) {
 	now := env.Clock.Now().Unix()
 	body := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
 
-	res, data := signed(t, env, "POST", "/api/heartbeat", body, nil)
+	res, data := signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("first request = %d, want 204: %s", res.StatusCode, data)
 	}
-	res, _ = signed(t, env, "POST", "/api/heartbeat", body, nil)
+	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replayed nonce = %d, want 401", res.StatusCode)
 	}
 
 	// A fresh nonce for the same hashes is accepted.
 	fresh := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
-	res, _ = signed(t, env, "POST", "/api/heartbeat", fresh, nil)
+	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", fresh, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("fresh nonce = %d, want 204", res.StatusCode)
 	}
@@ -547,7 +560,7 @@ func publishLauncher(t *testing.T, env *testenv.Env, platform, version string, l
 func heartbeat(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appHash string) (*http.Response, []byte) {
 	t.Helper()
 	body := heartbeatBody(t, dev, env.Clock.Now().Unix(), newNonce(nonces), configHash, appHash)
-	return signed(t, env, "POST", "/api/heartbeat", body, nil)
+	return signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 }
 
 func TestHeartbeatSemantics(t *testing.T) {
@@ -616,7 +629,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 
 	// 改配置后，下一次心跳带回来的就是新的一份。
 	const newTOML = `hostname = "laptop"`
-	res, data = env.Do("PUT", "/api/devices/"+dev.internalID, map[string]string{"name": "laptop", "config_toml": newTOML})
+	res, data = env.Do("PUT", "/api/admin/devices/"+dev.internalID, map[string]string{"name": "laptop", "config_toml": newTOML})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("update device = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -661,7 +674,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 
 	summary := func() deviceSummary {
 		t.Helper()
-		res, data := env.Do("GET", "/api/devices", nil)
+		res, data := env.Do("GET", "/api/admin/devices", nil)
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("list devices = %d: %s", res.StatusCode, data)
 		}
@@ -707,7 +720,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	}
 
 	// The detail view reports the same states.
-	res, data := env.Do("GET", "/api/devices/"+dev.internalID, nil)
+	res, data := env.Do("GET", "/api/admin/devices/"+dev.internalID, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get device = %d: %s", res.StatusCode, data)
 	}
@@ -733,7 +746,7 @@ func TestDeletedDeviceGetsRevoked(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 
-	res, data := env.Do("DELETE", "/api/devices/"+dev.internalID, nil)
+	res, data := env.Do("DELETE", "/api/admin/devices/"+dev.internalID, nil)
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete device = %d, want 204: %s", res.StatusCode, data)
 	}
@@ -754,7 +767,7 @@ func TestDeviceStatusDerivation(t *testing.T) {
 
 	statuses := func() map[string]string {
 		t.Helper()
-		res, data := env.Do("GET", "/api/devices", nil)
+		res, data := env.Do("GET", "/api/admin/devices", nil)
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("list devices = %d: %s", res.StatusCode, data)
 		}
@@ -795,7 +808,7 @@ func TestDeviceLimitReturnsConflict(t *testing.T) {
 	for i := range app.MaxDevices {
 		createDevice(t, env, fmt.Sprintf("dev-%03d", i), testTOML)
 	}
-	res, data := env.Do("POST", "/api/devices", map[string]string{"name": "overflow", "config_toml": testTOML})
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "overflow", "config_toml": testTOML})
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("device over limit = %d, want 409: %s", res.StatusCode, data)
 	}
@@ -809,7 +822,7 @@ func TestReissuedTokenReenrollsDevice(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 
-	res, data := env.Do("POST", "/api/devices/"+dev.internalID+"/token", nil)
+	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/token", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("issue token = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -1172,8 +1185,8 @@ func TestSavedTemplateAppliesToNewDevices(t *testing.T) {
 ipv4 = "10.126.126.9/24"`
 	putReleases(t, env, map[string]string{"platform": testPlatform, "default_toml": custom})
 
-	// The create dialog prefills from GET /api/template.
-	res, data := env.Do("GET", "/api/template", nil)
+	// The create dialog prefills from GET /api/admin/template.
+	res, data := env.Do("GET", "/api/admin/template", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET template = %d: %s", res.StatusCode, data)
 	}
@@ -1188,7 +1201,7 @@ ipv4 = "10.126.126.9/24"`
 	}
 
 	id, _ := createDevice(t, env, "fresh", tmpl.TOML)
-	res, data = env.Do("GET", "/api/devices/"+id, nil)
+	res, data = env.Do("GET", "/api/admin/devices/"+id, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get device = %d: %s", res.StatusCode, data)
 	}

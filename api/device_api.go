@@ -19,9 +19,9 @@ const (
 	codeRevoked      = "revoked"
 )
 
-// registerRequest is POST /api/register. timestamp、nonce、signature、platform
+// registerRequest is POST /api/v1/register. timestamp、nonce、signature、platform
 // 只有"槽位已经绑定"时才用得上：它们带着本机私钥的签名，证明调用方就是那个
-// 设备。签名覆盖 MESH2\nPOST\n/api/register\n<device_id>\n<timestamp>\n<nonce>\n<platform>\n\n。
+// 设备。签名覆盖 MESH2\nPOST\n/api/v1/register\n<device_id>\n<timestamp>\n<nonce>\n<platform>\n\n。
 type registerRequest struct {
 	Token     string `json:"token"`
 	DeviceID  string `json:"device_id"`
@@ -186,7 +186,7 @@ func (s *Server) registerProofValid(device db.Device, req registerRequest, now t
 			return false
 		}
 		// 注册请求没有配置与版本信息，签名里这两行留空。
-		signing := core.SigningString(http.MethodPost, "/api/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
+		signing := core.SigningString(http.MethodPost, "/api/v1/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
 		if err := core.VerifySignature(device.Pubkey, req.Signature, []byte(signing)); err != nil {
 			return false
 		}

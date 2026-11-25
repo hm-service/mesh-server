@@ -21,37 +21,39 @@ HTTP 契约以 [`../CONTRACT.md`](../CONTRACT.md) 第 1 节为准，本文件只
 
 ## 2. 页面
 
-`/admin` 是唯一的控制台入口（`/` 302 过去），前端是 `frontend/` 的 Vue 3 + Vite 工程，构建产物 `frontend/dist` 被 `web.go` 嵌入。
-三个页面共用一次 5 秒轮询：
+`/admin` 是唯一的控制台入口（`/` 302 过去），前端是 `frontend/` 的 Vue 3 + Vite 工程，构建产物 `frontend/dist` 被 `web.go` 嵌入。设计变量集中在 `frontend/src/style.css`，不引入组件库。
+设备页每 5 秒轮询一次；模板与更新页在进入时加载。
 
 | 页面 | 内容 |
 | --- | --- |
-| 设备列表 | 设备卡片（在线状态、配置同步状态、客户端同步状态、最后心跳），排序与「显示详情」开关，新建与详情对话框 |
-| 配置 | 默认 EasyTier 模板（写回 `DATA_DIR/peer.default.toml`） |
+| 设备 | 按分组排的表：名称与主机名、mesh 地址、在线状态、配置是否同步、客户端版本、最后在线；行内拖拽排序与改分组。详情抽屉里编辑配置（含「重置为模板」）、轮换凭据、签发注册令牌、撤销设备 |
+| 默认模板 | 当前生效的默认 EasyTier 模板（`DATA_DIR/peer.default.toml`，缺失或空白时展示内置模板）；保存写回该文件 |
 | 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址 |
 
 鉴权只有 `AUTH_TOKEN` 一种形态：登录页提交它，换回一个 24 小时的无状态 Bearer 凭证；没有跳过登录的开关。
 
 ## 3. 接口
 
+`/api/` 下只有三个入口：`/api/auth`（特例）、`/api/v1/`（设备公开）、`/api/admin/`（管理面）。
+
 | 方法 | 路径 | 认证 |
 | --- | --- | --- |
 | POST | `/api/auth` | 无 |
-| GET | `/api/health` | 无（只回 `{ok:true}`） |
-| GET | `/api/template` | Bearer |
-| GET/POST | `/api/devices` | Bearer |
-| GET/PUT/DELETE | `/api/devices/{id}` | Bearer |
-| POST | `/api/devices/{id}/token` | Bearer |
-| POST | `/api/devices/{id}/credential` | Bearer |
-| DELETE | `/api/devices/{id}/credential` | Bearer |
-| PUT | `/api/devices/{id}/group` | Bearer |
-| PUT | `/api/layout` | Bearer |
-| GET/POST | `/api/groups` | Bearer |
-| PUT/DELETE | `/api/groups/{id}` | Bearer |
+| GET | `/api/v1/health` | 无（只回 `{ok:true}`） |
+| POST | `/api/v1/register` | token 或设备签名（在请求体里） |
+| POST | `/api/v1/heartbeat` | 设备签名（在请求体里） |
+| GET | `/api/admin/template` | Bearer |
+| GET/POST | `/api/admin/devices` | Bearer |
+| GET/PUT/DELETE | `/api/admin/devices/{id}` | Bearer |
+| POST | `/api/admin/devices/{id}/token` | Bearer |
+| POST | `/api/admin/devices/{id}/credential` | Bearer |
+| DELETE | `/api/admin/devices/{id}/credential` | Bearer |
+| PUT | `/api/admin/devices/{id}/group` | Bearer |
+| PUT | `/api/admin/layout` | Bearer |
+| GET/POST | `/api/admin/groups` | Bearer |
+| PUT/DELETE | `/api/admin/groups/{id}` | Bearer |
 | GET/PUT | `/api/admin/releases` | Bearer |
 | DELETE | `/api/admin/releases/{platform...}`（`?slot=launcher` 只清启动器槽位） | Bearer |
-| POST | `/api/register` | token 或设备签名（在请求体里） |
-| POST | `/api/heartbeat` | 设备签名（在请求体里） |
 
 请求与响应的字段、状态码、错误码见 `CONTRACT.md` 1.4；本文不重复。
 
@@ -65,7 +67,7 @@ DATA_DIR/
   mesh.db-wal / -shm
   peer.default.toml    默认 EasyTier 模板，唯一事实来源（0600）
   server.log           JSON 行日志，4MB 高水位裁剪到 2MB（0600）
-`
+```
 
 其它文件（例如旧版本留下的 `state.json`）既不读也不写。
 
@@ -143,7 +145,7 @@ CREATE INDEX credential_device ON credential (device_public_id);
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |
 | 响应头 | `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options`、严格 `Content-Security-Policy` |
-| 并发 | `/api/auth`、管理面 `/api/*`、设备面 `/api/register` 与 `/api/heartbeat`、静态资源、`/readyz` 各自独立信号量（管理面与设备面互不挤占）；Argon2id 并发上限 4 |
+| 并发 | `/api/auth`、管理面 `/api/admin/*`、设备面 `/api/v1/*`、静态资源、`/readyz` 各自独立信号量（管理面与设备面互不挤占）；Argon2id 并发上限 4 |
 | 超时 | 连接读请求头 10 秒、读整个请求 15 秒、空闲 60 秒；发布包下载 60 秒 |
 
 ## 6. 环境变量与 Secrets

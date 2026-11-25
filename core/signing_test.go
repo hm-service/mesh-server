@@ -10,9 +10,9 @@ import (
 )
 
 func TestSigningStringShape(t *testing.T) {
-	got := SigningString("POST", "/api/heartbeat", "dev", "1732400000", "abc", "windows/amd64", "cfg", "app")
+	got := SigningString("POST", "/api/v1/heartbeat", "dev", "1732400000", "abc", "windows/amd64", "cfg", "app")
 	lines := strings.Split(got, "\n")
-	want := []string{"MESH2", "POST", "/api/heartbeat", "dev", "1732400000", "abc", "windows/amd64", "cfg", "app"}
+	want := []string{"MESH2", "POST", "/api/v1/heartbeat", "dev", "1732400000", "abc", "windows/amd64", "cfg", "app"}
 	if len(lines) != len(want) {
 		t.Fatalf("SigningString() = %q", got)
 	}

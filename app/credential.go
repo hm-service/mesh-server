@@ -143,6 +143,10 @@ const credentialRevokeTimeout = 30 * time.Second
 // 为空），既签不出也撤不掉凭据。
 var ErrCredentialChannelUnconfigured = errors.New("credential channel is not configured")
 
+// ErrFormalNode 表示这台设备是正式节点：它用 network_secret 认证，凭据对它
+// 没有意义。签了也永远用不上，只在种子的可信列表里留一张没人持有的凭据。
+var ErrFormalNode = errors.New("device is a formal node")
+
 // CredentialConfigured 报告这台控制面是否配了签发通道。
 func (a *App) CredentialConfigured() bool { return a.credential != nil }
 
@@ -160,10 +164,16 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if a.credential == nil {
 		return IssuedCredential{}, ErrCredentialChannelUnconfigured
 	}
-	if _, ok, err := a.DeviceByID(publicID); err != nil {
+	device, ok, err := a.DeviceByID(publicID)
+	if err != nil {
 		return IssuedCredential{}, err
-	} else if !ok {
+	}
+	if !ok {
 		return IssuedCredential{}, ErrNotFound
+	}
+	// 正式节点用 network_secret 认证，凭据对它没有意义。
+	if ConfigFactsOf(device.ConfigTOML).Identity == IdentityFormal {
+		return IssuedCredential{}, ErrFormalNode
 	}
 	issued, err := a.credential.generate(ctx, CredentialTTL)
 	if err != nil {

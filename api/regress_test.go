@@ -46,7 +46,7 @@ func TestRegisterIdempotentBranchRequiresCredential(t *testing.T) {
 	// published client keeps its idempotent re-registration.
 	var nonces int64
 	body := signedRegisterBody(t, dev.deviceID, dev.priv, "HOST-laptop", pub, env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data := env.Do("POST", "/api/register", json.RawMessage(body))
+	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed re-register = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -83,13 +83,13 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/api/template"},
-		{"GET", "/api/devices"},
-		{"POST", "/api/devices"},
-		{"GET", "/api/devices/d_000000"},
-		{"PUT", "/api/devices/d_000000"},
-		{"DELETE", "/api/devices/d_000000"},
-		{"POST", "/api/devices/d_000000/token"},
+		{"GET", "/api/admin/template"},
+		{"GET", "/api/admin/devices"},
+		{"POST", "/api/admin/devices"},
+		{"GET", "/api/admin/devices/d_000000"},
+		{"PUT", "/api/admin/devices/d_000000"},
+		{"DELETE", "/api/admin/devices/d_000000"},
+		{"POST", "/api/admin/devices/d_000000/token"},
 		{"GET", "/api/admin/releases"},
 		{"PUT", "/api/admin/releases"},
 	}
@@ -110,7 +110,7 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 // health payload: the console can no longer be told to skip its login page.
 func TestHealthCarriesNoAuthState(t *testing.T) {
 	env := testenv.New(t, testenv.WithoutLogin())
-	res, body := env.Do("GET", "/api/health", nil)
+	res, body := env.Do("GET", "/api/v1/health", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("health = %d, want 200: %s", res.StatusCode, body)
 	}
@@ -202,8 +202,8 @@ func TestAllowNamesRegisteredMethods(t *testing.T) {
 	}{
 		{"GET", "/api/auth", "POST"},
 		{"POST", "/api/admin/releases", "GET, HEAD, PUT"},
-		{"DELETE", "/api/devices", "GET, HEAD, POST"},
-		{"GET", "/api/layout", "PUT"},
+		{"DELETE", "/api/admin/devices", "GET, HEAD, POST"},
+		{"GET", "/api/admin/layout", "PUT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestDeviceGateDoesNotStarveAdmin(t *testing.T) {
 
 	body, writer := io.Pipe()
 	defer writer.Close()
-	req, err := http.NewRequest(http.MethodPost, env.Server.URL+"/api/heartbeat", body)
+	req, err := http.NewRequest(http.MethodPost, env.Server.URL+"/api/v1/heartbeat", body)
 	if err != nil {
 		t.Fatalf("build heartbeat request: %v", err)
 	}
@@ -243,9 +243,9 @@ func TestDeviceGateDoesNotStarveAdmin(t *testing.T) {
 	// Give the handler time to take its gate slot and block in ReadBody.
 	time.Sleep(200 * time.Millisecond)
 
-	res, data := env.Do("GET", "/api/devices", nil)
+	res, data := env.Do("GET", "/api/admin/devices", nil)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/devices while a device request is stuck = %d: %s", res.StatusCode, data)
+		t.Fatalf("GET /api/admin/devices while a device request is stuck = %d: %s", res.StatusCode, data)
 	}
 
 	writer.Close()
@@ -285,9 +285,9 @@ func TestProbes(t *testing.T) {
 func TestMethodNotAllowedAndNotFound(t *testing.T) {
 	env := testenv.New(t)
 
-	res, body := env.Do("DELETE", "/api/devices", nil)
+	res, body := env.Do("DELETE", "/api/admin/devices", nil)
 	if res.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("DELETE /api/devices = %d, want 405: %s", res.StatusCode, body)
+		t.Fatalf("DELETE /api/admin/devices = %d, want 405: %s", res.StatusCode, body)
 	}
 	if allow := res.Header.Get("Allow"); !strings.Contains(allow, "GET") {
 		t.Fatalf("Allow = %q, want GET", allow)

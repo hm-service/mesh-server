@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api, ApiError, type DeviceSummary, type GroupView, type ReleasesPayload } from "./api";
 import ConfigView from "./components/ConfigView.vue";
-import DeviceDialog from "./components/DeviceDialog.vue";
+import DeviceDrawer from "./components/DeviceDrawer.vue";
 import DevicesView from "./components/DevicesView.vue";
 import LoginView from "./components/LoginView.vue";
 import NewDeviceDialog from "./components/NewDeviceDialog.vue";
@@ -10,7 +10,6 @@ import ToastHost, { type Toast } from "./components/ToastHost.vue";
 import UpdatesView from "./components/UpdatesView.vue";
 
 type Page = "devices" | "config" | "updates";
-type Dialog = { kind: "new" } | { kind: "device"; id: string } | null;
 
 const POLL_MS = 5000;
 
@@ -19,7 +18,8 @@ const authed = ref(false);
 const devices = ref<DeviceSummary[]>([]);
 const groups = ref<GroupView[]>([]);
 const releases = ref<ReleasesPayload | null>(null);
-const dialog = ref<Dialog>(null);
+const drawerId = ref<string | null>(null);
+const showNew = ref(false);
 const toast = ref<Toast | null>(null);
 const loginError = ref("");
 const loginBusy = ref(false);
@@ -34,7 +34,7 @@ function showToast(title: string, message = "", kind: "ok" | "err" = "ok") {
   if (toastTimer !== undefined) window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => {
     toast.value = null;
-  }, kind === "err" ? 6000 : 3000);
+  }, kind === "err" ? 6000 : 3200);
 }
 
 function dismissToast() {
@@ -60,9 +60,11 @@ function stopPolling() {
 
 function handleUnauthorized() {
   stopPolling();
-  dialog.value = null;
+  drawerId.value = null;
+  showNew.value = false;
   groups.value = [];
   releases.value = null;
+  devices.value = [];
   authed.value = false;
 }
 
@@ -118,8 +120,8 @@ async function refreshDevices() {
   }
 }
 
-function openDevice(id: string) {
-  dialog.value = { kind: "device", id };
+async function onDeviceChanged() {
+  await refreshDevices();
 }
 
 function onCreated() {
@@ -130,8 +132,16 @@ function onSaved(next: ReleasesPayload) {
   releases.value = next;
 }
 
+function closeOverlays() {
+  if (showNew.value) {
+    showNew.value = false;
+    return;
+  }
+  if (drawerId.value) drawerId.value = null;
+}
+
 function onEscape(event: KeyboardEvent) {
-  if (event.key === "Escape") dialog.value = null;
+  if (event.key === "Escape") closeOverlays();
 }
 
 onMounted(async () => {
@@ -157,7 +167,7 @@ onBeforeUnmount(() => {
   <LoginView v-if="!authed" :error="loginError" :busy="loginBusy" @submit="login" />
 
   <template v-else>
-    <header>
+    <header class="app-header">
       <div class="brand">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
           <path d="M12 4.4 19.3 17.9H4.7z" />
@@ -169,7 +179,7 @@ onBeforeUnmount(() => {
         EasyTier <small>控制台</small>
       </div>
       <div class="spacer" />
-      <div class="who">admin</div>
+      <span class="who">admin</span>
       <button type="button" @click="logout">退出</button>
     </header>
 
@@ -182,16 +192,17 @@ onBeforeUnmount(() => {
             <rect x="2.2" y="8.8" width="5" height="5" rx="1.2" />
             <rect x="8.8" y="8.8" width="5" height="5" rx="1.2" />
           </svg>
-          设备列表
-          <span class="badge">{{ deviceCount || "" }}</span>
+          设备
+          <span class="count">{{ deviceCount || "" }}</span>
         </button>
         <button class="nav" :class="{ on: page === 'config' }" type="button" @click="page = 'config'">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-            <path d="M2.6 4.7h10.8M2.6 11.3h10.8" />
-            <circle cx="6" cy="4.7" r="1.6" fill="#fff" />
-            <circle cx="10.4" cy="11.3" r="1.6" fill="#fff" />
+            <path d="M3 3.5h10M3 8h10M3 12.5h10" />
+            <circle cx="6.2" cy="3.5" r="1.4" fill="#fff" />
+            <circle cx="9.8" cy="8" r="1.4" fill="#fff" />
+            <circle cx="5" cy="12.5" r="1.4" fill="#fff" />
           </svg>
-          配置
+          默认模板
         </button>
         <button class="nav" :class="{ on: page === 'updates' }" type="button" @click="page = 'updates'">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -208,15 +219,14 @@ onBeforeUnmount(() => {
           v-if="page === 'devices'"
           :devices="devices"
           :groups="groups"
-          @open="openDevice"
-          @create="dialog = { kind: 'new' }"
+          @open="drawerId = $event"
+          @create="showNew = true"
           @refresh="refreshDevices"
           @toast="showToast"
           @unauthorized="handleUnauthorized"
         />
         <ConfigView
           v-else-if="page === 'config'"
-          :releases="releases"
           @saved="onSaved"
           @toast="showToast"
           @unauthorized="handleUnauthorized"
@@ -230,23 +240,24 @@ onBeforeUnmount(() => {
         />
       </main>
     </div>
-  </template>
 
-  <NewDeviceDialog
-    v-if="dialog && dialog.kind === 'new'"
-    @close="dialog = null"
-    @created="onCreated"
-    @toast="showToast"
-    @unauthorized="handleUnauthorized"
-  />
-  <DeviceDialog
-    v-else-if="dialog && dialog.kind === 'device'"
-    :id="dialog.id"
-    @close="dialog = null"
-    @changed="onCreated"
-    @toast="showToast"
-    @unauthorized="handleUnauthorized"
-  />
+    <DeviceDrawer
+      v-if="drawerId"
+      :id="drawerId"
+      :groups="groups"
+      @close="drawerId = null"
+      @changed="onDeviceChanged"
+      @toast="showToast"
+      @unauthorized="handleUnauthorized"
+    />
+    <NewDeviceDialog
+      v-if="showNew"
+      @close="showNew = false"
+      @created="onCreated"
+      @toast="showToast"
+      @unauthorized="handleUnauthorized"
+    />
+  </template>
 
   <ToastHost :toast="toast" @close="dismissToast" />
 </template>

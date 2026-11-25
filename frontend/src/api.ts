@@ -1,4 +1,6 @@
 // 控制台的 HTTP 客户端：请求路径与响应字段直接对应 CONTRACT.md 1.4。
+export type NodeIdentity = "formal" | "credential";
+
 export interface DeviceSummary {
   id: string;
   name: string;
@@ -11,10 +13,23 @@ export interface DeviceSummary {
   config_state: "current" | "stale";
   app_state: "current" | "stale";
   app_version: string;
+  last_platform: string;
   group_id: number;
   position: number;
   created_at: number;
   last_seen_at: number;
+  /** identity 由配置里有没有 network_secret 派生：正式节点不用凭据。 */
+  identity: NodeIdentity;
+  /** ipv4 是配置里写的固定 mesh 地址（可能带前缀长度）；空表示没写。 */
+  ipv4: string;
+  /** dhcp = true 时 core 忽略 ipv4，地址由网络分配。 */
+  dhcp: boolean;
+}
+
+/** CredentialTimes 是最新一张凭据的可见部分：只有时间，没有私钥。 */
+export interface CredentialTimes {
+  issued_at: number;
+  expires_at: number;
 }
 
 /** GroupView 是设备分组：position 决定分组在控制台里的先后。 */
@@ -37,6 +52,7 @@ export interface DeviceDetail extends DeviceSummary {
   token: string;
   token_expires_at: number;
   last_ip: string;
+  credential: CredentialTimes | null;
 }
 
 /** ReleaseView 是某个平台已发布的两个更新包：客户端包与启动器。 */
@@ -103,26 +119,36 @@ function describe(status: number, code: string): string {
   if (code === "invalid_token") return "令牌无效或已过期";
   if (code === "not_found") return "设备不存在";
   if (code === "group_not_found") return "分组不存在";
+  if (code === "formal_node") return "正式节点不使用凭据";
+  if (code === "credential_channel_unconfigured") return "控制面未配置凭据签发通道";
   if (code === "busy") return "服务繁忙，请稍后重试";
   if (status === 400) return "请求内容不合法";
   return "请求失败（HTTP " + status + "）";
 }
 
-async function decode<T>(res: Response): Promise<T> {
+/** errorFrom turns a non-2xx response into an ApiError, preferring the server text. */
+async function errorFrom(res: Response): Promise<ApiError> {
   if (res.status === 401) {
     clearCredential();
-    throw new ApiError(401, "unauthorized");
+    return new ApiError(401, "unauthorized");
   }
-  if (!res.ok) {
-    const text = await res.text();
-    let code = "";
-    try {
-      code = (JSON.parse(text) as { code?: string }).code ?? "";
-    } catch {
-      code = "";
-    }
-    throw new ApiError(res.status, code);
+  const text = await res.text();
+  let code = "";
+  let message = "";
+  try {
+    const payload = JSON.parse(text) as { code?: string; message?: string };
+    code = payload.code ?? "";
+    message = payload.message ?? "";
+  } catch {
+    // 非 JSON 的错误页：保留状态码文案。
   }
+  const error = new ApiError(res.status, code);
+  if (message) error.message = message;
+  return error;
+}
+
+async function decode<T>(res: Response): Promise<T> {
+  if (!res.ok) throw await errorFrom(res);
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -138,32 +164,11 @@ async function jsonRequest<T>(method: string, path: string, body?: unknown): Pro
   return decode<T>(await fetch(path, init));
 }
 
-/** 设置类请求的 400 会带 message，直接展示比通用文案有用。 */
+/** 设置类请求的响应体固定是 ReleasesPayload，错误走同一套解析。 */
 async function releasesRequest(path: string, init: RequestInit): Promise<ReleasesPayload> {
-  // fetch 不会自动带 Bearer，设置类请求也必须显式附上凭证。
   const headers = new Headers(init.headers);
   for (const [name, value] of Object.entries(authHeaders())) headers.set(name, value);
-  const res = await fetch(path, { ...init, headers });
-  if (res.status === 401) {
-    clearCredential();
-    throw new ApiError(401, "unauthorized");
-  }
-  if (!res.ok) {
-    const text = await res.text();
-    let payload: { code?: string; message?: string } = {};
-    try {
-      payload = JSON.parse(text) as { code?: string; message?: string };
-    } catch {
-      payload = {};
-    }
-    if (payload.message) {
-      const error = new ApiError(res.status, payload.code ?? "");
-      error.message = payload.message;
-      throw error;
-    }
-    throw new ApiError(res.status, payload.code ?? "");
-  }
-  return (await res.json()) as ReleasesPayload;
+  return decode<ReleasesPayload>(await fetch(path, { ...init, headers }));
 }
 
 export const api = {
@@ -182,46 +187,53 @@ export const api = {
     clearCredential();
   },
   listDevices(): Promise<DeviceSummary[]> {
-    return jsonRequest<DeviceSummary[]>("GET", "/api/devices");
+    return jsonRequest<DeviceSummary[]>("GET", "/api/admin/devices");
   },
   getDevice(id: string): Promise<DeviceDetail> {
-    return jsonRequest<DeviceDetail>("GET", "/api/devices/" + encodeURIComponent(id));
+    return jsonRequest<DeviceDetail>("GET", "/api/admin/devices/" + encodeURIComponent(id));
   },
   createDevice(name: string, configToml: string): Promise<{ id: string; token: string }> {
-    return jsonRequest<{ id: string; token: string }>("POST", "/api/devices", { name, config_toml: configToml });
+    return jsonRequest<{ id: string; token: string }>("POST", "/api/admin/devices", { name, config_toml: configToml });
   },
   updateDevice(id: string, name: string, configToml: string): Promise<{ config_hash: string }> {
-    return jsonRequest<{ config_hash: string }>("PUT", "/api/devices/" + encodeURIComponent(id), {
+    return jsonRequest<{ config_hash: string }>("PUT", "/api/admin/devices/" + encodeURIComponent(id), {
       name,
       config_toml: configToml,
     });
   },
   deleteDevice(id: string): Promise<void> {
-    return jsonRequest<void>("DELETE", "/api/devices/" + encodeURIComponent(id));
+    return jsonRequest<void>("DELETE", "/api/admin/devices/" + encodeURIComponent(id));
   },
   issueToken(id: string): Promise<{ token: string }> {
-    return jsonRequest<{ token: string }>("POST", "/api/devices/" + encodeURIComponent(id) + "/token");
+    return jsonRequest<{ token: string }>("POST", "/api/admin/devices/" + encodeURIComponent(id) + "/token");
+  },
+  /**
+   * 轮换凭据：服务端签发一张并把 id 记在设备名下，私钥只回给这一次请求。
+   * 控制台不保存也不显示它，所以这里把响应丢掉。
+   */
+  async rotateCredential(id: string): Promise<void> {
+    await jsonRequest<unknown>("POST", "/api/admin/devices/" + encodeURIComponent(id) + "/credential");
   },
   setDeviceGroup(id: string, groupId: number | null): Promise<void> {
-    return jsonRequest<void>("PUT", "/api/devices/" + encodeURIComponent(id) + "/group", { group_id: groupId });
+    return jsonRequest<void>("PUT", "/api/admin/devices/" + encodeURIComponent(id) + "/group", { group_id: groupId });
   },
   saveLayout(devices: DevicePlacement[]): Promise<void> {
-    return jsonRequest<void>("PUT", "/api/layout", { devices });
+    return jsonRequest<void>("PUT", "/api/admin/layout", { devices });
   },
   listGroups(): Promise<GroupView[]> {
-    return jsonRequest<GroupView[]>("GET", "/api/groups");
+    return jsonRequest<GroupView[]>("GET", "/api/admin/groups");
   },
   createGroup(name: string): Promise<GroupView> {
-    return jsonRequest<GroupView>("POST", "/api/groups", { name });
+    return jsonRequest<GroupView>("POST", "/api/admin/groups", { name });
   },
   updateGroup(id: number, patch: { name?: string; position?: number }): Promise<GroupView> {
-    return jsonRequest<GroupView>("PUT", "/api/groups/" + id, patch);
+    return jsonRequest<GroupView>("PUT", "/api/admin/groups/" + id, patch);
   },
   deleteGroup(id: number): Promise<void> {
-    return jsonRequest<void>("DELETE", "/api/groups/" + id);
+    return jsonRequest<void>("DELETE", "/api/admin/groups/" + id);
   },
   template(): Promise<{ toml: string }> {
-    return jsonRequest<{ toml: string }>("GET", "/api/template");
+    return jsonRequest<{ toml: string }>("GET", "/api/admin/template");
   },
   getReleases(): Promise<ReleasesPayload> {
     return releasesRequest("/api/admin/releases", { method: "GET" });

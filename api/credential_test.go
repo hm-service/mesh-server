@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ import (
 func credentialHeartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce, credentialID string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
-	msg := core.SigningString("POST", "/api/heartbeat", dev.deviceID, stamp, nonce, testPlatform, dev.configHash, "")
+	msg := core.SigningString("POST", "/api/v1/heartbeat", dev.deviceID, stamp, nonce, testPlatform, dev.configHash, "")
 	body, err := json.Marshal(map[string]string{
 		"deviceId":     dev.deviceID,
 		"timestamp":    stamp,
@@ -45,7 +46,7 @@ func credentialHeartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce
 func credentialHeartbeat(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, credentialID string) (*http.Response, []byte) {
 	t.Helper()
 	body := credentialHeartbeatBody(t, dev, env.Clock.Now().Unix(), newNonce(nonces), credentialID)
-	return signed(t, env, "POST", "/api/heartbeat", body, nil)
+	return signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 }
 
 func decodeHeartbeat(t *testing.T, data []byte) heartbeatResponse {
@@ -225,7 +226,7 @@ func TestAdminIssuedCredentialReachesDevice(t *testing.T) {
 	}
 
 	// 管理端在设备之外签一张：私钥只回给管理端，设备手里还是 first。
-	res, data = env.Do("POST", "/api/devices/"+dev.internalID+"/credential", nil)
+	res, data = env.Do("POST", "/api/admin/devices/"+dev.internalID+"/credential", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("admin issue credential = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -325,7 +326,7 @@ func TestConcurrentIssuanceKeepsCredentialPairs(t *testing.T) {
 	requests := make([]*http.Request, rounds)
 	for i := range requests {
 		body := credentialHeartbeatBody(t, dev, stamp, newNonce(&nonces), "none")
-		req, err := http.NewRequest("POST", env.Server.URL+"/api/heartbeat", bytes.NewReader(body))
+		req, err := http.NewRequest("POST", env.Server.URL+"/api/v1/heartbeat", bytes.NewReader(body))
 		if err != nil {
 			t.Fatalf("build heartbeat: %v", err)
 		}
@@ -395,7 +396,7 @@ func TestConcurrentIssuanceKeepsCredentialPairs(t *testing.T) {
 func TestAdminIssueCredentialReturnsItsOwnID(t *testing.T) {
 	env := testenv.New(t, testenv.WithCredentialCLI())
 	dev := registerDevice(t, env, "laptop", testTOML)
-	res, data := env.Do("POST", "/api/devices/"+dev.internalID+"/credential", nil)
+	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/credential", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("issue credential = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -429,7 +430,7 @@ func TestCredentialChannelLossBlocksRevokeAndDelete(t *testing.T) {
 
 	// 运维从部署里去掉 ET_CLI：同一个 DATA_DIR 重新起一份控制面。
 	withoutCLI := testenv.New(t, testenv.WithDataDir(dir))
-	for _, path := range []string{"/api/devices/" + dev.internalID + "/credential", "/api/devices/" + dev.internalID} {
+	for _, path := range []string{"/api/admin/devices/" + dev.internalID + "/credential", "/api/admin/devices/" + dev.internalID} {
 		res, data := withoutCLI.Do("DELETE", path, nil)
 		if res.StatusCode != http.StatusConflict {
 			t.Fatalf("DELETE %s = %d (%s), want 409", path, res.StatusCode, data)
@@ -442,7 +443,62 @@ func TestCredentialChannelLossBlocksRevokeAndDelete(t *testing.T) {
 			t.Fatalf("DELETE %s code = %q, want credential_channel_unconfigured", path, body["code"])
 		}
 	}
-	if res, data := withoutCLI.Do("GET", "/api/devices/"+dev.internalID, nil); res.StatusCode != http.StatusOK {
+	if res, data := withoutCLI.Do("GET", "/api/admin/devices/"+dev.internalID, nil); res.StatusCode != http.StatusOK {
 		t.Fatalf("device disappeared after the refused deletes = %d: %s", res.StatusCode, data)
+	}
+}
+
+// TestAdminCredentialRefusedForFormalNode pins the seed guard: a formal node
+// authenticates with network_secret, so a credential signed for it would never
+// be used. The console disables the action and the API refuses it as well.
+func TestAdminCredentialRefusedForFormalNode(t *testing.T) {
+	env := testenv.New(t, testenv.WithCredentialCLI())
+	dev := registerDevice(t, env, "ali-seed", formalTOML)
+	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/credential", nil)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("issue credential for a formal node = %d, want 409: %s", res.StatusCode, data)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body["code"] != "formal_node" || body["message"] == "" {
+		t.Fatalf("error = %+v, want code formal_node and a message", body)
+	}
+	if _, err := env.App.LatestCredential(dev.internalID); !errors.Is(err, db.ErrCredentialNotFound) {
+		t.Fatalf("a refused issuance left a credential row: %v", err)
+	}
+}
+
+// TestDeviceDetailExposesCredentialTimesOnly pins the console contract: it may
+// see when the newest credential was issued and when it expires, never the
+// secret itself.
+func TestDeviceDetailExposesCredentialTimesOnly(t *testing.T) {
+	env := testenv.New(t, testenv.WithCredentialCLI())
+	dev := registerDevice(t, env, "laptop", testTOML)
+	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/credential", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("issue credential = %d: %s", res.StatusCode, data)
+	}
+	var issued struct {
+		Secret string `json:"credential"`
+		ID     string `json:"credential_id"`
+	}
+	if err := json.Unmarshal(data, &issued); err != nil {
+		t.Fatalf("decode issued credential: %v", err)
+	}
+	res, data = env.Do("GET", "/api/admin/devices/"+dev.internalID, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("get device = %d: %s", res.StatusCode, data)
+	}
+	if strings.Contains(string(data), issued.Secret) || strings.Contains(string(data), issued.ID) {
+		t.Fatal("device detail leaked the credential secret or its id")
+	}
+	var detail deviceDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		t.Fatalf("decode device: %v", err)
+	}
+	if detail.Credential == nil || detail.Credential.IssuedAt == 0 || detail.Credential.ExpiresAt <= detail.Credential.IssuedAt {
+		t.Fatalf("credential view = %+v, want issued_at and expires_at", detail.Credential)
 	}
 }

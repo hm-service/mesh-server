@@ -199,124 +199,122 @@ async function clearPlatform(platform: string) {
 <template>
   <section class="page">
     <div class="page-head">
-      <h1>客户端更新</h1>
-      <span class="desc">启动器与客户端包各自发布，客户端用自己上报的 platform 取对应工件</span>
+      <div>
+        <h1 class="page-title">客户端更新</h1>
+        <p class="page-sub">启动器与客户端包各自发布；客户端按自己上报的 platform 取对应工件。</p>
+      </div>
     </div>
-    <div class="grid">
-      <div v-for="platform in platforms" :key="platform" class="panel">
-        <div class="panel-head">
-          <h2>{{ platform }}</h2>
+
+    <div class="updates-grid">
+      <section v-for="platform in platforms" :key="platform" class="panel">
+        <div class="platform-head">
+          <span class="platform-name">{{ platform }}</span>
+          <span class="panel-sub">{{ releaseOf(platform) ? "已发布" : "尚未发布" }}</span>
         </div>
-        <div class="panel-body">
-          <section class="slot">
-            <div class="slot-head">
-              <h3>启动器</h3>
-              <span class="desc state" :title="launcherLine(platform)">{{ launcherLine(platform) }}</span>
-            </div>
-            <div class="row2">
-              <div class="field">
-                <label :for="platform + '-launcher-version'">版本号</label>
-                <input
-                  :id="platform + '-launcher-version'"
-                  v-model="drafts[platform]!.launcher.version"
-                  type="text"
-                  maxlength="64"
-                  placeholder="2026.11.25-36"
-                  autocomplete="off"
-                />
-              </div>
-              <div class="field">
-                <label :for="platform + '-launcher-url'">下载地址</label>
-                <input
-                  :id="platform + '-launcher-url'"
-                  v-model="drafts[platform]!.launcher.url"
-                  type="text"
-                  placeholder="https://…/mesh.exe"
-                  autocomplete="off"
-                />
-              </div>
-            </div>
-            <div v-if="drafts[platform]!.launcher.hint" class="hint">{{ drafts[platform]!.launcher.hint }}</div>
-            <div v-if="drafts[platform]!.launcher.error" class="err">{{ drafts[platform]!.launcher.error }}</div>
-            <div class="actions">
-              <button class="primary" type="button" :disabled="drafts[platform]!.launcher.busy" @click="saveLauncher(platform)">
-                {{ drafts[platform]!.launcher.busy ? "解析中…" : "保存" }}
-              </button>
-              <button
-                v-if="releaseOf(platform)?.launcher_version"
-                class="danger"
-                type="button"
-                :disabled="drafts[platform]!.launcher.busy"
-                @click="clearLauncher(platform)"
-              >
-                清除启动器
-              </button>
-            </div>
-          </section>
-          <section class="slot">
-            <div class="slot-head">
-              <h3>客户端包</h3>
-              <span class="desc state" :title="clientLine(platform)">{{ clientLine(platform) }}</span>
-            </div>
-            <div class="row2">
-              <div class="field">
-                <label :for="platform + '-version'">版本号</label>
-                <input
-                  :id="platform + '-version'"
-                  v-model="drafts[platform]!.client.version"
-                  type="text"
-                  maxlength="64"
-                  placeholder="2026.11.25-12"
-                  autocomplete="off"
-                />
-              </div>
-              <div class="field">
-                <label :for="platform + '-url'">下载地址</label>
-                <input
-                  :id="platform + '-url'"
-                  v-model="drafts[platform]!.client.url"
-                  type="text"
-                  placeholder="https://…/mesh-client.tar.zst"
-                  autocomplete="off"
-                />
-              </div>
+
+        <div class="slot">
+          <div class="slot-head">
+            <span class="slot-title">启动器</span>
+            <span class="slot-state" :title="launcherLine(platform)">{{ launcherLine(platform) }}</span>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label :for="platform + '-launcher-version'">版本号</label>
+              <input
+                :id="platform + '-launcher-version'"
+                v-model="drafts[platform]!.launcher.version"
+                type="text"
+                maxlength="64"
+                placeholder="2026.11.25-36"
+                autocomplete="off"
+              />
             </div>
             <div class="field">
-              <label :for="platform + '-notes'">说明（可选，随更新下发给客户端）</label>
-              <textarea :id="platform + '-notes'" v-model="drafts[platform]!.client.notes" class="notes" maxlength="2000" spellcheck="false" />
+              <label :for="platform + '-launcher-url'">下载地址</label>
+              <input
+                :id="platform + '-launcher-url'"
+                v-model="drafts[platform]!.launcher.url"
+                type="text"
+                placeholder="https://…/mesh.exe"
+                autocomplete="off"
+              />
             </div>
-            <div v-if="drafts[platform]!.client.hint" class="hint">{{ drafts[platform]!.client.hint }}</div>
-            <div v-if="drafts[platform]!.client.error" class="err">{{ drafts[platform]!.client.error }}</div>
-            <div class="actions">
-              <button class="primary" type="button" :disabled="drafts[platform]!.client.busy" @click="saveClient(platform)">
-                {{ drafts[platform]!.client.busy ? "解析中…" : "保存" }}
-              </button>
-              <button
-                v-if="releaseOf(platform)"
-                class="danger"
-                type="button"
-                title="同时清除该平台的启动器槽位"
-                :disabled="drafts[platform]!.client.busy"
-                @click="clearPlatform(platform)"
-              >
-                清除该平台
-              </button>
-            </div>
-          </section>
+          </div>
+          <div v-if="drafts[platform]!.launcher.hint" class="hint">{{ drafts[platform]!.launcher.hint }}</div>
+          <div v-if="drafts[platform]!.launcher.error" class="err">{{ drafts[platform]!.launcher.error }}</div>
+          <div class="actions">
+            <button class="primary" type="button" :disabled="drafts[platform]!.launcher.busy" @click="saveLauncher(platform)">
+              {{ drafts[platform]!.launcher.busy ? "解析中…" : "保存" }}
+            </button>
+            <button
+              v-if="releaseOf(platform)?.launcher_version"
+              class="danger"
+              type="button"
+              :disabled="drafts[platform]!.launcher.busy"
+              @click="clearLauncher(platform)"
+            >
+              清除启动器
+            </button>
+          </div>
         </div>
-      </div>
+
+        <div class="slot">
+          <div class="slot-head">
+            <span class="slot-title">客户端包</span>
+            <span class="slot-state" :title="clientLine(platform)">{{ clientLine(platform) }}</span>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label :for="platform + '-version'">版本号</label>
+              <input
+                :id="platform + '-version'"
+                v-model="drafts[platform]!.client.version"
+                type="text"
+                maxlength="64"
+                placeholder="2026.11.25-12"
+                autocomplete="off"
+              />
+            </div>
+            <div class="field">
+              <label :for="platform + '-url'">下载地址</label>
+              <input
+                :id="platform + '-url'"
+                v-model="drafts[platform]!.client.url"
+                type="text"
+                placeholder="https://…/mesh-client.tar.zst"
+                autocomplete="off"
+              />
+            </div>
+            <div class="field full">
+              <label :for="platform + '-notes'">说明（可选，随更新下发给客户端）</label>
+              <textarea
+                :id="platform + '-notes'"
+                v-model="drafts[platform]!.client.notes"
+                rows="2"
+                maxlength="2000"
+                spellcheck="false"
+              />
+            </div>
+          </div>
+          <div v-if="drafts[platform]!.client.hint" class="hint">{{ drafts[platform]!.client.hint }}</div>
+          <div v-if="drafts[platform]!.client.error" class="err">{{ drafts[platform]!.client.error }}</div>
+          <div class="actions">
+            <button class="primary" type="button" :disabled="drafts[platform]!.client.busy" @click="saveClient(platform)">
+              {{ drafts[platform]!.client.busy ? "解析中…" : "保存" }}
+            </button>
+            <button
+              v-if="releaseOf(platform)"
+              class="danger"
+              type="button"
+              title="同时清除该平台的启动器槽位"
+              :disabled="drafts[platform]!.client.busy"
+              @click="clearPlatform(platform)"
+            >
+              清除该平台
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   </section>
 </template>
-
-<style scoped>
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;align-items:start}
-.state{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
-.field{margin-top:12px}
-.row2 .field{margin-top:0}
-.slot + .slot{border-top:1px solid var(--hair);margin-top:16px;padding-top:14px}
-.slot-head{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
-.slot-head h3{font-size:12.5px;font-weight:600;margin:0;color:var(--ink);flex:none}
-.slot-head .state{flex:1;min-width:0}
-@media (max-width:760px){.grid{grid-template-columns:minmax(0,1fr)}}
-</style>

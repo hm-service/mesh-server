@@ -243,3 +243,40 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"token": token})
 }
+
+// handleIssueCredential 给设备签发一张凭据，私钥只在这一个响应里出现。
+func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	secret, err := s.app.IssueCredential(r.Context(), id)
+	switch {
+	case errors.Is(err, app.ErrNotFound):
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
+		return
+	case err != nil:
+		s.logger.Error("issue credential", "id", id, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	cred, err := s.app.LatestCredential(id)
+	if err != nil {
+		s.logger.Error("load issued credential", "id", id, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"credential":    secret,
+		"credential_id": cred.CredentialID,
+		"expires_at":    cred.ExpiresAt,
+	})
+}
+
+// handleRevokeCredential 撤销设备的凭据，全网几秒内断开用它接入的节点。
+func (s *Server) handleRevokeCredential(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.app.RevokeCredential(r.Context(), id); err != nil {
+		s.logger.Error("revoke credential", "id", id, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

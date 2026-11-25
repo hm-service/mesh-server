@@ -142,6 +142,8 @@ func (s *Server) Handler() http.Handler {
 	s.route(mux, "PUT", "/api/devices/{id}", s.admin(s.handleUpdateDevice))
 	s.route(mux, "DELETE", "/api/devices/{id}", s.admin(s.handleDeleteDevice))
 	s.route(mux, "POST", "/api/devices/{id}/token", s.admin(s.handleIssueToken))
+	s.route(mux, "POST", "/api/devices/{id}/credential", s.admin(s.handleIssueCredential))
+	s.route(mux, "DELETE", "/api/devices/{id}/credential", s.admin(s.handleRevokeCredential))
 	s.route(mux, "PUT", "/api/devices/{id}/group", s.admin(s.handleSetDeviceGroup))
 	s.route(mux, "PUT", "/api/layout", s.admin(s.handleDeviceLayout))
 	// Device groups and the layout the console saves after a drag.

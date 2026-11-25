@@ -40,7 +40,30 @@ COPY --from=frontend /build/frontend/dist ./frontend/dist
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -trimpath -o mesh-server .
 
 # ==========================================
-# 第三阶段：运行
+# 第三阶段：取 easytier-cli
+# ==========================================
+# 控制面靠它调种子的 management RPC（签发与撤销凭据）。它必须和种子上
+# easytier-core 的次版本一致，升级 core 时同步改 EASYTIER_VERSION。
+# release 的资产名用 x86_64/aarch64，和 Docker 的 TARGETARCH 不同名，这里映射一次。
+FROM alpine:3 AS easytier
+
+ARG TARGETARCH
+ARG EASYTIER_VERSION=v2.7.1
+
+RUN set -eux; \
+    case "$TARGETARCH" in \
+        amd64) arch=x86_64 ;; \
+        arm64) arch=aarch64 ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    apk --no-cache add curl unzip; \
+    curl -fsSL -o /tmp/et.zip "https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-${arch}-${EASYTIER_VERSION}.zip"; \
+    unzip -j /tmp/et.zip "easytier-linux-${arch}/easytier-cli" -d /out; \
+    chmod 0755 /out/easytier-cli; \
+    rm -f /tmp/et.zip
+
+# ==========================================
+# 第四阶段：运行
 # ==========================================
 FROM alpine:3
 
@@ -50,10 +73,11 @@ RUN apk --no-cache add ca-certificates curl tzdata
 
 WORKDIR /app
 
-# 运行时只有这一个二进制：前端产物已经 go:embed 进去，frontend/ 整个不进最终镜像
+# 前端产物已经 go:embed 进去，frontend/ 整个不进最终镜像
 COPY --from=builder /build/mesh-server .
+COPY --from=easytier /out/easytier-cli /usr/local/bin/easytier-cli
 
 VOLUME ["/data"]
-EXPOSE 8088
+EXPOSE 8080
 
 CMD ["./mesh-server"]

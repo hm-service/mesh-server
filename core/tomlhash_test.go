@@ -5,36 +5,13 @@ import (
 	"testing"
 )
 
-func TestNormalize(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{name: "plain", in: "a = 1", want: "a = 1\n"},
-		{name: "bom", in: "\ufeffa = 1\n", want: "a = 1\n"},
-		{name: "crlf", in: "a = 1\r\nb = 2\r\n", want: "a = 1\nb = 2\n"},
-		{name: "cr", in: "a = 1\rb = 2", want: "a = 1\nb = 2\n"},
-		{name: "trailing spaces", in: "a = 1   \n", want: "a = 1\n"},
-		{name: "trailing tab", in: "a = 1\t\n", want: "a = 1\n"},
-		{name: "trailing blank lines", in: "a = 1\n\n\n", want: "a = 1\n"},
-		{name: "inner blank line kept", in: "a = 1\n\nb = 2\n", want: "a = 1\n\nb = 2\n"},
-		{name: "empty", in: "", want: "\n"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := Normalize(tc.in); got != tc.want {
-				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestHashIgnoresFormattingDifferences(t *testing.T) {
-	formatted := "\ufeffhostname = \"auto\"  \r\n\r\n"
+// TestHashCoversExactBytes pins that the digest follows the stored text byte
+// for byte: clients compute it from their local config.toml, so normalizing
+// here would make the two values disagree.
+func TestHashCoversExactBytes(t *testing.T) {
 	plain := "hostname = \"auto\"\n"
-	if Hash(formatted) != Hash(plain) {
-		t.Fatalf("Hash() differs for equivalent input: %s vs %s", Hash(formatted), Hash(plain))
+	if Hash(plain) == Hash("hostname = \"auto\"\r\n") {
+		t.Fatal("Hash() ignored a line-ending change")
 	}
 	if Hash(plain) == Hash("hostname = \"other\"\n") {
 		t.Fatal("Hash() ignored a content change")

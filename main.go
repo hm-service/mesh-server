@@ -83,7 +83,12 @@ func run() int {
 	logger := newLogger(io.MultiWriter(os.Stdout, logFile), loc)
 	slog.SetDefault(logger)
 
-	application, err := app.Open(dataDir, app.Options{Now: time.Now, FetchAllow: conf.fetchAllow})
+	application, err := app.Open(dataDir, app.Options{
+		Now:           time.Now,
+		FetchAllow:    conf.fetchAllow,
+		CredentialCLI: conf.credentialCLI,
+		CredentialRPC: conf.credentialRPC,
+	})
 	if err != nil {
 		logger.Error("startup failed", "error", err)
 		_ = logFile.Close()
@@ -188,6 +193,10 @@ type environment struct {
 	maxAuth        int
 	maxAPI         int
 	maxStatic      int
+	// credentialCLI/credentialRPC 指向 easytier-cli 与种子的 management RPC；
+	// CLI 为空表示这台控制面不签发凭据。
+	credentialCLI string
+	credentialRPC string
 }
 
 func readEnvironment() (environment, error) {
@@ -216,6 +225,12 @@ func readEnvironment() (environment, error) {
 	fetchAllow, err := httpx.ParsePrefixes(os.Getenv("RELEASE_FETCH_ALLOW"))
 	if err != nil {
 		return environment{}, err
+	}
+	// 凭据签发通道：CLI 由镜像提供，RPC 地址是宿主上转发到种子回环的入口。
+	credentialCLI := strings.TrimSpace(os.Getenv("ET_CLI"))
+	credentialRPC := strings.TrimSpace(os.Getenv("ET_RPC_ADDR"))
+	if credentialCLI != "" && credentialRPC == "" {
+		return environment{}, fmt.Errorf("ET_RPC_ADDR is required when ET_CLI is set")
 	}
 	readyzToken := os.Getenv("READYZ_TOKEN")
 	// Secrets leave the environment table as soon as they are in memory.
@@ -268,6 +283,8 @@ func readEnvironment() (environment, error) {
 		maxAuth:        maxAuth,
 		maxAPI:         maxAPI,
 		maxStatic:      maxStatic,
+		credentialCLI:  credentialCLI,
+		credentialRPC:  credentialRPC,
 	}, nil
 }
 

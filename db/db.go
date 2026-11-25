@@ -53,6 +53,16 @@ CREATE TABLE IF NOT EXISTS release (
     launcher_url     TEXT    NOT NULL DEFAULT '',
     launcher_sha256  TEXT    NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS credential (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    credential_id    TEXT    NOT NULL UNIQUE,  -- 种子上的标识（uuid4），撤销与续期用
+    device_public_id TEXT    NOT NULL DEFAULT '',
+    expires_at       INTEGER NOT NULL DEFAULT 0,
+    created_at       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS credential_device ON credential (device_public_id);
 `
 
 // DB is the single connection to the SQLite file.

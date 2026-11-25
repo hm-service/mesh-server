@@ -34,6 +34,10 @@ type Options struct {
 	// FetchAllow lists the prefixes the hardened client may reach even though
 	// they are not public, such as an operator-owned file server on the mesh.
 	FetchAllow []netip.Prefix
+	// CredentialCLI 是 easytier-cli 的路径，CredentialRPC 是种子 management RPC
+	// 的地址（经宿主的转发服务）。CLI 为空时不提供签发能力。
+	CredentialCLI string
+	CredentialRPC string
 }
 
 // App owns DATA_DIR: the SQLite database and peer.default.toml.
@@ -45,6 +49,8 @@ type App struct {
 	fetch     *http.Client
 	revokedMu sync.Mutex
 	revoked   map[string]struct{}
+	// credential 为空表示这台控制面没有配置签发通道。
+	credential *credentialIssuer
 }
 
 // Open prepares DATA_DIR and returns the ready application.
@@ -68,6 +74,12 @@ func Open(dataDir string, opts Options) (*App, error) {
 		now:      opts.Now,
 		fetch:    opts.FetchClient,
 		revoked:  make(map[string]struct{}),
+	}
+	if strings.TrimSpace(opts.CredentialCLI) != "" {
+		a.credential = &credentialIssuer{
+			cliPath: strings.TrimSpace(opts.CredentialCLI),
+			rpcAddr: strings.TrimSpace(opts.CredentialRPC),
+		}
 	}
 	if a.now == nil {
 		a.now = time.Now

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -201,6 +202,11 @@ func (a *App) IssueToken(publicID string) (string, error) {
 // requests are answered with code "revoked" (CONTRACT.md 2.6). The tombstone
 // only lives in memory, exactly as before.
 func (a *App) DeleteDevice(publicID string) (db.Device, error) {
+	// 先撤销凭据再删记录：撤销失败就让删除失败，否则这台设备还能用旧凭据
+	// 一直连到过期，而控制面已经没有它的记录了。
+	if err := a.RevokeCredential(context.Background(), publicID); err != nil {
+		return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
+	}
 	device, err := a.database.Delete(publicID)
 	if err != nil {
 		return db.Device{}, err

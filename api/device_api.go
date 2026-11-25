@@ -49,6 +49,8 @@ type heartbeatRequest struct {
 	Platform   string `json:"platform"`
 	ConfigHash string `json:"configHash"`
 	AppHash    string `json:"appHash"`
+	// CredentialID 是客户端正在用的凭据；不参与签名，也不影响鉴权。
+	CredentialID string `json:"credentialId"`
 }
 
 // deviceAuth verifies a signed request and returns the device. On failure it
@@ -249,6 +251,10 @@ type heartbeatResponse struct {
 	ConfigB64  string        `json:"config_b64,omitempty"`
 	AppUpdate  *updateInfo   `json:"app_update,omitempty"`
 	Launcher   *launcherInfo `json:"launcher,omitempty"`
+	// 凭据私钥只在签发的那一次响应里出现，之后服务端只剩 id。
+	Credential       string `json:"credential,omitempty"`
+	CredentialID     string `json:"credential_id,omitempty"`
+	CredentialExpiry int64  `json:"credential_expiry,omitempty"`
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -282,11 +288,24 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。代价是这种情况没有
 	// 204，三十秒多几十字节。
 	launcher := launcherOf(r, release)
-	if !configChanged && !appChanged && launcher == nil {
+	// 设备上报的 id 与最新签发的一致，说明它已经换上新凭据并重启过 core，
+	// 这时才吊销其余的。早一步吊销会让还没拿到新凭据的设备失联。
+	if req.CredentialID != "" {
+		if err := s.app.ConfirmCredential(r.Context(), device.PublicID, req.CredentialID); err != nil {
+			s.logger.Error("confirm credential", "id", device.PublicID, "error", err)
+		}
+	}
+	secret, credID, credExpiry := s.issueCredentialIfNeeded(r, device.PublicID, req.CredentialID)
+	if !configChanged && !appChanged && launcher == nil && secret == "" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	resp := heartbeatResponse{Launcher: launcher}
+	resp := heartbeatResponse{
+		Launcher:         launcher,
+		Credential:       secret,
+		CredentialID:     credID,
+		CredentialExpiry: credExpiry,
+	}
 	if configChanged {
 		resp.ConfigHash = device.ConfigHash
 		resp.ConfigB64 = base64.StdEncoding.EncodeToString([]byte(device.ConfigTOML))
@@ -300,4 +319,40 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
+}
+
+// issueCredentialIfNeeded 判断这台设备要不要一张新凭据，要就当场签发。
+// 触发条件：没有记录、上报的 id 与最新签发的不一致（设备没收到或重装了）、
+// 或者最新的那张快到期。私钥只在这里产生，服务端不留。
+func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID string) (string, string, int64) {
+	if !s.app.CredentialConfigured() {
+		return "", "", 0
+	}
+	latest, err := s.app.LatestCredential(publicID)
+	need := false
+	switch {
+	case errors.Is(err, db.ErrCredentialNotFound):
+		need = true
+	case err != nil:
+		s.logger.Error("load credential", "id", publicID, "error", err)
+		return "", "", 0
+	case latest.CredentialID != reportedID:
+		need = true
+	case latest.ExpiresAt-s.app.Now().Unix() < int64(app.CredentialRenewBefore.Seconds()):
+		need = true
+	}
+	if !need {
+		return "", "", 0
+	}
+	secret, err := s.app.IssueCredential(r.Context(), publicID)
+	if err != nil {
+		s.logger.Error("issue credential", "id", publicID, "error", err)
+		return "", "", 0
+	}
+	issued, err := s.app.LatestCredential(publicID)
+	if err != nil {
+		s.logger.Error("reload credential", "id", publicID, "error", err)
+		return "", "", 0
+	}
+	return secret, issued.CredentialID, issued.ExpiresAt
 }

@@ -248,6 +248,8 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleIssueCredential 给设备签发一张凭据，私钥只在这一个响应里出现。
+// 这张凭据不会立刻到设备上：设备下一次心跳仍报着旧 id，等冷却窗口过后才会
+// 由心跳补签一张新的下发（报 none 时则直接拿到）。
 func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	issued, err := s.app.IssueCredential(r.Context(), id)

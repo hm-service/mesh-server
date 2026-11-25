@@ -207,6 +207,102 @@ func TestNoneCooldown(t *testing.T) {
 	}
 }
 
+// TestAdminIssuedCredentialReachesDevice pins the reason the "old id outside the
+// cooldown" branch exists: a credential signed through the admin route only ever
+// reaches the admin, so the device gets a fresh one from a later heartbeat.
+func TestAdminIssuedCredentialReachesDevice(t *testing.T) {
+	env := testenv.New(t, testenv.WithCredentialCLI())
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+
+	res, data := credentialHeartbeat(t, env, dev, &nonces, "none")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("first heartbeat = %d, want 200: %s", res.StatusCode, data)
+	}
+	first := decodeHeartbeat(t, data)
+	if first.CredentialID == "" {
+		t.Fatalf("first heartbeat = %+v, want a credential", first)
+	}
+
+	// 管理端在设备之外签一张：私钥只回给管理端，设备手里还是 first。
+	res, data = env.Do("POST", "/api/devices/"+dev.internalID+"/credential", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("admin issue credential = %d, want 200: %s", res.StatusCode, data)
+	}
+	var admin struct {
+		ID string `json:"credential_id"`
+	}
+	if err := json.Unmarshal(data, &admin); err != nil {
+		t.Fatalf("decode admin credential: %v", err)
+	}
+	if admin.ID == "" || admin.ID == first.CredentialID {
+		t.Fatalf("admin credential = %+v, want a new id", admin)
+	}
+
+	// 冷却内：设备还报旧的那张，不签（它多半正在重启 core，等它收敛）。
+	if res, data := credentialHeartbeat(t, env, dev, &nonces, first.CredentialID); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat inside the cooldown = %d (%s), want 204", res.StatusCode, data)
+	}
+
+	// 冷却外：设备依旧报旧的那张，补签一张并随响应下发。
+	env.Clock.Advance(app.CredentialNoneCooldown + time.Second)
+	res, data = credentialHeartbeat(t, env, dev, &nonces, first.CredentialID)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("heartbeat after the cooldown = %d, want 200: %s", res.StatusCode, data)
+	}
+	next := decodeHeartbeat(t, data)
+	if next.CredentialID == "" || next.CredentialID == first.CredentialID {
+		t.Fatalf("after the cooldown = %+v, want a new credential", next)
+	}
+	if owner := fakecli.Owner(next.Credential); owner != next.CredentialID {
+		t.Fatalf("secret was generated for %q, answer carries %q", owner, next.CredentialID)
+	}
+	if got, err := env.App.LatestCredential(dev.internalID); err != nil || got.CredentialID != next.CredentialID {
+		t.Fatalf("stored newest = %+v, %v", got, err)
+	}
+}
+
+// TestRenewalIsNotRepeated pins the renewal path after the old-id branch was
+// added: the credential issued for renewal is not signed again while the device
+// still reports the previous one inside the cooldown.
+func TestRenewalIsNotRepeated(t *testing.T) {
+	env := testenv.New(t, testenv.WithCredentialCLI())
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+
+	res, data := credentialHeartbeat(t, env, dev, &nonces, "none")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("first heartbeat = %d, want 200: %s", res.StatusCode, data)
+	}
+	first := decodeHeartbeat(t, data)
+	if first.CredentialID == "" {
+		t.Fatalf("first heartbeat = %+v, want a credential", first)
+	}
+
+	// 进入续期窗口：报着 latest 签下一张。
+	env.Clock.Advance(app.CredentialTTL - app.CredentialRenewBefore + time.Hour)
+	res, data = credentialHeartbeat(t, env, dev, &nonces, first.CredentialID)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("renewal heartbeat = %d, want 200: %s", res.StatusCode, data)
+	}
+	second := decodeHeartbeat(t, data)
+	if second.CredentialID == "" || second.CredentialID == first.CredentialID {
+		t.Fatalf("renewal answer = %+v, want a new credential", second)
+	}
+
+	// 冷却内设备还报旧的那张（core 还在重启）：不签。
+	if res, data := credentialHeartbeat(t, env, dev, &nonces, first.CredentialID); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat reporting the old id inside the cooldown = %d (%s), want 204", res.StatusCode, data)
+	}
+	// core 重启完，报上刚续期的那张：离下次续期还远，也不签。
+	if res, data := credentialHeartbeat(t, env, dev, &nonces, second.CredentialID); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat reporting the renewed credential = %d (%s), want 204", res.StatusCode, data)
+	}
+	if got, err := env.App.LatestCredential(dev.internalID); err != nil || got.CredentialID != second.CredentialID {
+		t.Fatalf("stored newest = %+v, %v", got, err)
+	}
+}
+
 // TestConcurrentIssuanceKeepsCredentialPairs pins F2: every answer that did issue
 // a credential must pair the secret with its own id. How many of the concurrent
 // heartbeats issue is up to scheduling: the first one to land creates a row whose

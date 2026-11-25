@@ -327,10 +327,15 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 // 这次签发自己的 id 与到期时间回答（不能回头再查一次库：并发心跳时那会把
 // 一张凭据的私钥配到另一张的 id 上）。
 //
-// 上报的 credentialId 是设备 core 里正在用的那张。与最新签发的一致说明切换
-// 已经完成，报着旧 id 说明 core 还没重启、等它重启就会报上最新的那张——两种
-// 情况都不补签，只有最新那张进入续期窗口时才签下一张。报 none 时签发，但
-// 同一设备 CredentialNoneCooldown 内只签一次。
+// 上报的 credentialId 是设备 core 里正在用的那张，签发条件按它分档：
+//
+//   - 与最新签发的一致：切换已经完成，只有进入续期窗口才续签。
+//   - 报着旧 id：core 还没重启完，或者管理端刚签发了一张而设备还不知道。
+//     冷却外补一张（管理端那条通道靠这一步落到设备上），冷却内不签。
+//   - none：客户端声明本地没有凭据，冷却外签一张。
+//
+// 冷却复用 CredentialNoneCooldown：报 none 与报旧 id 都可能每轮心跳都命中，
+// 没有它就会一直签。
 func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID string) *app.IssuedCredential {
 	if !s.app.CredentialConfigured() {
 		return nil
@@ -340,22 +345,32 @@ func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID s
 	if reportedID == "" {
 		return nil
 	}
+	now := s.app.Now().Unix()
+	cooldown := int64(app.CredentialNoneCooldown.Seconds())
 	latest, err := s.app.LatestCredential(publicID)
 	switch {
 	case errors.Is(err, db.ErrCredentialNotFound):
-		// 这台设备从来就没有过凭据。
+		// 这台设备从来就没有过凭据：签一张。
 	case err != nil:
 		s.logger.Error("load credential", "id", publicID, "error", err)
 		return nil
 	case reportedID == "none":
-		// 客户端明确声明本地没有凭据：立刻签一张，但同一设备 5 分钟内只签
-		// 一次，冷却只挡并发心跳与一直写不进本地文件的循环。
-		if s.app.Now().Unix()-latest.CreatedAt < int64(app.CredentialNoneCooldown.Seconds()) {
+		// 客户端明确声明本地没有凭据：冷却外签一张。
+		if now-latest.CreatedAt < cooldown {
 			return nil
 		}
-	case latest.ExpiresAt-s.app.Now().Unix() >= int64(app.CredentialRenewBefore.Seconds()):
+	case reportedID == latest.CredentialID:
+		// 设备已经用上最新那张：只在续期窗口内才签下一张。
+		if latest.ExpiresAt-now >= int64(app.CredentialRenewBefore.Seconds()) {
+			return nil
+		}
+	case now-latest.CreatedAt < cooldown:
+		// 设备仍在用旧的那张，而且刚签过：它多半正在重启 core，等它报上
+		// 最新的那张再收敛。
 		return nil
 	}
+	// 走到这里还有一条：报着旧 id 且冷却已过——管理端签发的那张要下发，
+	// 或者客户端卡在旧凭据上。补一张，下一次签发至少要再过一个冷却窗口。
 	issued, err := s.app.IssueCredential(r.Context(), publicID)
 	if err != nil {
 		s.logger.Error("issue credential", "id", publicID, "error", err)

@@ -284,9 +284,8 @@ async function remove() {
           <span class="section-title">配置</span>
           <span :class="configStateClass(device.configState)">{{ configStateText(device.configState) }}</span>
           <span class="spacer" />
-          <button class="ghost" type="button" @click="editing = true">编辑配置文件</button>
+          <button class="ghost" type="button" @click="editing = true">查看与编辑配置</button>
         </div>
-        <pre class="config-preview">{{ device.configToml }}</pre>
       </section>
 
       <div class="danger-zone">

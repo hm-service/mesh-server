@@ -87,7 +87,7 @@ async function save() {
 <template>
   <div class="modal" @click.self="!saving && emit('close')">
     <div class="dialog wide" role="dialog" aria-modal="true">
-      <h2 class="dialog-title">编辑配置文件</h2>
+      <h2 class="dialog-title">查看与编辑配置</h2>
       <div class="dialog-sub">{{ device.name }} · {{ device.deviceId || "未注册" }}</div>
       <div class="dialog-body">
         <label class="field-label" for="cfg-name">设备名称</label>

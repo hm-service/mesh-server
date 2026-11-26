@@ -43,6 +43,9 @@
 * { box-sizing: border-box; }
 
 html, body { height: 100%; }
+/* 滚动条常驻：行内展开详情会改变页面高度，滚动条出现/消失会让列表宽度抖动。
+   根元素上的 scrollbar-gutter 在 Chrome 里对 viewport 不生效，直接让滚动条一直存在。 */
+html { overflow-y: scroll; }
 
 body {
   margin: 0;
@@ -399,20 +402,9 @@ textarea {
   border-radius: var(--r2);
 }
 .section-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 10px; }
+/* 只剩标题行的 section（如「配置」）不留尾部空档 */
+.section-head:only-child { margin-bottom: 0; }
 .section-title { font-size: var(--fs-sm); font-weight: 600; color: var(--ink); }
-.config-preview {
-  margin: 0;
-  max-height: 260px;
-  overflow: auto;
-  padding: 10px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--hair);
-  border-radius: var(--r1);
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  line-height: 1.65;
-  color: var(--ink-2);
-}
 .toml-editor { height: 320px; }
 .field { display: flex; flex-direction: column; }
 .field.full { grid-column: 1 / -1; }

@@ -157,7 +157,8 @@ onBeforeUnmount(() => {
   <LoginView v-if="!authed" :error="loginError" :busy="loginBusy" @submit="login" />
 
   <template v-else>
-    <header class="app-header">
+    <div class="frame">
+      <header class="app-header">
       <div class="brand">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round">
           <path d="M12 4.4 19.3 17.9H4.7z" />
@@ -171,10 +172,10 @@ onBeforeUnmount(() => {
       <div class="spacer" />
       <span class="who">admin</span>
       <button type="button" @click="logout">退出</button>
-    </header>
+      </header>
 
-    <div class="shell">
-      <aside class="side">
+      <div class="shell">
+        <aside class="side">
         <button class="nav" :class="{ on: page === 'devices' }" type="button" @click="page = 'devices'">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
             <rect x="2.2" y="2.2" width="5" height="5" rx="1.2" />
@@ -227,7 +228,8 @@ onBeforeUnmount(() => {
           @toast="showToast"
           @unauthorized="handleUnauthorized"
         />
-      </main>
+        </main>
+      </div>
     </div>
 
     <NewDeviceDialog

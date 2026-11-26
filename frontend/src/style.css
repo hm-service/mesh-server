@@ -42,10 +42,8 @@
 
 * { box-sizing: border-box; }
 
-html, body { height: 100%; }
-/* 滚动条常驻：行内展开详情会改变页面高度，滚动条出现/消失会让列表宽度抖动。
-   根元素上的 scrollbar-gutter 在 Chrome 里对 viewport 不生效，直接让滚动条一直存在。 */
-html { overflow-y: scroll; }
+/* 整页不滚：滚动交给 header 下方的内容区，滚动条才不会顶到标题栏上。 */
+html, body { height: 100%; overflow: hidden; }
 
 body {
   margin: 0;
@@ -68,10 +66,14 @@ code {
 }
 
 /* ---------- 框架 ---------- */
+/* 别叫 .app：设备行里已经有一个 .cell.app，重名会把那一格撑成整行高。 */
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
 .app-header {
-  position: sticky;
-  top: 0;
-  z-index: 30;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--s2);
@@ -94,15 +96,15 @@ code {
 .who { color: var(--muted); font-size: var(--fs-sm); }
 
 .shell {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   grid-template-columns: 196px minmax(0, 1fr);
-  align-items: start;
+  overflow: hidden;
 }
 .side {
-  position: sticky;
-  top: 54px;
-  align-self: start;
-  min-height: calc(100vh - 54px);
+  height: 100%;
+  overflow-y: auto;
   padding: var(--s3) var(--s2);
   background: var(--surface);
   border-right: 1px solid var(--line);
@@ -137,7 +139,14 @@ code {
 }
 .nav.on .count { color: var(--accent); }
 
-.content { min-width: 0; padding: var(--s5) var(--s5) var(--s6); }
+/* 唯一的滚动容器：宽度铺满右列，滚动条贴窗口右边；槽位常驻，内容长短变化时列表宽度不抖。 */
+.content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: var(--s5) var(--s5) var(--s6);
+}
 .page { max-width: 1320px; margin: 0 auto; }
 .page-head {
   display: flex;

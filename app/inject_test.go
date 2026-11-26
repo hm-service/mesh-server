@@ -13,7 +13,7 @@ func TestAllocateIPv4(t *testing.T) {
 		want string
 		err  error
 	}{
-		{name: "no devices", used: nil, err: ErrNoAddressPool},
+		{name: "empty console starts at the first address", used: nil, want: "10.126.126.1"},
 		{
 			name: "picks the gap right after the lowest address",
 			used: []string{"10.126.126.1/24", "10.126.126.2/24", "10.126.126.3/24", "10.126.126.100/24", "10.126.126.202/24"},
@@ -119,10 +119,14 @@ func TestCreateDeviceInjectsAddress(t *testing.T) {
 	}
 }
 
-func TestCreateDeviceNeedsAReferenceAddress(t *testing.T) {
+func TestCreateDeviceOnEmptyConsole(t *testing.T) {
 	a := openTemp(t)
-	if _, _, err := a.CreateDevice("laptop", "ipv4 = \"{{ IP }}/24\"\n"); !errors.Is(err, ErrNoAddressPool) {
-		t.Fatalf("CreateDevice() on an empty console = %v, want ErrNoAddressPool", err)
+	device, _, err := a.CreateDevice("laptop", "ipv4 = \"{{ IP }}/24\"\n")
+	if err != nil {
+		t.Fatalf("CreateDevice() on an empty console error = %v", err)
+	}
+	if got := ConfigFactsOf(device.ConfigTOML).IPv4; got != "10.126.126.1/24" {
+		t.Fatalf("first device ipv4 = %q, want 10.126.126.1/24", got)
 	}
 }
 

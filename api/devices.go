@@ -185,10 +185,6 @@ func writeTemplateError(w http.ResponseWriter, err error) bool {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request",
 			"配置模板里有不认识的占位，目前只支持 "+app.TemplateIP)
 		return true
-	case errors.Is(err, app.ErrNoAddressPool):
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request",
-			"还没有设备写过固定地址，推不出要分配哪个网段：先手工建一台带 ipv4 的设备")
-		return true
 	case errors.Is(err, app.ErrAddressExhausted):
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request",
 			"参考网段里已经没有空闲地址了")

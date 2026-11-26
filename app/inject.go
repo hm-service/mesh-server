@@ -14,11 +14,14 @@ import (
 // 那多半是写错了名字，静默保留会让一台设备拿到别名字段的字面量。
 const TemplateIP = "{{ IP }}"
 
+// DefaultAddressPool 是控制面里还没有任何设备写过固定地址时用的参考网段：
+// 从它里面第一个可用的地址（.1）开始分配。有了第一台设备之后，网段一律按
+// 已有地址里最小那台推断，这个常量就不再参与。
+const DefaultAddressPool = "10.126.126.0/24"
+
 var (
 	// ErrUnknownPlaceholder 表示模板里有不认识的 {{ ... }} 占位。
 	ErrUnknownPlaceholder = errors.New("unknown template placeholder")
-	// ErrNoAddressPool 表示没有任何已有设备地址，推不出该从哪个网段分配。
-	ErrNoAddressPool = errors.New("no existing device address to derive the subnet from")
 	// ErrAddressExhausted 表示参考子网已经没有空闲地址。
 	ErrAddressExhausted = errors.New("no free address left in the subnet")
 )
@@ -105,7 +108,8 @@ func AllocateIPv4(used []string) (string, error) {
 		}
 	}
 	if !lowest.IsValid() {
-		return "", ErrNoAddressPool
+		// 一台设备都没写过地址：按默认网段从头开始。
+		lowest = netip.MustParsePrefix(DefaultAddressPool).Masked().Addr()
 	}
 	prefix := netip.PrefixFrom(lowest, 24).Masked()
 	broadcast := lastAddrOf(prefix)

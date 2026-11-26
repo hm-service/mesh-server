@@ -44,6 +44,9 @@
 
 /* 整页不滚：滚动交给 header 下方的内容区，滚动条才不会顶到标题栏上。 */
 html, body { height: 100%; overflow: hidden; }
+/* #app 必须接上这条高度链，否则 .frame 的 height:100% 相对的是 auto 高度，
+   内容不满一屏时侧栏与表格就停在内容末尾，底下露出一条页面底色。 */
+#app { height: 100%; }
 
 body {
   margin: 0;

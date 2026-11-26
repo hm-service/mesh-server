@@ -192,13 +192,24 @@ func (a *App) RevokeCredential(ctx context.Context, publicID string) error {
 	if a.credential == nil {
 		return ErrCredentialChannelUnconfigured
 	}
+	ids := make([]string, 0, len(creds))
+	for _, c := range creds {
+		ids = append(ids, c.CredentialID)
+	}
+	return a.revokeAll(ctx, ids)
+}
+
+// revokeAll 撤销一批凭据并删掉记录。凭据张数没有上限，逐张等种子不能让整批
+// 跟着设备走，所以整批共用一个总时限。管理端删除设备与心跳里的确认走同一条
+// 路径：两处各自算时限，口径迟早分叉，而心跳那一处还占着并发闸门的槽位。
+func (a *App) revokeAll(ctx context.Context, ids []string) error {
 	ctx, cancel := context.WithTimeout(ctx, credentialRevokeTimeout)
 	defer cancel()
-	for _, c := range creds {
-		if err := a.credential.revoke(ctx, c.CredentialID); err != nil {
+	for _, id := range ids {
+		if err := a.credential.revoke(ctx, id); err != nil {
 			return err
 		}
-		if err := a.database.DeleteCredential(c.CredentialID); err != nil {
+		if err := a.database.DeleteCredential(id); err != nil {
 			return err
 		}
 	}
@@ -225,15 +236,7 @@ func (a *App) ConfirmCredential(ctx context.Context, publicID, credentialID stri
 	if err != nil {
 		return err
 	}
-	for _, id := range stale {
-		if err := a.credential.revoke(ctx, id); err != nil {
-			return err
-		}
-		if err := a.database.DeleteCredential(id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return a.revokeAll(ctx, stale)
 }
 
 // LatestCredential 返回设备最新签发的那张凭据。

@@ -19,6 +19,10 @@ const (
 	OnlineWindow = 90 * time.Second
 	// MaxNameRunes bounds a device display name.
 	MaxNameRunes = 64
+	// MaxConfigBytes bounds one device configuration. 请求体上限是 1MiB，而设备
+	// 列表要读全部配置来算派生字段：不在这里收口，200 台设备就能让一次列表请求
+	// 同时持有 200MiB。配置只有几 KB，64KiB 已经宽到不必再想。
+	MaxConfigBytes = 64 << 10
 	// tokenPrefix marks registration tokens.
 	tokenPrefix = "etk_"
 )
@@ -135,7 +139,7 @@ func (a *App) CreateDevice(name, configTOML string) (db.Device, string, error) {
 	if name == "" || len([]rune(name)) > MaxNameRunes {
 		return db.Device{}, "", ErrInvalidInput
 	}
-	if isBlank(configTOML) {
+	if isBlank(configTOML) || len(configTOML) > MaxConfigBytes {
 		return db.Device{}, "", ErrInvalidInput
 	}
 	id, err := a.newDeviceID()
@@ -179,7 +183,7 @@ func (a *App) UpdateDevice(publicID, name, configTOML string, autoUpdate AutoUpd
 	if name == "" || len([]rune(name)) > MaxNameRunes {
 		return db.Device{}, ErrInvalidInput
 	}
-	if isBlank(configTOML) {
+	if isBlank(configTOML) || len(configTOML) > MaxConfigBytes {
 		return db.Device{}, ErrInvalidInput
 	}
 	if _, err := a.database.Get(publicID); err != nil {
@@ -213,6 +217,18 @@ func (a *App) IssueToken(publicID string) (string, error) {
 		return "", err
 	}
 	return token, nil
+}
+
+// ConsumeToken clears a registration token that has just been used to prove
+// ownership of an already bound slot. 绑定那一支在 BindDevice 里清，这一支要
+// 单独清：令牌是一次性的，否则它在剩余有效期内还能反复取回配置。
+func (a *App) ConsumeToken(publicID string) error {
+	_, err := a.database.Update(publicID, func(d *db.Device) error {
+		d.Token = ""
+		d.TokenExpiresAt = 0
+		return nil
+	})
+	return err
 }
 
 // DeleteDevice removes the slot and remembers its device_id so later signed

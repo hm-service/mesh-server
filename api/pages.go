@@ -15,28 +15,35 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	s.serveIndex(w, r)
 }
 
-// handleAsset serves the embedded build; an unknown path falls back to the
-// entry document, so the console keeps working without a server-side router.
+// handleAsset serves one file of the embedded build. An unknown path is a 404:
+// 控制台没有客户端路由，回落到入口文档只会在资源换名后把 404 藏成一个 200 的
+// text/html，浏览器按 MIME 拒绝执行，表现为白屏。
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	name := path.Clean(strings.TrimPrefix(r.URL.Path, "/admin/"))
-	if s.static == nil || name == "." || name == ".." || strings.HasPrefix(name, "../") {
+	// index.html 不是指纹文件名：缓存一年会让升级后的浏览器继续用旧入口文档去
+	// 加载已经不存在的旧 asset，所以它和 /admin、/admin/ 共用无缓存的入口。
+	if s.static == nil || name == "." || name == "index.html" {
 		s.serveIndex(w, r)
+		return
+	}
+	if name == ".." || strings.HasPrefix(name, "../") {
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	file, err := s.static.Open(name)
 	if err != nil {
-		s.serveIndex(w, r)
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil || info.IsDir() {
-		s.serveIndex(w, r)
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	seeker, ok := file.(io.ReadSeeker)
 	if !ok {
-		s.serveIndex(w, r)
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeOf(name))

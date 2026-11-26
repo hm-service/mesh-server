@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
+	"mesh-server/api"
+	"mesh-server/app"
 	"mesh-server/internal/testenv"
 )
 
@@ -283,5 +287,157 @@ func TestMethodNotAllowedAndNotFound(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusFound || res.Header.Get("Location") != "/admin" {
 		t.Fatalf("GET / = %d -> %q, want 302 /admin", res.StatusCode, res.Header.Get("Location"))
+	}
+}
+
+// TestBoundSlotAcceptsValidTokenDespiteBrokenSignature pins F1 of the
+// 2026-11-27T05-45-47+0800_a6b688 review. 契约写的是「出示下列任一凭据」，而
+// 三个签名字段只要都在就只走验签：签名一不可用，有效令牌也被拒，调用方拿到
+// 401，无法与「什么都没有」区分。
+func TestBoundSlotAcceptsValidTokenDespiteBrokenSignature(t *testing.T) {
+	env := testenv.New(t)
+	dev := registerDevice(t, env, "laptop", testTOML)
+	pub := publicKeyOf(t, env, dev.internalID)
+
+	// 管理端给已经绑定过的槽位补一张令牌（换机、本地身份丢失时就是这么做的）。
+	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/token", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("issue token = %d: %s", res.StatusCode, data)
+	}
+	var issued struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &issued); err != nil || issued.Token == "" {
+		t.Fatalf("decode token: %v (%s)", err, data)
+	}
+
+	// 十分钟前的签名：超出 300 秒窗口，验签这一支必然不可用。
+	var nonces int64
+	body := signedRegisterBody(t, dev.deviceID, dev.priv, "HOST-laptop", pub,
+		env.Clock.Now().Add(-10*time.Minute).Unix(), newNonce(&nonces))
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["token"] = issued.Token
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, data = env.Do("POST", "/api/v1/register", json.RawMessage(raw))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("token with an unusable signature = %d, want 200: %s", res.StatusCode, data)
+	}
+	var out configResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ConfigHash != dev.configHash {
+		t.Fatalf("register returned %+v, want hash %q", out, dev.configHash)
+	}
+
+	// 令牌是一次性的：用它换到配置之后就作废，否则它在剩余有效期内还能反复
+	// 取回配置（正式节点的配置里有 network_secret）。
+	stored, found, err := env.App.DeviceByID(dev.internalID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID = found %v, %v", found, err)
+	}
+	if stored.Token != "" || stored.TokenExpiresAt != 0 {
+		t.Fatalf("token survived the register: %+v", stored)
+	}
+	if status, _ := register(t, env, issued.Token, dev.deviceID, "HOST-laptop", pub); status != http.StatusUnauthorized {
+		t.Fatalf("consumed token = %d, want 401", status)
+	}
+}
+
+// TestCreateDeviceRejectsAutoUpdate pins F4: 新设备一律跟随发布包，请求里带这个
+// 字段就明说不行，而不是收下 200 再悄悄丢掉。
+func TestCreateDeviceRejectsAutoUpdate(t *testing.T) {
+	env := testenv.New(t)
+	count := func() int {
+		res, data := env.Do("GET", "/api/admin/devices", nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("list devices = %d: %s", res.StatusCode, data)
+		}
+		var list []json.RawMessage
+		if err := json.Unmarshal(data, &list); err != nil {
+			t.Fatal(err)
+		}
+		return len(list)
+	}
+	before := count()
+	for _, value := range []any{true, false, nil} {
+		res, data := env.Do("POST", "/api/admin/devices", map[string]any{
+			"name": "unused", "configToml": testTOML, "autoUpdate": value,
+		})
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_argument") {
+			t.Fatalf("create with autoUpdate=%v = %d, want 400 invalid_argument: %s", value, res.StatusCode, data)
+		}
+	}
+	if after := count(); after != before {
+		t.Fatalf("a rejected create still added a device: %d -> %d", before, after)
+	}
+}
+
+// TestDeviceConfigHasItsOwnLimit pins F9: 1MiB 请求体是唯一限制，而设备列表要把
+// 全部配置读进内存来算派生字段，所以约束得落在写入端。
+func TestDeviceConfigHasItsOwnLimit(t *testing.T) {
+	env := testenv.New(t)
+	over := strings.Repeat("a", app.MaxConfigBytes+1)
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "big", "configToml": over})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create with an oversized config = %d, want 400: %s", res.StatusCode, data)
+	}
+
+	// 上限之内照收。
+	atLimit := strings.Repeat("a", app.MaxConfigBytes)
+	res, data = env.Do("POST", "/api/admin/devices", map[string]string{"name": "big", "configToml": atLimit})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("create at the limit = %d, want 200: %s", res.StatusCode, data)
+	}
+
+	dev := registerDevice(t, env, "laptop", testTOML)
+	res, data = env.Do("PUT", "/api/admin/devices/"+dev.internalID, map[string]string{"name": "laptop", "configToml": over})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("update with an oversized config = %d, want 400: %s", res.StatusCode, data)
+	}
+}
+
+// TestConsoleEntryIsNotCachedAndMissingAssetsAreNotFound pins F5: index.html 不是
+// 指纹文件名，标一年不可变会让升级后仍用旧入口文档；缺失资源回落到入口文档
+// 只会把 404 变成一个浏览器拒绝执行的 200 text/html。
+func TestConsoleEntryIsNotCachedAndMissingAssetsAreNotFound(t *testing.T) {
+	env := testenv.New(t)
+	build := fstest.MapFS{
+		"index.html":      {Data: []byte("<!doctype html>")},
+		"assets/app-1.js": {Data: []byte("// app")},
+	}
+	server := httptest.NewServer(api.New(api.Options{App: env.App, Static: build}).Handler())
+	defer server.Close()
+
+	cases := []struct {
+		path   string
+		status int
+		cache  string
+	}{
+		{"/admin", http.StatusOK, "no-store"},
+		{"/admin/", http.StatusOK, "no-store"},
+		{"/admin/index.html", http.StatusOK, "no-store"},
+		{"/admin/assets/app-1.js", http.StatusOK, "public, max-age=31536000, immutable"},
+		{"/admin/assets/missing-2.js", http.StatusNotFound, ""},
+	}
+	for _, tc := range cases {
+		res, err := http.Get(server.URL + tc.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", tc.path, err)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		if res.StatusCode != tc.status {
+			t.Fatalf("GET %s = %d, want %d", tc.path, res.StatusCode, tc.status)
+		}
+		if got := res.Header.Get("Cache-Control"); got != tc.cache {
+			t.Fatalf("GET %s Cache-Control = %q, want %q", tc.path, got, tc.cache)
+		}
 	}
 }

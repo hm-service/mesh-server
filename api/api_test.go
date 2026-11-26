@@ -298,7 +298,7 @@ func registerDevice(t *testing.T, env *testenv.Env, name, toml string) registere
 }
 
 // tarZst packs entries into the tar.zst the launcher installs. The archive root
-// is the content of bin/, exactly as client/cmd/pack writes it.
+// is the content of bin/, exactly as build/release.ps1 writes it.
 func tarZst(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
 	names := make([]string, 0, len(entries))

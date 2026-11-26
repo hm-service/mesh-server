@@ -15,7 +15,5 @@
 /docs/
 /README.md
 /DESIGN.md
-/AGENTS.md
 /k8s.*.yaml
-/*.kube
 /justfile

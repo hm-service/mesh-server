@@ -138,13 +138,21 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bound {
-		if !s.registerProofValid(existing, req, now) {
+		proved, byToken := s.registerProofValid(existing, req, now)
+		if !proved {
 			httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 			return
 		}
 		if existing.Pubkey != req.Pubkey {
 			httpx.WriteError(w, http.StatusConflict, "device_conflict")
 			return
+		}
+		// 令牌是一次性的：这一支靠它证明了归属就当场清掉，否则它在剩余的有效期
+		// （≤10 分钟）内还能反复取回配置，而正式节点的配置里有 network_secret。
+		if byToken {
+			if err := s.app.ConsumeToken(existing.PublicID); err != nil {
+				s.logger.Error("consume registration token", "id", existing.PublicID, "error", err)
+			}
 		}
 		if err := s.app.Touch(existing.PublicID, s.clientIP(r)); err != nil {
 			s.logger.Error("touch device", "id", existing.PublicID, "error", err)
@@ -180,23 +188,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// registerProofValid reports whether the caller proved it owns the bound slot.
-// A signature with the bound key counts, and so does a registration token that
-// was never used up. Knowing deviceId and pubkey is not enough.
-func (s *Server) registerProofValid(device db.Device, req registerRequest, now time.Time) bool {
+// registerProofValid reports whether the caller proved it owns the bound slot,
+// and whether it did so with a registration token. A signature with the bound
+// key counts, and so does an unused token; knowing deviceId and pubkey is not
+// enough.
+//
+// 签名这一支失败时继续看令牌，而不是直接拒绝：契约要求「出示下列任一凭据」，
+// 而调用方可能同时带着两者（管理端刚补签了令牌，本机又试了一次签名，或这轮的
+// 签名用了旧的 deviceId）。令牌成功时调用方要把它消费掉。
+func (s *Server) registerProofValid(device db.Device, req registerRequest, now time.Time) (proved, byToken bool) {
 	if req.Timestamp != "" && req.Nonce != "" && req.Signature != "" {
-		signedAt, err := core.CheckTimestamp(req.Timestamp, now)
-		if err != nil {
-			return false
+		if signedAt, err := core.CheckTimestamp(req.Timestamp, now); err == nil {
+			// 注册请求没有配置与版本信息，签名里这两行留空。
+			signing := core.SigningString(http.MethodPost, "/api/v1/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
+			if err := core.VerifySignature(device.Pubkey, req.Signature, []byte(signing)); err == nil &&
+				s.nonces.Claim(req.Nonce, now, signedAt) {
+				return true, false
+			}
 		}
-		// 注册请求没有配置与版本信息，签名里这两行留空。
-		signing := core.SigningString(http.MethodPost, "/api/v1/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
-		if err := core.VerifySignature(device.Pubkey, req.Signature, []byte(signing)); err != nil {
-			return false
-		}
-		return s.nonces.Claim(req.Nonce, now, signedAt)
 	}
-	return s.slotTokenValid(device, req.Token, now)
+	return s.slotTokenValid(device, req.Token, now), true
 }
 
 // slotTokenValid reports whether token still proves ownership of this slot. A

@@ -29,9 +29,10 @@ import (
 const (
 	// defaultDataDir is the container mount point of the state directory.
 	defaultDataDir = "/data"
-	// defaultListen is used when PORT is not set; everything else comes from
-	// HOST and PORT, so DATA_DIR holds no configuration.
-	defaultListen = ":8088"
+	// defaultPort applies when PORT is not set. HOST always takes part in the
+	// listening address, so HOST=127.0.0.1 alone still binds loopback; DATA_DIR
+	// holds no configuration.
+	defaultPort = 8088
 	// memoryLimit keeps the process inside the documented budget unless
 	// GOMEMLIMIT says otherwise.
 	memoryLimit = 128 << 20
@@ -95,10 +96,11 @@ func run() int {
 		return 1
 	}
 
-	listen := defaultListen
-	if conf.port > 0 {
-		listen = net.JoinHostPort(conf.host, strconv.Itoa(conf.port))
+	port := conf.port
+	if port == 0 {
+		port = defaultPort
 	}
+	listen := net.JoinHostPort(conf.host, strconv.Itoa(port))
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		logger.Error("listen failed", "addr", listen, "error", err)
@@ -139,6 +141,8 @@ func run() int {
 	logger.Info("admin console", "url", browseURL(listen)+"/admin")
 
 	purgeCtx, stopPurge := context.WithCancel(context.Background())
+	// 清理 goroutine 必须先停：它每一轮都写数据库，停了之后再关库与日志，
+	// 否则退出窗口里那一次 tick 会打到已关闭的连接上。defer 只是兜底。
 	defer stopPurge()
 	go purgeTokens(purgeCtx, application, logger)
 
@@ -150,10 +154,12 @@ func run() int {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", "error", err)
+			stopPurge()
 			_ = application.Close()
 			_ = logFile.Close()
 			return 1
 		}
+		stopPurge()
 		_ = application.Close()
 		_ = logFile.Close()
 		return 0
@@ -169,6 +175,7 @@ func run() int {
 		return 254
 	}
 	logger.Info("server shutdown", "stop_at", time.Now().Format(time.RFC3339))
+	stopPurge()
 	if err := application.Close(); err != nil {
 		logger.Error("close database failed", "error", err)
 		return 255

@@ -218,3 +218,28 @@ func TestIssueCredentialRefusesFormalNode(t *testing.T) {
 		t.Fatalf("LatestCredential() = %v, want ErrCredentialNotFound", err)
 	}
 }
+
+// TestRevokeAllStopsWhenTheCallerIsDone pins F2 of the 2026-11-27T05-45-47+0800_a6b688
+// review. 撤销一批凭据走同一条带总时限的路径：调用方取消之后逐张撤销立刻停手，
+// 而不是把一张心跳压到 N×15 秒（种子变慢时那条路径占着设备面的并发槽位）。
+func TestRevokeAllStopsWhenTheCallerIsDone(t *testing.T) {
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := a.IssueCredential(context.Background(), device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.revokeAll(ctx, []string{issued.ID}); err == nil {
+		t.Fatal("revokeAll() with a cancelled context returned nil")
+	}
+	// 撤销没成功就不删行：记录还在，下一轮心跳还能再撤一次。
+	if _, err := a.LatestCredential(device.PublicID); err != nil {
+		t.Fatalf("the credential row disappeared after a failed revoke: %v", err)
+	}
+}

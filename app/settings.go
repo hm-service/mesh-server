@@ -42,7 +42,7 @@ const (
 
 	// manifestName is version.json, the manifest at the root of a client
 	// package: the archive root is the content of bin/, so it sits next to the
-	// binaries (client/cmd/pack). It is the only place a package states its own
+	// binaries (build/release.ps1). It is the only place a package states its own
 	// version, and publishing takes the published version from it.
 	manifestName = "version.json"
 	// maxManifestBytes bounds version.json: it lists one digest per file.
@@ -70,16 +70,20 @@ func ValidPlatform(p string) bool {
 
 // TemplateTOML is the EasyTier configuration new devices start from.
 // DATA_DIR/peer.default.toml is the single source of truth; the embedded copy
-// only covers a missing or blank file.
-func (a *App) TemplateTOML() string {
+// only covers a missing or blank file. 文件存在却读不出来是另一种情况：那时回退
+// 内置模板会让控制台显示一份并非存储内容的东西，一保存就把原文件覆盖掉。
+func (a *App) TemplateTOML() (string, error) {
 	raw, err := os.ReadFile(a.templatePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return builtin.DefaultTemplate(), nil
+	}
 	if err != nil {
-		return builtin.DefaultTemplate()
+		return "", err
 	}
 	if strings.TrimSpace(string(raw)) == "" {
-		return builtin.DefaultTemplate()
+		return builtin.DefaultTemplate(), nil
 	}
-	return string(raw)
+	return string(raw), nil
 }
 
 // DefaultTOMLFile is the raw default template. A missing file reads as an empty
@@ -127,12 +131,11 @@ type PublishInput struct {
 }
 
 // Publish stores one admin publish request. Every slot is validated and
-// downloaded first, so a rejected request has written nothing; the slots are
-// then committed in one transaction, and the template is staged next to its
-// destination and renamed after that. A request that publishes both slots of a
-// platform therefore never leaves one of them behind on failure. A blank
-// DefaultTOML removes the custom template, which restores the embedded one;
-// nil leaves whatever is stored alone.
+// downloaded first, so a rejected request has written nothing. The template goes
+// next: 空白 DefaultTOML 删掉自定义模板（回退内置），非空白则先 staged rename
+// 落地，最后才提交槽位事务。剩下的窗口是「模板已换新而槽位事务失败」：模板只是
+// 一份默认配置，重发一次即可。A request that publishes both slots of a platform
+// therefore never leaves one of them behind on failure.
 func (a *App) Publish(in PublishInput) error {
 	var (
 		client   *db.ClientSlot
@@ -298,6 +301,10 @@ func newFetchClient(allow []netip.Prefix) *http.Client {
 			DialContext:           dialer.DialContext,
 			TLSHandshakeTimeout:   fetchDialTimeout,
 			ResponseHeaderTimeout: fetchTimeout,
+			// 摘要必须覆盖客户端真正会下载到的字节。Go 默认加
+			// Accept-Encoding: gzip 并透明解压，包服务器若照办，算出来的摘要
+			// 就是解压后的内容，客户端按原样下载永远对不上。
+			DisableCompression: true,
 		},
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= maxFetchRedirects {

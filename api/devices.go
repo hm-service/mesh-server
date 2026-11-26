@@ -177,12 +177,28 @@ type templateResponse struct {
 }
 
 func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, templateResponse{Template: s.app.TemplateTOML()})
+	// 读不出来就报 500：回退内置模板会让控制台显示一份并非存储的内容，一保存
+	// 就把原文件覆盖掉。
+	toml, err := s.app.TemplateTOML()
+	if err != nil {
+		s.logger.Error("read default template", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, templateResponse{Template: toml})
 }
 
 type deviceInput struct {
 	Name       string `json:"name"`
 	ConfigTOML string `json:"configToml"`
+}
+
+// createDeviceRequest is POST /api/admin/devices. AutoUpdate 只用来拒绝它：新设备
+// 一律跟随发布包（contract/admin-api.md），而静默丢掉会让调用方以为自己设上了。
+// 与发布接口对 appVersion 的处理一致。
+type createDeviceRequest struct {
+	deviceInput
+	AutoUpdate optionalBool `json:"autoUpdate"`
 }
 
 // deviceUpdate is PUT /api/admin/devices/{id}: the fields every update rewrites
@@ -221,9 +237,14 @@ type createDeviceResponse struct {
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
-	var req deviceInput
+	var req createDeviceRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if req.AutoUpdate.Set {
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument",
+			"autoUpdate 只能逐台设置：新设备一律跟随发布包，建好后再 PUT /api/admin/devices/{id}")
 		return
 	}
 	device, token, err := s.app.CreateDevice(req.Name, req.ConfigTOML)

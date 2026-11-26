@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api, ApiError, type DeviceSummary, type GroupView, type ReleasesPayload } from "./api";
 import ConfigView from "./components/ConfigView.vue";
-import DeviceDrawer from "./components/DeviceDrawer.vue";
 import DevicesView from "./components/DevicesView.vue";
 import LoginView from "./components/LoginView.vue";
 import NewDeviceDialog from "./components/NewDeviceDialog.vue";
@@ -18,7 +17,6 @@ const authed = ref(false);
 const devices = ref<DeviceSummary[]>([]);
 const groups = ref<GroupView[]>([]);
 const releases = ref<ReleasesPayload | null>(null);
-const drawerId = ref<string | null>(null);
 const showNew = ref(false);
 const toast = ref<Toast | null>(null);
 const loginError = ref("");
@@ -60,7 +58,6 @@ function stopPolling() {
 
 function handleUnauthorized() {
   stopPolling();
-  drawerId.value = null;
   showNew.value = false;
   groups.value = [];
   releases.value = null;
@@ -120,10 +117,6 @@ async function refreshDevices() {
   }
 }
 
-async function onDeviceChanged() {
-  await refreshDevices();
-}
-
 function onCreated() {
   void loadDevices().catch(() => {});
 }
@@ -132,12 +125,9 @@ function onSaved(next: ReleasesPayload) {
   releases.value = next;
 }
 
+// 设备详情的内联展开由 DevicesView 自己关；这里只剩新建设备的对话框。
 function closeOverlays() {
-  if (showNew.value) {
-    showNew.value = false;
-    return;
-  }
-  if (drawerId.value) drawerId.value = null;
+  if (showNew.value) showNew.value = false;
 }
 
 function onEscape(event: KeyboardEvent) {
@@ -176,7 +166,7 @@ onBeforeUnmount(() => {
           <circle cx="4.7" cy="17.9" r="2.1" fill="#fff" />
           <circle cx="12" cy="13.2" r="1.6" fill="#fff" />
         </svg>
-        EasyTier <small>控制台</small>
+        Mesh <small>控制平台</small>
       </div>
       <div class="spacer" />
       <span class="who">admin</span>
@@ -219,7 +209,6 @@ onBeforeUnmount(() => {
           v-if="page === 'devices'"
           :devices="devices"
           :groups="groups"
-          @open="drawerId = $event"
           @create="showNew = true"
           @refresh="refreshDevices"
           @toast="showToast"
@@ -241,15 +230,6 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <DeviceDrawer
-      v-if="drawerId"
-      :id="drawerId"
-      :groups="groups"
-      @close="drawerId = null"
-      @changed="onDeviceChanged"
-      @toast="showToast"
-      @unauthorized="handleUnauthorized"
-    />
     <NewDeviceDialog
       v-if="showNew"
       @close="showNew = false"

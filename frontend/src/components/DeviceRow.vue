@@ -13,7 +13,7 @@ import {
   statusText,
 } from "../format";
 
-const props = defineProps<{ device: DeviceSummary }>();
+const props = defineProps<{ device: DeviceSummary; expanded?: boolean }>();
 const emit = defineEmits<{ open: [id: string] }>();
 
 const seen = computed(() =>
@@ -24,8 +24,10 @@ const seen = computed(() =>
 <template>
   <div
     class="dev-row"
+    :class="{ open: expanded }"
     role="button"
     tabindex="0"
+    :aria-expanded="expanded ? 'true' : 'false'"
     :data-device-id="device.id"
     @click="emit('open', device.id)"
     @keydown.enter.prevent="emit('open', device.id)"
@@ -55,6 +57,6 @@ const seen = computed(() =>
       <span v-else class="muted">—</span>
     </div>
     <div class="cell seen" data-label="最后在线">{{ seen }}</div>
-    <div class="cell go" aria-hidden="true">›</div>
+    <div class="cell go" :class="{ open: expanded }" aria-hidden="true">›</div>
   </div>
 </template>

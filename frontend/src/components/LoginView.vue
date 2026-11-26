@@ -23,7 +23,7 @@ function onSubmit() {
           <circle cx="4.7" cy="17.9" r="2.1" fill="#fff" />
           <circle cx="12" cy="13.2" r="1.6" fill="#fff" />
         </svg>
-        EasyTier <small>控制台</small>
+        Mesh <small>控制平台</small>
       </div>
       <h1>管理员登录</h1>
       <p class="hint">输入部署时设置的 <code>AUTH_TOKEN</code>。</p>

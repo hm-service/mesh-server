@@ -2,11 +2,11 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from "vue";
 import Sortable from "sortablejs";
 import { api, ApiError, type DevicePlacement, type DeviceSummary, type GroupView } from "../api";
+import DeviceDetail from "./DeviceDetail.vue";
 import DeviceRow from "./DeviceRow.vue";
 
 const props = defineProps<{ devices: DeviceSummary[]; groups: GroupView[] }>();
 const emit = defineEmits<{
-  open: [id: string];
   create: [];
   refresh: [];
   toast: [title: string, message: string, kind: "ok" | "err"];
@@ -28,6 +28,8 @@ const editingName = ref("");
 const confirmingGroup = ref<number | null>(null);
 const busy = ref(false);
 const dragging = ref(false);
+// 详情在行下方就地展开，同一时刻只展开一台。
+const expandedId = ref<string | null>(null);
 
 const sortables = new Map<number, Sortable>();
 let dragOrigin: { item: HTMLElement; parent: HTMLElement; next: Node | null } | null = null;
@@ -102,6 +104,8 @@ function mountSortables() {
         animation: 0,
         onStart: (event) => {
           dragging.value = true;
+          // 展开的详情块是拖拽项的兄弟节点，拖起来只会碍事：一开始拖就收起。
+          expandedId.value = null;
           dragOrigin = { item: event.item, parent: event.from, next: event.item.nextSibling };
         },
         onEnd: () => finishDrag(),
@@ -171,10 +175,22 @@ async function saveLayout(layout: DevicePlacement[]) {
   }
 }
 
-function openDevice(id: string) {
-  // 拖拽松手后浏览器还会补一个 click；刚拖过就不要再打开详情。
+function toggleDevice(id: string) {
+  // 拖拽松手后浏览器还会补一个 click；刚拖过就不要再展开详情。
   if (Date.now() - lastDragEnd < 250) return;
-  emit("open", id);
+  expandedId.value = expandedId.value === id ? null : id;
+}
+
+function forwardToast(title: string, message: string, kind: "ok" | "err") {
+  emit("toast", title, message, kind);
+}
+
+function onDetailChanged() {
+  emit("refresh");
+}
+
+function onEscape(event: KeyboardEvent) {
+  if (event.key === "Escape" && expandedId.value) expandedId.value = null;
 }
 
 function reportError(err: unknown, title: string) {
@@ -229,6 +245,7 @@ async function removeGroup(section: Section) {
 
 onMounted(() => {
   mountSortables();
+  window.addEventListener("keydown", onEscape);
 });
 
 // 新建分组、设备从空变非空都会让新的 .rows 出现；每次更新补挂一次，幂等。
@@ -237,6 +254,7 @@ onUpdated(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onEscape);
   for (const instance of sortables.values()) instance.destroy();
   sortables.clear();
 });
@@ -305,7 +323,18 @@ onBeforeUnmount(() => {
         </div>
         <div class="rows" :data-sortable-group="section.id">
           <div v-if="!section.devices.length" class="rows-empty">拖设备到这里</div>
-          <DeviceRow v-for="device in section.devices" :key="device.id" :device="device" @open="openDevice" />
+          <template v-for="device in section.devices" :key="device.id">
+            <DeviceRow :device="device" :expanded="expandedId === device.id" @open="toggleDevice" />
+            <DeviceDetail
+              v-if="expandedId === device.id"
+              :id="device.id"
+              :groups="localGroups"
+              @close="expandedId = null"
+              @changed="onDetailChanged"
+              @toast="forwardToast"
+              @unauthorized="emit('unauthorized')"
+            />
+          </template>
         </div>
       </section>
     </div>

@@ -288,6 +288,8 @@ textarea {
 }
 .rows .dev-row:last-child { border-bottom: 0; }
 .dev-row:hover { background: #f8fafd; }
+/* 展开时行与它下方的详情连成一块。 */
+.dev-row.open { background: var(--surface-2); border-bottom-color: transparent; }
 .dev-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .drag-ghost { opacity: 0.45; background: var(--accent-weak) !important; }
 
@@ -329,7 +331,8 @@ textarea {
 .cell.app { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .version { color: var(--ink-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .cell.seen { color: var(--muted); font-size: var(--fs-sm); }
-.cell.go { color: var(--faint); font-size: 16px; text-align: right; line-height: 1; }
+.cell.go { color: var(--faint); font-size: 16px; text-align: right; line-height: 1; transition: transform 0.12s; }
+.cell.go.open { transform: rotate(90deg); color: var(--accent); }
 
 .empty-state {
   padding: 64px var(--s5);
@@ -342,41 +345,23 @@ textarea {
 .empty-state h2 { font-size: var(--fs-md); color: var(--ink); margin-bottom: var(--s1); }
 .empty-state button { margin-top: var(--s4); }
 
-/* ---------- 详情抽屉 ---------- */
-.drawer-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(16, 24, 40, 0.3);
-}
-.drawer {
-  width: min(760px, 100%);
-  height: 100%;
-  background: var(--bg);
+/* ---------- 行内详情 ---------- */
+.dev-detail {
   display: flex;
   flex-direction: column;
-  box-shadow: -16px 0 48px rgba(15, 23, 42, 0.16);
-  animation: drawer-in 0.16s ease-out;
-}
-@keyframes drawer-in {
-  from { transform: translateX(24px); opacity: 0.6; }
-  to { transform: translateX(0); opacity: 1; }
-}
-.drawer-head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: flex-start;
   gap: var(--s3);
-  padding: var(--s4) var(--s5);
-  background: var(--surface);
+  padding: var(--s4) var(--s4) var(--s5);
+  background: var(--surface-2);
   border-bottom: 1px solid var(--line);
+  animation: detail-in 0.12s ease-out;
 }
-.drawer-title { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-md); font-weight: 600; }
-.drawer-sub { color: var(--muted); font-size: var(--fs-sm); margin-top: 2px; }
+@keyframes detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.detail-head { display: flex; align-items: flex-start; gap: var(--s3); }
+.detail-title { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-md); font-weight: 600; }
+.detail-sub { color: var(--muted); font-size: var(--fs-sm); margin-top: 2px; }
 .icon-btn {
   margin-left: auto;
   width: 28px;
@@ -389,17 +374,14 @@ textarea {
   line-height: 1;
 }
 .icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
-.drawer-body {
-  padding: var(--s4) var(--s5) var(--s6);
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s3);
-}
+/* 编辑器标题与「重置为模板」同一行。 */
+.cfg-head { display: flex; align-items: center; gap: var(--s2); }
+.cfg-head .field-label { margin-bottom: 0; }
+.cfg-head button { margin-left: auto; }
 
 .facts {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: var(--s3) var(--s5);
   padding: var(--s3) var(--s4);
   background: var(--surface);

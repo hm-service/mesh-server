@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, ApiError, type DeviceDetail, type GroupView } from "../api";
+import { api, ApiError, type DeviceDetail, type GroupView, type ReleasesPayload } from "../api";
 import { copyText } from "../clipboard";
 import { nowSec } from "../clock";
 import {
@@ -41,6 +41,34 @@ const confirm = ref<ConfirmKind>(null);
 const rotating = ref(false);
 const deleting = ref(false);
 const actionError = ref("");
+const savingAutoUpdate = ref(false);
+// releases 只用于给「跟随发布包」标出当前生效值：取不到就不显示那半句。
+const releases = ref<ReleasesPayload | null>(null);
+
+/** 下拉框的三态取值：回落到 device.autoUpdate 的三个字符串。 */
+const autoUpdateValue = computed(() => {
+  const value = device.value?.autoUpdate;
+  if (value === true) return "auto";
+  if (value === false) return "manual";
+  return "follow";
+});
+
+/** 包上的自动更新开关；该平台没有发布记录时为 null。 */
+const packageAutoUpdate = computed<boolean | null>(() => {
+  const platform = device.value?.lastPlatform ?? "";
+  const release = releases.value?.releases.find((item) => item.platform === platform);
+  return release ? release.autoUpdate : null;
+});
+
+/** autoUpdateHint 说明当前策略；「跟随」时点出实际生效的那一侧。 */
+const autoUpdateHint = computed(() => {
+  const value = device.value?.autoUpdate;
+  if (value === true) return "覆盖发布包：设备拿到新版本会自己装。";
+  if (value === false) return "覆盖发布包：设备只提示有新版本，等人工确认。";
+  const fromPackage = packageAutoUpdate.value;
+  if (fromPackage === null) return "跟随发布包的设置；这个平台还没有发布记录。";
+  return "跟随发布包：当前是" + (fromPackage ? "自动安装" : "手动确认") + "。";
+});
 
 const groupName = computed(() => {
   const group = props.groups.find((item) => item.id === device.value?.groupId);
@@ -92,6 +120,37 @@ async function load() {
     error.value = err instanceof Error ? err.message : "加载失败";
   } finally {
     loading.value = false;
+  }
+  // 发布记录只是给「跟随」补一句当前生效值，取不到不影响详情。
+  try {
+    releases.value = await api.getReleases();
+  } catch {
+    releases.value = null;
+  }
+}
+
+/** changeAutoUpdate 写设备级覆盖：follow 是 null，auto/manual 是强制值。 */
+async function changeAutoUpdate(event: Event) {
+  if (!device.value || savingAutoUpdate.value) return;
+  const choice = (event.target as HTMLSelectElement).value;
+  const value = choice === "auto" ? true : choice === "manual" ? false : null;
+  savingAutoUpdate.value = true;
+  actionError.value = "";
+  try {
+    await api.updateDevice(device.value.id, device.value.name, device.value.configToml, value);
+    device.value.autoUpdate = value;
+    emit("toast", "自动更新已设置", autoUpdateHint.value, "ok");
+    emit("changed");
+  } catch (err) {
+    // 没保存成功：把下拉拨回真实状态，别让界面停在没生效的选项上。
+    (event.target as HTMLSelectElement).value = autoUpdateValue.value;
+    if (err instanceof ApiError && err.status === 401) {
+      emit("unauthorized");
+      return;
+    }
+    actionError.value = err instanceof Error ? err.message : "保存失败";
+  } finally {
+    savingAutoUpdate.value = false;
   }
 }
 
@@ -285,6 +344,24 @@ async function remove() {
           <span :class="configStateClass(device.configState)">{{ configStateText(device.configState) }}</span>
           <span class="spacer" />
           <button class="ghost" type="button" @click="editing = true">查看与编辑配置</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><span class="section-title">更新</span></div>
+        <div class="field">
+          <label class="field-label" for="device-auto-update">自动更新</label>
+          <select
+            id="device-auto-update"
+            :value="autoUpdateValue"
+            :disabled="savingAutoUpdate"
+            @change="changeAutoUpdate"
+          >
+            <option value="follow">跟随发布包</option>
+            <option value="auto">总是自动安装</option>
+            <option value="manual">总是手动确认</option>
+          </select>
+          <p class="hint">{{ autoUpdateHint }}</p>
         </div>
       </section>
 

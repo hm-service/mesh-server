@@ -210,6 +210,19 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 input[type="text"]:disabled,
 input[type="password"]:disabled,
 textarea:disabled { background: var(--surface-2); color: var(--muted); }
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r1);
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: var(--fs);
+  color: var(--ink);
+  background: var(--surface);
+  outline: none;
+}
+select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+select:disabled { background: var(--surface-2); color: var(--muted); }
 textarea {
   resize: vertical;
   font-family: var(--mono);
@@ -438,6 +451,8 @@ textarea {
 }
 .tab:hover:not(:disabled) { background: none; color: var(--ink); }
 .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+/* 详情里的三态下拉不占满整行。 */
+.field select { max-width: 260px; }
 /* 输入框下面那行浅色说明。 */
 .field-hint { margin-top: 4px; color: var(--muted); font-size: var(--fs-xs); line-height: 1.6; }
 /* 撞车提示：只是提醒，不挡住提交。 */

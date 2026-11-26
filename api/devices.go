@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -32,6 +33,9 @@ type deviceSummary struct {
 	Identity string `json:"identity"`
 	IPv4     string `json:"ipv4"`
 	DHCP     bool   `json:"dhcp"`
+	// AutoUpdate 是设备级自动更新覆盖：null 跟随发布包，true 强制自动，false
+	// 强制手动（contract/admin-api.md「设备级自动更新」）。
+	AutoUpdate *bool `json:"autoUpdate"`
 }
 
 // releaseFor returns the build published for the device's platform; an empty
@@ -67,6 +71,7 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 		Identity:       facts.Identity,
 		IPv4:           facts.IPv4,
 		DHCP:           facts.DHCP,
+		AutoUpdate:     d.AutoUpdate,
 	}
 }
 
@@ -98,6 +103,9 @@ type deviceDetail struct {
 	Identity string `json:"identity"`
 	IPv4     string `json:"ipv4"`
 	DHCP     bool   `json:"dhcp"`
+	// AutoUpdate 是设备级自动更新覆盖：null 跟随发布包，true 强制自动，false
+	// 强制手动（contract/admin-api.md「设备级自动更新」）。
+	AutoUpdate *bool `json:"autoUpdate"`
 	// Credential 是最新一张凭据的签发时间与到期时间；没有凭据时是 null。
 	// 私钥从不出现在这里。
 	Credential *credentialView `json:"credential"`
@@ -136,6 +144,7 @@ func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
 		Identity:       facts.Identity,
 		IPv4:           facts.IPv4,
 		DHCP:           facts.DHCP,
+		AutoUpdate:     d.AutoUpdate,
 	}
 }
 
@@ -174,6 +183,34 @@ func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
 type deviceInput struct {
 	Name       string `json:"name"`
 	ConfigTOML string `json:"configToml"`
+}
+
+// deviceUpdate is PUT /api/admin/devices/{id}: the fields every update rewrites
+// plus the optional device-level auto-update override.
+type deviceUpdate struct {
+	deviceInput
+	AutoUpdate optionalBool `json:"autoUpdate"`
+}
+
+// optionalBool 是一个三态字段：请求里没有它、它是 null、或者它是 true/false。
+// *bool 分不清前两种（都是 nil），而「恢复跟随发布包」正是 null。
+type optionalBool struct {
+	Set   bool
+	Value *bool
+}
+
+func (o *optionalBool) UnmarshalJSON(raw []byte) error {
+	o.Set = true
+	if string(raw) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	o.Value = &value
+	return nil
 }
 
 type createDeviceResponse struct {
@@ -243,12 +280,12 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var req deviceInput
+	var req deviceUpdate
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
-	updated, err := s.app.UpdateDevice(id, req.Name, req.ConfigTOML)
+	updated, err := s.app.UpdateDevice(id, req.Name, req.ConfigTOML, app.AutoUpdateChoice{Set: req.AutoUpdate.Set, Value: req.AutoUpdate.Value})
 	switch {
 	case errors.Is(err, app.ErrInvalidInput):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request")

@@ -91,7 +91,8 @@ CREATE TABLE device (
     last_app_version TEXT NOT NULL DEFAULT '', -- 最近一次心跳上报的版本号
     last_platform    TEXT NOT NULL DEFAULT '', -- 最近一次心跳上报的 GOOS/GOARCH
     group_id         INTEGER NOT NULL DEFAULT 0, -- 0 表示未分组
-    position         INTEGER NOT NULL DEFAULT 0  -- 组内排序，0 起
+    position         INTEGER NOT NULL DEFAULT 0, -- 组内排序，0 起
+    auto_update      INTEGER                    -- 设备级自动更新覆盖：NULL 跟随发布包，0 手动，1 自动
 );
 CREATE UNIQUE INDEX device_device_id ON device (device_id) WHERE device_id <> '';
 
@@ -124,11 +125,13 @@ CREATE TABLE credential (
 CREATE INDEX credential_device ON credential (device_public_id);
 ```
 
+`device.auto_update` 是设备级的自动更新覆盖：`NULL` 跟随发布包（默认，也是存量行的取值），`0` 强制手动确认，`1` 强制自动安装。生效值由 `app.EffectiveAutoUpdate` 算出，只出现在心跳的 `appUpdate.autoUpdate` 里——客户端看到的永远是一个布尔值，不知道覆盖发生在哪一层。
+
 `release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。`auto_update` 属于客户端包槽位：发布这个包时一起写，发布或清空启动器不改动它。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
 
 `credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 6 节的 `ET_CLI`）。
 
-表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上（`release.auto_update` 就是这样加上来的，存量行一律为 0，即手动安装）；`device.last_app_hash` 由 `renameAppHashColumn` 原地改名为 `last_app_version` 并清空旧值（旧的 16 位包摘要在新语义下不是版本号），`release.hash` 由 `dropReleaseHashColumn` 删除；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
+表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上（`release.auto_update` 就是这样加上来的，存量行一律为 0，即手动安装；`device.auto_update` 同样由它补上，存量行是 `NULL`，即跟随发布包）；`device.last_app_hash` 由 `renameAppHashColumn` 原地改名为 `last_app_version` 并清空旧值（旧的 16 位包摘要在新语义下不是版本号），`release.hash` 由 `dropReleaseHashColumn` 删除；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
 
 `config_hash` 是数据而不是结构：启动时把每台设备的摘要按当前算法（`core.Hash`，即 `sha256(toml)` 前 16 位）重算一遍，只写不一致的行。摘要算法变化后存量行由此迁移，设备不会停在永远 `stale`、每轮心跳都被重发配置的状态。
 

@@ -60,6 +60,16 @@ func CompareVersions(a, b string) (order int, ok bool) {
 	return cmp.Compare(left.seq, right.seq), true
 }
 
+// EffectiveAutoUpdate 是三态覆盖的结果：设备自己定了就用设备的值，否则用发布包
+// 的。nil 表示跟随（contract/admin-api.md「设备级自动更新」）。客户端只看它下发
+// 的那个布尔值，不知道覆盖发生在哪一层。
+func EffectiveAutoUpdate(device *bool, release bool) bool {
+	if device != nil {
+		return *device
+	}
+	return release
+}
+
 // NeedsUpdate reports whether a device running reported must be pointed at
 // published. Only a reported version that is provably older counts: a device
 // at or above the published build (a rolled-back release, a hand-installed

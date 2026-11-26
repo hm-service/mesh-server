@@ -34,12 +34,16 @@ type Device struct {
 	LastPlatform   string
 	GroupID        int64
 	Position       int64
+	// AutoUpdate 是设备级自动更新覆盖：nil 跟随发布包，true 强制自动，false
+	// 强制手动（contract/admin-api.md）。
+	AutoUpdate *bool
 }
 
 const deviceColumns = "public_id, name, device_id, hostname, pubkey, config_toml, config_hash, " +
-	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_version, last_platform, group_id, position"
+	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_version, " +
+	"last_platform, group_id, position, auto_update"
 
-const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -49,7 +53,8 @@ func scanDevice(row rowScanner) (Device, error) {
 	var d Device
 	err := row.Scan(&d.PublicID, &d.Name, &d.DeviceID, &d.Hostname, &d.Pubkey,
 		&d.ConfigTOML, &d.ConfigHash, &d.Token, &d.TokenExpiresAt, &d.CreatedAt, &d.LastSeenAt,
-		&d.LastIP, &d.LastConfigHash, &d.LastAppVersion, &d.LastPlatform, &d.GroupID, &d.Position)
+		&d.LastIP, &d.LastConfigHash, &d.LastAppVersion, &d.LastPlatform, &d.GroupID, &d.Position,
+		&d.AutoUpdate)
 	return d, err
 }
 
@@ -153,7 +158,7 @@ func deviceArgs(dev Device) []any {
 		dev.PublicID, dev.Name, dev.DeviceID, dev.Hostname, dev.Pubkey,
 		dev.ConfigTOML, dev.ConfigHash, dev.Token, dev.TokenExpiresAt, dev.CreatedAt,
 		dev.LastSeenAt, dev.LastIP, dev.LastConfigHash, dev.LastAppVersion, dev.LastPlatform,
-		dev.GroupID, dev.Position,
+		dev.GroupID, dev.Position, dev.AutoUpdate,
 	}
 }
 
@@ -177,11 +182,12 @@ func (d *DB) Update(publicID string, mutate func(*Device) error) (Device, error)
 	}
 	if _, err := tx.Exec("UPDATE device SET name=?, device_id=?, hostname=?, pubkey=?, config_toml=?, "+
 		"config_hash=?, token=?, token_expires_at=?, created_at=?, last_seen_at=?, last_ip=?, "+
-		"last_config_hash=?, last_app_version=?, last_platform=?, group_id=?, position=? WHERE public_id=?",
+		"last_config_hash=?, last_app_version=?, last_platform=?, group_id=?, position=?, "+
+		"auto_update=? WHERE public_id=?",
 		device.Name, device.DeviceID, device.Hostname, device.Pubkey, device.ConfigTOML,
 		device.ConfigHash, device.Token, device.TokenExpiresAt, device.CreatedAt, device.LastSeenAt,
 		device.LastIP, device.LastConfigHash, device.LastAppVersion, device.LastPlatform, device.GroupID,
-		device.Position, publicID,
+		device.Position, device.AutoUpdate, publicID,
 	); err != nil {
 		return Device{}, fmt.Errorf("update device: %w", err)
 	}

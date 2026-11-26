@@ -24,6 +24,8 @@ export interface DeviceSummary {
   ipv4: string;
   /** dhcp = true 时 core 忽略 ipv4，地址由网络分配。 */
   dhcp: boolean;
+  /** autoUpdate 是设备级覆盖：null 跟随发布包，true 强制自动，false 强制手动。 */
+  autoUpdate: boolean | null;
 }
 
 /** CredentialTimes 是最新一张凭据的可见部分：只有时间，没有私钥。 */
@@ -204,11 +206,19 @@ export const api = {
   createDevice(name: string, configToml: string): Promise<{ id: string; token: string; ipv4?: string }> {
     return jsonRequest<{ id: string; token: string }>("POST", "/api/admin/devices", { name, configToml: configToml });
   },
-  updateDevice(id: string, name: string, configToml: string): Promise<{ configHash: string }> {
-    return jsonRequest<{ configHash: string }>("PUT", "/api/admin/devices/" + encodeURIComponent(id), {
-      name,
-      configToml: configToml,
-    });
+  /**
+   * autoUpdate 是三态覆盖，undefined 表示这次请求不带它（不改这一列）：
+   * null 恢复跟随发布包，true/false 强制。
+   */
+  updateDevice(
+    id: string,
+    name: string,
+    configToml: string,
+    autoUpdate?: boolean | null,
+  ): Promise<{ configHash: string }> {
+    const body: Record<string, unknown> = { name, configToml: configToml };
+    if (autoUpdate !== undefined) body.autoUpdate = autoUpdate;
+    return jsonRequest<{ configHash: string }>("PUT", "/api/admin/devices/" + encodeURIComponent(id), body);
   },
   deleteDevice(id: string): Promise<void> {
     return jsonRequest<void>("DELETE", "/api/admin/devices/" + encodeURIComponent(id));

@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS device (
     last_config_hash TEXT    NOT NULL DEFAULT '',
     last_app_version TEXT    NOT NULL DEFAULT '',
     group_id         INTEGER NOT NULL DEFAULT 0,
-    position         INTEGER NOT NULL DEFAULT 0
+    position         INTEGER NOT NULL DEFAULT 0,
+    auto_update      INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS device_group (
@@ -120,6 +121,10 @@ func (d *DB) createSchema() error {
 		return err
 	}
 	if err := d.ensureColumn("device", "position", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// 设备级自动更新覆盖：NULL 表示跟随发布包，0 强制手动，1 强制自动。
+	if err := d.ensureColumn("device", "auto_update", "INTEGER"); err != nil {
 		return err
 	}
 	if err := d.ensureColumn("release", "launcher_version", "TEXT NOT NULL DEFAULT ''"); err != nil {

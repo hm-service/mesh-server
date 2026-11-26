@@ -146,15 +146,56 @@ func TestUpdateDeviceConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	const next = "a = 2\n"
-	updated, err := a.UpdateDevice(device.PublicID, "renamed", next)
+	updated, err := a.UpdateDevice(device.PublicID, "renamed", next, AutoUpdateChoice{})
 	if err != nil {
 		t.Fatalf("UpdateDevice() error: %v", err)
 	}
 	if updated.Name != "renamed" || updated.ConfigHash != core.Hash(next) || updated.ConfigTOML != next {
 		t.Fatalf("updated = %+v", updated)
 	}
-	if _, err := a.UpdateDevice("d_missing", "name", next); !errors.Is(err, ErrNotFound) {
+	if _, err := a.UpdateDevice("d_missing", "name", next, AutoUpdateChoice{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UpdateDevice(unknown) = %v, want ErrNotFound", err)
+	}
+}
+
+// TestUpdateDeviceAutoUpdate pins the three states on the stored row: the field
+// missing leaves the column alone, null puts it back to following the package,
+// and true/false force the device's own answer.
+func TestUpdateDeviceAutoUpdate(t *testing.T) {
+	a := openTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.AutoUpdate != nil {
+		t.Fatalf("new device autoUpdate = %v, want nil (follow the package)", *device.AutoUpdate)
+	}
+
+	forced := true
+	stored, err := a.UpdateDevice(device.PublicID, "laptop", "a = 1\n", AutoUpdateChoice{Set: true, Value: &forced})
+	if err != nil || stored.AutoUpdate == nil || !*stored.AutoUpdate {
+		t.Fatalf("forced automatic = %+v (%v), want true", stored.AutoUpdate, err)
+	}
+
+	// 请求里没带这个字段：这一列保持原样。
+	kept, err := a.UpdateDevice(device.PublicID, "laptop", "a = 2\n", AutoUpdateChoice{})
+	if err != nil || kept.AutoUpdate == nil || !*kept.AutoUpdate {
+		t.Fatalf("update without the field = %+v (%v), want the override kept", kept.AutoUpdate, err)
+	}
+
+	// null：恢复跟随发布包。
+	back, err := a.UpdateDevice(device.PublicID, "laptop", "a = 2\n", AutoUpdateChoice{Set: true})
+	if err != nil || back.AutoUpdate != nil {
+		t.Fatalf("null override = %+v (%v), want follow (nil)", back.AutoUpdate, err)
+	}
+
+	manual := false
+	if _, err := a.UpdateDevice(device.PublicID, "laptop", "a = 2\n", AutoUpdateChoice{Set: true, Value: &manual}); err != nil {
+		t.Fatalf("forced manual error: %v", err)
+	}
+	reloaded, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found || reloaded.AutoUpdate == nil || *reloaded.AutoUpdate {
+		t.Fatalf("forced manual = %+v (%v), want false", reloaded.AutoUpdate, err)
 	}
 }
 

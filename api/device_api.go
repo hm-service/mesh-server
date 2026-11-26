@@ -323,7 +323,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			URL:        release.URL,
 			Notes:      release.Notes,
 			SHA256:     release.SHA256,
-			AutoUpdate: release.AutoUpdate,
+			AutoUpdate: app.EffectiveAutoUpdate(device.AutoUpdate, release.AutoUpdate),
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)

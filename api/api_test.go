@@ -49,6 +49,8 @@ type deviceSummary struct {
 	Identity       string `json:"identity"`
 	IPv4           string `json:"ipv4"`
 	DHCP           bool   `json:"dhcp"`
+	// AutoUpdate 是设备级覆盖：null 跟随发布包，true 自动，false 手动。
+	AutoUpdate *bool `json:"autoUpdate"`
 }
 
 // credentialView mirrors the credential part of GET /api/admin/devices/{id}.
@@ -75,6 +77,7 @@ type deviceDetail struct {
 	Identity       string          `json:"identity"`
 	IPv4           string          `json:"ipv4"`
 	DHCP           bool            `json:"dhcp"`
+	AutoUpdate     *bool           `json:"autoUpdate"`
 	Credential     *credentialView `json:"credential"`
 }
 
@@ -1019,6 +1022,126 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	if stored, _, err := env.App.Release(testPlatform); err != nil || stored.AutoUpdate {
 		t.Fatalf("rejected autoUpdate changed the row: %+v, %v", stored, err)
 	}
+}
+
+// putDevice is one PUT /api/admin/devices/{id} that must be accepted.
+func putDevice(t *testing.T, env *testenv.Env, id string, body map[string]any) {
+	t.Helper()
+	res, data := env.Do("PUT", "/api/admin/devices/"+id, body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT device = %d: %s, want 200", res.StatusCode, data)
+	}
+}
+
+// deviceAutoUpdate sends one heartbeat from an older build and returns the
+// autoUpdate the device is told to use.
+func deviceAutoUpdate(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64) *bool {
+	t.Helper()
+	res, data := heartbeat(t, env, dev, nonces, dev.configHash, "2026.11.26-0")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("heartbeat = %d: %s, want 200", res.StatusCode, data)
+	}
+	var got heartbeatResponse
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	if got.AppUpdate == nil {
+		t.Fatalf("heartbeat carried no appUpdate: %s", data)
+	}
+	return &got.AppUpdate.AutoUpdate
+}
+
+// TestDeviceAutoUpdateOverride pins the three-state device override: it wins over
+// the package in both directions, a request without the field leaves it alone, and
+// null puts the device back to following the package.
+func TestDeviceAutoUpdateOverride(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+	putReleases(t, env, map[string]any{
+		"platform":   testPlatform,
+		"appUrl":     fileServer(t, releasePkg(t, "2026.11.26-1", []byte("client build one"))),
+		"autoUpdate": true,
+	})
+
+	// 默认跟随：下发包上的 true。
+	if got := deviceAutoUpdate(t, env, dev, &nonces); got == nil || !*got {
+		t.Fatalf("following the package = %v, want true", got)
+	}
+
+	// 强制手动盖住包上的 true。
+	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML, "autoUpdate": false})
+	if got := deviceAutoUpdate(t, env, dev, &nonces); got == nil || *got {
+		t.Fatalf("forced manual = %v, want false even though the package says automatic", got)
+	}
+	if row := deviceDetailOf(t, env, dev.internalID); row.AutoUpdate == nil || *row.AutoUpdate {
+		t.Fatalf("detail autoUpdate = %v, want false", row.AutoUpdate)
+	}
+	if got := listAutoUpdate(t, env, dev.internalID); got == nil || *got {
+		t.Fatalf("list autoUpdate = %v, want false", got)
+	}
+
+	// 请求里没有这个字段：这一列保持原样。
+	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML})
+	if row := deviceDetailOf(t, env, dev.internalID); row.AutoUpdate == nil || *row.AutoUpdate {
+		t.Fatalf("update without the field = %v, want the override kept", row.AutoUpdate)
+	}
+
+	// null：恢复跟随发布包。
+	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML, "autoUpdate": nil})
+	if row := deviceDetailOf(t, env, dev.internalID); row.AutoUpdate != nil {
+		t.Fatalf("null override = %v, want follow (null)", row.AutoUpdate)
+	}
+	if got := deviceAutoUpdate(t, env, dev, &nonces); got == nil || !*got {
+		t.Fatalf("back to following = %v, want the package's true", got)
+	}
+
+	// 包改成手动之后，强制自动仍然生效：覆盖与包的方向无关。
+	putReleases(t, env, map[string]any{
+		"platform": testPlatform,
+		"appUrl":   fileServer(t, releasePkg(t, "2026.11.26-2", []byte("client build two"))),
+	})
+	if got := deviceAutoUpdate(t, env, dev, &nonces); got == nil || *got {
+		t.Fatalf("manual package with no override = %v, want false", got)
+	}
+	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML, "autoUpdate": true})
+	if got := deviceAutoUpdate(t, env, dev, &nonces); got == nil || !*got {
+		t.Fatalf("forced automatic over a manual package = %v, want true", got)
+	}
+}
+
+// deviceDetailOf reads GET /api/admin/devices/{id}.
+func deviceDetailOf(t *testing.T, env *testenv.Env, id string) deviceDetail {
+	t.Helper()
+	res, data := env.Do("GET", "/api/admin/devices/"+id, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("get device = %d: %s", res.StatusCode, data)
+	}
+	var device deviceDetail
+	if err := json.Unmarshal(data, &device); err != nil {
+		t.Fatalf("decode device: %v", err)
+	}
+	return device
+}
+
+// listAutoUpdate reads the autoUpdate of one row of GET /api/admin/devices.
+func listAutoUpdate(t *testing.T, env *testenv.Env, id string) *bool {
+	t.Helper()
+	res, data := env.Do("GET", "/api/admin/devices", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list devices = %d: %s", res.StatusCode, data)
+	}
+	var rows []deviceSummary
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("decode devices: %v", err)
+	}
+	for _, row := range rows {
+		if row.ID == id {
+			return row.AutoUpdate
+		}
+	}
+	t.Fatalf("device %s missing from the list", id)
+	return nil
 }
 
 // TestReleaseSlotsAreIndependent covers the two artifacts one platform

@@ -66,3 +66,28 @@ func TestNeedsUpdate(t *testing.T) {
 		})
 	}
 }
+
+// TestEffectiveAutoUpdate pins the three states: the device override wins when it
+// is set, and nil follows the package. The client only ever sees the result.
+func TestEffectiveAutoUpdate(t *testing.T) {
+	always := true
+	manual := false
+	cases := []struct {
+		name    string
+		device  *bool
+		release bool
+		want    bool
+	}{
+		{name: "follows an automatic package", device: nil, release: true, want: true},
+		{name: "follows a manual package", device: nil, release: false, want: false},
+		{name: "forces automatic over a manual package", device: &always, release: false, want: true},
+		{name: "forces manual over an automatic package", device: &manual, release: true, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EffectiveAutoUpdate(tc.device, tc.release); got != tc.want {
+				t.Fatalf("EffectiveAutoUpdate(%v, %v) = %v, want %v", tc.device, tc.release, got, tc.want)
+			}
+		})
+	}
+}

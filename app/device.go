@@ -162,11 +162,19 @@ func (a *App) CreateDevice(name, configTOML string) (db.Device, string, error) {
 	return device, token, nil
 }
 
+// AutoUpdateChoice 是一次设备级自动更新写入。Set 为 false 表示这次请求没有带
+// 这个字段（不改这一列）；Value 为 nil 表示恢复跟随发布包。用两个字段而不是
+// *bool，是因为「没带」和「null」在请求里是两件事。
+type AutoUpdateChoice struct {
+	Set   bool
+	Value *bool
+}
+
 // UpdateDevice replaces the display name and the assigned configuration.
 //
 // 配置原样落库：地址写在配置里，控制面不再替它保留或改写，也不判断它与别的
 // 设备是否一样——那可能是多网卡、迁移期并存或临时排查时的有意为之。
-func (a *App) UpdateDevice(publicID, name, configTOML string) (db.Device, error) {
+func (a *App) UpdateDevice(publicID, name, configTOML string, autoUpdate AutoUpdateChoice) (db.Device, error) {
 	name = trimName(name)
 	if name == "" || len([]rune(name)) > MaxNameRunes {
 		return db.Device{}, ErrInvalidInput
@@ -182,6 +190,9 @@ func (a *App) UpdateDevice(publicID, name, configTOML string) (db.Device, error)
 		d.Name = name
 		d.ConfigTOML = configTOML
 		d.ConfigHash = hash
+		if autoUpdate.Set {
+			d.AutoUpdate = autoUpdate.Value
+		}
 		return nil
 	})
 }

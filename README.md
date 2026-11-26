@@ -2,7 +2,7 @@
 
 EasyTier 控制面：设备台账、配置下发、客户端发布与心跳判定。单文件静态二进制，状态全部落在 `DATA_DIR`。
 
-- 接口契约：[`../contract/`](../contract/)
+- 接口契约：[`../docs/`](../docs/)
 - 实现与部署：[`DESIGN.md`](./DESIGN.md)
 
 ## 开发

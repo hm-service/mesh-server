@@ -1,7 +1,7 @@
 # mesh-server 设计
 
 单文件静态二进制，控制面全部状态都在 `DATA_DIR`；前端构建产物用 `go:embed` 打进二进制。
-HTTP 契约以 [`../contract/`](../contract/) 为准，本文件只描述实现与部署。
+HTTP 契约以 [`../docs/`](../docs/) 为准，本文件只描述实现与部署。
 
 ## 1. 部署
 
@@ -54,7 +54,7 @@ HTTP 契约以 [`../contract/`](../contract/) 为准，本文件只描述实现�
 | GET/PUT | `/api/admin/releases` | Bearer |
 | DELETE | `/api/admin/releases/{platform...}`（`?slot=launcher` 只清启动器槽位） | Bearer |
 
-请求与响应的字段、状态码、错误码见 [`../contract/admin-api.md`](../contract/admin-api.md)；本文不重复。
+请求与响应的字段、状态码、错误码见 [`../docs/admin-api.md`](../docs/admin-api.md)；本文不重复。
 
 ## 4. 数据
 

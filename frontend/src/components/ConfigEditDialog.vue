@@ -100,6 +100,9 @@ async function save() {
         </div>
         <textarea id="cfg-toml" v-model="toml" class="toml-editor" spellcheck="false" />
         <p class="hint">「重置为模板」只替换编辑框内容，保存后才会下发给设备。</p>
+        <p class="hint">
+          模板里的 <code v-pre>{{ IP }}</code> 保存时换成这台设备现在的地址：改配置不会换地址。
+        </p>
         <div v-if="error" class="err">{{ error }}</div>
       </div>
       <div class="dialog-actions">

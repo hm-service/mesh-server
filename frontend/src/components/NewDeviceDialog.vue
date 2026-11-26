@@ -15,6 +15,7 @@ const name = ref("");
 const toml = ref("");
 const error = ref("");
 const token = ref("");
+const address = ref("");
 const busy = ref(false);
 const locked = ref(false);
 const templateReady = ref(false);
@@ -63,6 +64,7 @@ async function submit() {
   try {
     const created = await api.createDevice(trimmed, toml.value);
     token.value = created.token;
+    address.value = created.ipv4 ?? "";
     locked.value = true;
     emit("toast", "设备已创建", trimmed, "ok");
     emit("created", trimmed);
@@ -107,12 +109,19 @@ async function copy() {
         <p class="hint">
           名称只用于控制台展示，可重复；同一网络内每台设备的 ipv4 必须唯一，不要填网段地址（末尾 .0）。
         </p>
+        <p class="hint">
+          配置里的 <code v-pre>{{ IP }}</code> 由控制面分配：取现有设备里最小那台所在的 /24，
+          从它之后挑第一个没被占用的值。要自己指定地址就直接改写 ipv4 那一行。
+        </p>
         <div v-if="templateError" class="err">
           {{ templateError }}
           <button class="ghost" type="button" @click="loadTemplate">重试</button>
         </div>
         <div v-if="token" class="token-box">
-          <div class="token-label">一次性令牌（10 分钟内有效，注册成功后作废）</div>
+          <div class="token-label">
+            一次性令牌（10 分钟内有效，注册成功后作废）
+            <template v-if="address"> · 已分配 <code>{{ address }}</code></template>
+          </div>
           <div class="token-row">
             <code class="token-value">{{ token }}</code>
             <button type="button" @click="copy">复制</button>

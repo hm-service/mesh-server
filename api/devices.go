@@ -173,6 +173,28 @@ type deviceInput struct {
 type createDeviceResponse struct {
 	ID    string `json:"id"`
 	Token string `json:"token"`
+	// IPv4 是模板注入后落下来的地址，界面直接回显，省得再拉一次详情。
+	IPv4 string `json:"ipv4,omitempty"`
+}
+
+// writeTemplateError 把模板注入的失败原因写给调用方。返回 true 表示响应已写。
+// 这几条都出在管理员手写的模板上，光给一个 invalid_request 他改不动。
+func writeTemplateError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, app.ErrUnknownPlaceholder):
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request",
+			"配置模板里有不认识的占位，目前只支持 "+app.TemplateIP)
+		return true
+	case errors.Is(err, app.ErrNoAddressPool):
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request",
+			"还没有设备写过固定地址，推不出要分配哪个网段：先手工建一台带 ipv4 的设备")
+		return true
+	case errors.Is(err, app.ErrAddressExhausted):
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request",
+			"参考网段里已经没有空闲地址了")
+		return true
+	}
+	return false
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +204,9 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	device, token, err := s.app.CreateDevice(req.Name, req.ConfigTOML)
+	if writeTemplateError(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, app.ErrInvalidInput):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request")
@@ -194,7 +219,11 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, createDeviceResponse{ID: device.PublicID, Token: token})
+	httpx.WriteJSON(w, http.StatusOK, createDeviceResponse{
+		ID:    device.PublicID,
+		Token: token,
+		IPv4:  app.ConfigFactsOf(device.ConfigTOML).IPv4,
+	})
 }
 
 func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +266,9 @@ func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := s.app.UpdateDevice(id, req.Name, req.ConfigTOML)
+	if writeTemplateError(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, app.ErrInvalidInput):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request")

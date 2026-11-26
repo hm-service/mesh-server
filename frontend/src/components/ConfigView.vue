@@ -68,6 +68,10 @@ async function save() {
       </div>
       <div class="panel-body">
         <textarea v-model="toml" class="template-editor" spellcheck="false" />
+        <p class="hint">
+          模板里可以写 <code v-pre>{{ IP }}</code>：创建设备时替换成下一个空闲的固定地址（裸 IPv4，不含前缀长度），
+          网段取现有设备里最小那台所在的 /24；改已有设备的配置时沿用它当前的地址。
+        </p>
         <p class="hint">只影响之后的新建设备与显式重置；已建设备的配置在设备详情里单独修改。</p>
         <div v-if="error" class="err">{{ error }}</div>
         <div class="actions">

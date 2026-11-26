@@ -195,7 +195,7 @@ export const api = {
   getDevice(id: string): Promise<DeviceDetail> {
     return jsonRequest<DeviceDetail>("GET", "/api/admin/devices/" + encodeURIComponent(id));
   },
-  createDevice(name: string, configToml: string): Promise<{ id: string; token: string }> {
+  createDevice(name: string, configToml: string): Promise<{ id: string; token: string; ipv4?: string }> {
     return jsonRequest<{ id: string; token: string }>("POST", "/api/admin/devices", { name, configToml: configToml });
   },
   updateDevice(id: string, name: string, configToml: string): Promise<{ configHash: string }> {

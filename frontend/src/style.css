@@ -399,11 +399,6 @@ textarea {
   line-height: 1;
 }
 .icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
-/* 编辑器标题与「重置为模板」同一行。 */
-.cfg-head { display: flex; align-items: center; gap: var(--s2); }
-.cfg-head .field-label { margin-bottom: 0; }
-.cfg-head button { margin-left: auto; }
-
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -427,15 +422,14 @@ textarea {
 /* 只剩标题行的 section（如「配置」）不留尾部空档 */
 .section-head:only-child { margin-bottom: 0; }
 .section-title { font-size: var(--fs-sm); font-weight: 600; color: var(--ink); }
-.toml-editor { height: 320px; }
 .field { display: flex; flex-direction: column; }
 .field.full { grid-column: 1 / -1; }
 .field-label { display: block; color: var(--muted); font-size: var(--fs-xs); margin-bottom: var(--s1); }
 .edit-form { display: flex; flex-direction: column; gap: 10px; }
-.toml-editor, .new-toml { height: 320px; }
-.new-toml { height: 360px; }
+/* 弹窗里「配置文件」的编辑框：新建与编辑同一高度。 */
+.config-toml { height: 340px; }
 
-/* 新建设备：正文自己滚动，标题与底部按钮留在视野里。 */
+/* 弹窗：正文自己滚动，标题与底部按钮留在视野里。 */
 .dialog.scrolling { display: flex; flex-direction: column; overflow: hidden; }
 .dialog.scrolling .dialog-body { overflow: auto; min-height: 0; }
 /* 弹窗内的分段 tab：当前 tab 用主色下划线标出，下划线压住分隔线。 */
@@ -451,6 +445,8 @@ textarea {
 }
 .tab:hover:not(:disabled) { background: none; color: var(--ink); }
 .tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+/* tab 栏右侧的次要操作（如「重置为模板」）：与 tab 同一行，靠右。 */
+.tab-actions { display: flex; align-items: center; margin-left: auto; }
 /* 详情里的三态下拉不占满整行。 */
 .field select { max-width: 260px; }
 /* 输入框下面那行浅色说明。 */

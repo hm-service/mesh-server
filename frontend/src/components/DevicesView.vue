@@ -329,6 +329,7 @@ onBeforeUnmount(() => {
               v-if="expandedId === device.id"
               :id="device.id"
               :groups="localGroups"
+              :devices="localDevices"
               @close="expandedId = null"
               @changed="onDetailChanged"
               @toast="forwardToast"

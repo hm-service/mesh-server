@@ -1,13 +1,21 @@
 // 配置模板里的占位符：{{ KEY }}，KEY 允许首尾空白。
 //
 // 控制面只保存模板原文、把配置原样收下：它不认识占位符，也不判断地址是否重复。
-// 占位符的解析、表单展示、默认值与替换都在这里做。这是控制台里唯一「针对
-// easytier 做具体实现」的地方——加一种新协议，就在这里加一行 FIELDS。
+// 占位符的解析、表单展示、默认值与替换都在这里做；编辑既有设备时还要反过来，把裸配置
+// 里的字面量读回表单值、换回占位符。这是控制台里唯一「针对 easytier 做具体实现」的
+// 地方——加一种新协议，就在这里加一行 FIELDS。
 
-/** FIELDS 是认识的占位符及其展示元数据；不认识的 key 只能在「配置文件」里手填。 */
-const FIELDS: Record<string, { label: string; example: string }> = {
-  IP: { label: "IP", example: "10.126.126.100/24" },
+/**
+ * FIELDS 是认识的占位符及其展示元数据；不认识的 key 只能在「配置文件」里手填。
+ * literal 是同一个字段写在裸配置里的样子：只认这一种写法，匹配不到就当作读不出来，
+ * 不去猜（配置里本来就没有这一行、写成了数组或别的形式时都算读不出来）。
+ */
+const FIELDS: Record<string, { label: string; example: string; literal: RegExp }> = {
+  IP: { label: "IP", example: "10.126.126.100/24", literal: /^[ \t]*ipv4[ \t]*=[ \t]*"([^"\n]*)"/m },
 };
+
+/** FIELD_KEYS 是认识的字段名：编辑裸配置时按它逐个反解。 */
+export const FIELD_KEYS: readonly string[] = Object.keys(FIELDS);
 
 /** TemplateField 是表单里的一行：key 来自模板，其余来自 FIELDS。 */
 export interface TemplateField {
@@ -26,7 +34,7 @@ export function resolveTemplate(content: string): string[] {
     const open = rest.indexOf("{{");
     if (open < 0) return keys;
     const close = rest.indexOf("}}", open + 2);
-    // 没配对的 {{ 是语法错误；扫描到此为止，由 remainingPlaceholder 报出来。
+    // 没配对的 {{ 是语法错误；扫描到此为止，由 applyTemplate 报出来。
     if (close < 0) return keys;
     const key = rest.slice(open + 2, close).trim();
     if (key && !keys.includes(key)) keys.push(key);
@@ -54,13 +62,29 @@ export function applyTemplate(content: string, values: Record<string, string>): 
   }
 }
 
-/** remainingPlaceholder 返回第一个还留在内容里的占位符（连花括号），没有则 null。 */
-export function remainingPlaceholder(content: string): string | null {
-  const open = content.indexOf("{{");
-  if (open < 0) return null;
-  const close = content.indexOf("}}", open + 2);
-  if (close < 0) return content.slice(open);
-  return content.slice(open, close + 2);
+/** literalIn 返回字段在内容里的字面量匹配，没这种字段或匹配不到时返回 null。 */
+function literalIn(content: string, key: string): RegExpExecArray | null {
+  const pattern = FIELDS[key]?.literal;
+  return pattern ? pattern.exec(content) : null;
+}
+
+/**
+ * readField 从裸配置里读出某个字段的值：只认 FIELDS 里那一种写法，读不到返回空串。
+ * 值里还留着 {{ … }} 说明这一行本来就没填过，同样算读不到。
+ */
+export function readField(content: string, key: string): string {
+  const value = literalIn(content, key)?.[1] ?? "";
+  return value.includes("{{") ? "" : value;
+}
+
+/** maskField 把裸配置里那个字段的值换成占位符，返回模板文本；读不到就原样返回。 */
+export function maskField(content: string, key: string): string {
+  const match = literalIn(content, key);
+  const value = match?.[1] ?? "";
+  if (!match || !value || value.includes("{{")) return content;
+  // match[0] 以收尾的双引号结束，值就紧挨在它前面：只换这段，行的其余部分原样保留。
+  const start = match.index + match[0].length - 1 - value.length;
+  return content.slice(0, start) + "{{ " + key + " }}" + content.slice(start + value.length);
 }
 
 /** fieldsFor 把模板里认识的占位符拼成表单字段；suggested 是 IP 的预填值。 */

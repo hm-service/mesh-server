@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api, ApiError, type DeviceDetail, type GroupView, type ReleasesPayload } from "../api";
+import { api, ApiError, type DeviceDetail, type DeviceSummary, type GroupView, type ReleasesPayload } from "../api";
 import { copyText } from "../clipboard";
 import { nowSec } from "../clock";
 import {
@@ -18,7 +18,8 @@ import {
 import ConfigEditDialog from "./ConfigEditDialog.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
-const props = defineProps<{ id: string; groups: GroupView[] }>();
+// devices 是控制台手上的设备列表：编辑配置时用它给地址撞车提示，不用另开接口。
+const props = defineProps<{ id: string; groups: GroupView[]; devices: DeviceSummary[] }>();
 const emit = defineEmits<{
   close: [];
   changed: [];
@@ -377,6 +378,7 @@ async function remove() {
     <ConfigEditDialog
       v-if="editing && device"
       :device="device"
+      :devices="devices"
       @close="editing = false"
       @saved="onSaved"
       @toast="forwardToast"

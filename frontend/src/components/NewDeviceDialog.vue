@@ -213,7 +213,7 @@ async function copy() {
             <p v-if="warnings[field.key]" class="field-warn">{{ warnings[field.key] }}（仍可提交）</p>
           </div>
           <p v-if="!fields.length" class="hint">这份模板没有可填的占位符，直接提交即可。</p>
-          <p class="hint">同一网络里每台设备的地址必须唯一，不要填网段地址（末尾 .0）。</p>
+          <p class="hint">地址按全网约定的 /24 写。同一个地址允许多台设备共用（迁移期新旧并存时就是这样），但一般应当各自不同。</p>
         </template>
 
         <template v-else>

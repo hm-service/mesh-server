@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { api, ApiError, type DeviceDetail } from "../api";
 import { validateToml } from "../format";
-import { remainingPlaceholder } from "../template";
+import { applyTemplate, remainingPlaceholder, resolveTemplate } from "../template";
 
 const props = defineProps<{ device: DeviceDetail }>();
 const emit = defineEmits<{
@@ -33,7 +33,15 @@ async function resetToTemplate() {
   error.value = "";
   resetting.value = true;
   try {
-    toml.value = (await api.template()).template;
+    const template = (await api.template()).template;
+    // 模板里的占位符用这台设备当前的地址填掉：重置是「回到默认配置」，
+    // 不该让用户自己再去找一遍地址。认不出的占位符保留原文，交给保存前的拦截。
+    const keys = resolveTemplate(template);
+    const values: Record<string, string> = {};
+    for (const key of keys) {
+      if (key === "IP" && props.device.ipv4) values[key] = props.device.ipv4;
+    }
+    toml.value = keys.every((key) => values[key]) ? applyTemplate(template, values) : template;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       emit("unauthorized");
@@ -109,7 +117,7 @@ async function save() {
         <p class="hint">「重置为模板」只替换编辑框内容，保存后才会下发给设备。</p>
         <p class="hint">
           这里编辑的是设备实际使用的裸配置：不能留 <code v-pre>{{ ... }}</code> 占位符。
-          重置模板带进来的占位符要先换成具体地址，否则保存会被拒绝。
+          「重置为模板」会用这台设备当前的地址填掉占位符；认不出的占位符要自己换掉，否则保存会被拒绝。
           <template v-if="device.ipv4">这台设备现在是 <code>{{ device.ipv4 }}</code>。</template>
         </p>
         <div v-if="error" class="err">{{ error }}</div>

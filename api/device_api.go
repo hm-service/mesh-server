@@ -346,7 +346,7 @@ func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID s
 	if !s.app.CredentialConfigured() {
 		return nil
 	}
-	// 空串是正式节点（CONTRACT.md 1.5）或还不认识这个字段的旧客户端：既不
+	// 空串是正式节点（contract/device-api.md）或还不认识这个字段的旧客户端：既不
 	// 确认也不签发，连凭据表都不必读。
 	if reportedID == "" {
 		return nil

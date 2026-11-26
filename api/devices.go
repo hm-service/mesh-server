@@ -10,7 +10,7 @@ import (
 	"mesh-server/httpx"
 )
 
-// deviceSummary is one row of GET /api/admin/devices (CONTRACT.md 1.4).
+// deviceSummary is one row of GET /api/admin/devices (contract/admin-api.md).
 type deviceSummary struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`

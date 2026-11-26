@@ -1,4 +1,4 @@
-// Package api is the HTTP interface described by CONTRACT.md 1.4.
+// Package api is the HTTP interface described by contract/.
 package api
 
 import (

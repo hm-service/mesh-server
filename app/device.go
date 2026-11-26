@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	// MaxDevices caps the number of device slots (CONTRACT.md 1.4).
+	// MaxDevices caps the number of device slots (contract/device-api.md).
 	MaxDevices = 200
 	// TokenTTL is the lifetime of a one-time registration token.
 	TokenTTL = 10 * time.Minute
@@ -199,7 +199,7 @@ func (a *App) IssueToken(publicID string) (string, error) {
 }
 
 // DeleteDevice removes the slot and remembers its device_id so later signed
-// requests are answered with code "revoked" (CONTRACT.md 2.6). The tombstone
+// requests are answered with code "revoked" (contract/client.md). The tombstone
 // only lives in memory, exactly as before.
 func (a *App) DeleteDevice(ctx context.Context, publicID string) (db.Device, error) {
 	// 先撤销凭据再删记录：撤销失败就让删除失败，否则这台设备还能用旧凭据
@@ -328,7 +328,7 @@ func ConfigState(d db.Device) string {
 }
 
 // AppState reports whether the device already runs a build at least as new as
-// the one published for its platform (CONTRACT.md 1.4). With nothing published
+// the one published for its platform (contract/updates.md). With nothing published
 // there is nothing to update to, so it counts as current, even for a device that
 // has never reported a platform. A device running a newer build than the
 // published one counts as current as well: the control plane only ever asks a

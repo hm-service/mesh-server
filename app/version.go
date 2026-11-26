@@ -67,7 +67,7 @@ func CompareVersions(a, b string) (order int, ok bool) {
 // A device that has never reported a version counts as behind: it is an older
 // client that predates the field, and it reports its version right after
 // installing, so this cannot loop. A reported label that cannot be ordered is
-// not evidence of an older build and is left alone (CONTRACT.md 1.5).
+// not evidence of an older build and is left alone (contract/updates.md).
 func NeedsUpdate(reported, published string) bool {
 	if published == "" {
 		return false

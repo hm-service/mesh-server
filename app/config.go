@@ -6,7 +6,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// 节点身份由配置里有没有 network_secret 决定（CONTRACT.md 2.1）：正式节点用
+// 节点身份由配置里有没有 network_secret 决定（contract/client.md）：正式节点用
 // secure_mode 的节点私钥认证，不用凭据；其余节点用控制面签发的凭据。
 const (
 	// IdentityFormal 是配置里带 network_secret 的正式节点（含管理节点）。

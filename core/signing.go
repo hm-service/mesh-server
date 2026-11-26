@@ -18,7 +18,7 @@ var (
 	ErrSignature = errors.New("signature rejected")
 )
 
-// SigningString builds the exact text a device signs (CONTRACT.md 1.3).
+// SigningString builds the exact text a device signs (contract/device-api.md).
 //
 // The fields are joined in a fixed order instead of hashing the JSON body: the
 // heartbeat carries its own signature, so any body-digest scheme would have to

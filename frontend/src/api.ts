@@ -1,4 +1,4 @@
-// 控制台的 HTTP 客户端：请求路径与响应字段直接对应 CONTRACT.md 1.4。
+// 控制台的 HTTP 客户端：请求路径与响应字段直接对应 contract/admin-api.md。
 export type NodeIdentity = "formal" | "credential";
 
 export interface DeviceSummary {

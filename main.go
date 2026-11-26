@@ -1,4 +1,4 @@
-// Command mesh-server runs the mesh control plane described by CONTRACT.md 1.
+// Command mesh-server runs the mesh control plane described by contract/.
 package main
 
 import (

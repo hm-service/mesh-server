@@ -15,7 +15,7 @@ var (
 )
 
 // Device is one row of the device table. The field names follow the wire
-// contract of CONTRACT.md 1.1.
+// contract of contract/server.md.
 type Device struct {
 	PublicID       string
 	Name           string
@@ -257,7 +257,7 @@ func (d *DB) RecordHeartbeat(publicID, configHash, appVersion, platform string, 
 }
 
 // PurgeExpiredTokens clears registration tokens whose validity has ended; the
-// plaintext token is only kept until token_expires_at (CONTRACT.md 1.1).
+// plaintext token is only kept until token_expires_at (contract/server.md).
 func (d *DB) PurgeExpiredTokens(now int64) (int64, error) {
 	res, err := d.conn.Exec("UPDATE device SET token = '', token_expires_at = 0 WHERE token <> '' AND token_expires_at <= ?", now)
 	if err != nil {

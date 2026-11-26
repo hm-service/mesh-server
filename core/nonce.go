@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// NonceCache remembers nonces seen inside the replay window (CONTRACT.md 1.3).
+// NonceCache remembers nonces seen inside the replay window (contract/device-api.md).
 type NonceCache struct {
 	mu        sync.Mutex
 	ttl       time.Duration

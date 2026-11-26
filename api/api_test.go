@@ -715,7 +715,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	}
 
 	// Nothing reported yet: no config hash is recorded, and the platform is
-	// unknown, so nothing is published for it either — CONTRACT.md 1.4 counts
+	// unknown, so nothing is published for it either — contract/admin-api.md counts
 	// that as current, not stale.
 	if got := summary(); got.ConfigState != "stale" || got.AppState != "current" || got.LastConfigHash != "" || got.LastAppVersion != "" {
 		t.Fatalf("before any heartbeat = %+v", got)
@@ -1335,7 +1335,7 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 }
 
 // TestHeartbeatOnlyUpgrades pins the version-order rule of the heartbeat
-// (CONTRACT.md 1.5): an update goes out only when the device reports a build
+// (contract/updates.md): an update goes out only when the device reports a build
 // older than the published one. -9 is older than -11 even though string order
 // says the opposite, and a device ahead of the published build stays current so
 // autoUpdate cannot loop on an old package.

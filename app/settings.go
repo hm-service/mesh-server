@@ -161,7 +161,7 @@ func (a *App) Publish(in PublishInput) error {
 	if in.DefaultTOML != nil {
 		if isBlank(*in.DefaultTOML) {
 			// 空白等于「没有自定义模板」：删掉文件，回退到内置模板
-			// （CONTRACT.md 1.5）。文件缺失本来就是 TemplateTOML 的回退条件，
+			// （contract/admin-api.md）。文件缺失本来就是 TemplateTOML 的回退条件，
 			// 这样两条路径只有一种表示。
 			if err := os.Remove(a.templatePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err

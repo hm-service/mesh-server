@@ -51,6 +51,10 @@ type heartbeatRequest struct {
 	AppVersion string `json:"appVersion"`
 	// CredentialID 是客户端正在用的凭据；不参与签名，也不影响鉴权。
 	CredentialID string `json:"credentialId"`
+	// AppUpdateKnown 是客户端内存里那份 appUpdate 的 sha256（不是版本号：同一
+	// 版本号重新发布时内容会变）。命中时只回精简形状，省掉每轮重复的 notes。
+	// 不参与签名，也不影响鉴权：它只决定下发多少内容。
+	AppUpdateKnown string `json:"appUpdateKnown"`
 }
 
 // deviceAuth verifies a signed request and returns the device. On failure it
@@ -214,12 +218,19 @@ func (s *Server) slotTokenValid(device db.Device, token string, now time.Time) b
 // device reporting an older one (app.NeedsUpdate); sha256 lets the client verify
 // the download after the fact. AutoUpdate 是这个包自己带的选择——发布方决定它
 // 能不能自己装，设备是不是无人值守不参与判断，所以它跟着 appUpdate 走，永远有值。
+//
+// 两种形状：设备报的 appUpdateKnown 与发布摘要一致时只回 version/autoUpdate/
+// unchanged，内容字段整个不出现（发布要求 appUrl 非空，完整形状里 url 一定有
+// 值）；否则回完整形状，且不带 unchanged。
 type updateInfo struct {
-	Version    string `json:"version"`
-	URL        string `json:"url"`
-	Notes      string `json:"notes,omitempty"`
-	SHA256     string `json:"sha256,omitempty"`
-	AutoUpdate bool   `json:"autoUpdate"`
+	Version string `json:"version"`
+	URL     string `json:"url,omitempty"`
+	Notes   string `json:"notes,omitempty"`
+	SHA256  string `json:"sha256,omitempty"`
+	// AutoUpdate 在两种形状里都有：管理员可能刚改过设备级覆盖。
+	AutoUpdate bool `json:"autoUpdate"`
+	// Unchanged 表示设备手里已经是这一份：跳过下载与提示，只认 autoUpdate。
+	Unchanged bool `json:"unchanged,omitempty"`
 }
 
 // launcherInfo points a client at the launcher published for its platform. It
@@ -318,13 +329,20 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		resp.ConfigB64 = base64.StdEncoding.EncodeToString([]byte(device.ConfigTOML))
 	}
 	if appChanged {
-		resp.AppUpdate = &updateInfo{
+		appUpdate := &updateInfo{
 			Version:    release.Version,
-			URL:        release.URL,
-			Notes:      release.Notes,
-			SHA256:     release.SHA256,
 			AutoUpdate: app.EffectiveAutoUpdate(device.AutoUpdate, release.AutoUpdate),
 		}
+		// 摘要一致才算同一份：同一版本号重新发布时内容会变，只有 sha256 能表达
+		// "我手上是哪一份"。已知就只带版本与开关，notes 不必每 30 秒重复一次。
+		if req.AppUpdateKnown != "" && req.AppUpdateKnown == release.SHA256 {
+			appUpdate.Unchanged = true
+		} else {
+			appUpdate.URL = release.URL
+			appUpdate.Notes = release.Notes
+			appUpdate.SHA256 = release.SHA256
+		}
+		resp.AppUpdate = appUpdate
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }

@@ -93,10 +93,11 @@ type configResponse struct {
 
 type updateInfo struct {
 	Version    string `json:"version"`
-	URL        string `json:"url"`
+	URL        string `json:"url,omitempty"`
 	Notes      string `json:"notes,omitempty"`
 	SHA256     string `json:"sha256,omitempty"`
 	AutoUpdate bool   `json:"autoUpdate"`
+	Unchanged  bool   `json:"unchanged,omitempty"`
 }
 
 type launcherInfo struct {
@@ -176,23 +177,32 @@ func signedRegisterBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, 
 // heartbeatBody builds the signed heartbeat payload for one device.
 func heartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce, configHash, appVersion string) []byte {
 	t.Helper()
-	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appVersion)
+	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appVersion, "")
+}
+
+// heartbeatBodyKnown is heartbeatBody carrying the appUpdate digest the client
+// already holds in memory.
+func heartbeatBodyKnown(t *testing.T, dev registeredDevice, ts int64, nonce, configHash, appVersion, appUpdateKnown string) []byte {
+	t.Helper()
+	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appVersion, appUpdateKnown)
 }
 
 // signedHeartbeatBody is heartbeatBody with every signed field spelled out, so
-// the tampering tests can break exactly one of them.
-func signedHeartbeatBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, platform string, ts int64, nonce, configHash, appVersion string) []byte {
+// the tampering tests can break exactly one of them. appUpdateKnown rides along
+// without being signed.
+func signedHeartbeatBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, platform string, ts int64, nonce, configHash, appVersion, appUpdateKnown string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
 	msg := core.SigningString("POST", "/api/v1/heartbeat", deviceID, stamp, nonce, platform, configHash, appVersion)
 	body, err := json.Marshal(map[string]string{
-		"deviceId":   deviceID,
-		"timestamp":  stamp,
-		"nonce":      nonce,
-		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
-		"platform":   platform,
-		"configHash": configHash,
-		"appVersion": appVersion,
+		"deviceId":       deviceID,
+		"timestamp":      stamp,
+		"nonce":          nonce,
+		"signature":      base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
+		"platform":       platform,
+		"configHash":     configHash,
+		"appVersion":     appVersion,
+		"appUpdateKnown": appUpdateKnown,
 	})
 	if err != nil {
 		t.Fatalf("marshal heartbeat: %v", err)
@@ -522,7 +532,7 @@ func TestSignatureTampering(t *testing.T) {
 	}
 
 	// An unknown device id cannot authenticate even with a valid key.
-	unknown := signedHeartbeatBody(t, "dev-unknown", dev.priv, testPlatform, now, newNonce(&nonces), dev.configHash, "")
+	unknown := signedHeartbeatBody(t, "dev-unknown", dev.priv, testPlatform, now, newNonce(&nonces), dev.configHash, "", "")
 	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", unknown, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unknown device = %d, want 401", res.StatusCode)
@@ -590,7 +600,12 @@ func publishLauncher(t *testing.T, env *testenv.Env, platform, version string, l
 
 func heartbeat(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appVersion string) (*http.Response, []byte) {
 	t.Helper()
-	body := heartbeatBody(t, dev, env.Clock.Now().Unix(), newNonce(nonces), configHash, appVersion)
+	return heartbeatKnown(t, env, dev, nonces, configHash, appVersion, "")
+}
+
+func heartbeatKnown(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appVersion, appUpdateKnown string) (*http.Response, []byte) {
+	t.Helper()
+	body := heartbeatBodyKnown(t, dev, env.Clock.Now().Unix(), newNonce(nonces), configHash, appVersion, appUpdateKnown)
 	return signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 }
 
@@ -692,6 +707,86 @@ func TestHeartbeatSemantics(t *testing.T) {
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
 		t.Fatalf("heartbeat after release = %d %+v, want only appUpdate %q", res.StatusCode, got, next.AppURL)
+	}
+}
+
+// TestHeartbeatAppUpdateKnown pins the two shapes of appUpdate: a device that
+// reports the digest of the build it already holds gets version/autoUpdate/
+// unchanged only, while a wrong or missing digest still gets the full payload.
+// appUpdateKnown is not part of the signed string, so the signatures here are
+// built without it.
+func TestHeartbeatAppUpdateKnown(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+	pkg := releasePkg(t, "2026.11.26-18", []byte("client build one"))
+	sum := sha256.Sum256(pkg)
+	release := putReleases(t, env, map[string]any{
+		"platform":   testPlatform,
+		"appUrl":     fileServer(t, pkg),
+		"appNotes":   "修复窄屏布局",
+		"autoUpdate": true,
+	}).releaseOf(testPlatform)
+	wantSHA := hex.EncodeToString(sum[:])
+	if release.AppSHA256 != wantSHA {
+		t.Fatalf("published sha256 = %q, want %q", release.AppSHA256, wantSHA)
+	}
+
+	decode := func(data []byte) (heartbeatResponse, string) {
+		t.Helper()
+		var out heartbeatResponse
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("decode heartbeat: %v", err)
+		}
+		return out, string(data)
+	}
+
+	// 没报 known：完整形状，且不带 unchanged。
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-0")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("heartbeat without known = %d, want 200: %s", res.StatusCode, data)
+	}
+	got, body := decode(data)
+	wantFull := updateInfo{Version: "2026.11.26-18", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA, AutoUpdate: true}
+	if got.AppUpdate == nil || *got.AppUpdate != wantFull {
+		t.Fatalf("heartbeat without known = %+v, want the full appUpdate %+v", got.AppUpdate, wantFull)
+	}
+	if strings.Contains(body, `"unchanged"`) {
+		t.Fatalf("heartbeat without known = %s, want no unchanged", body)
+	}
+
+	// 报了一个对不上的摘要：仍然完整，不能因为"报了个值"就当成已知。
+	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.26-0", strings.Repeat("0", 64))
+	got, body = decode(data)
+	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || *got.AppUpdate != wantFull {
+		t.Fatalf("heartbeat with a wrong known = %d %+v, want the full appUpdate", res.StatusCode, got.AppUpdate)
+	}
+	if strings.Contains(body, `"unchanged"`) {
+		t.Fatalf("wrong known heartbeat = %s, want no unchanged", body)
+	}
+
+	// 摘要一致：精简形状，只带 version/autoUpdate/unchanged。
+	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.26-0", wantSHA)
+	got, body = decode(data)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("heartbeat with a matching known = %d, want 200: %s", res.StatusCode, data)
+	}
+	wantSlim := updateInfo{Version: "2026.11.26-18", AutoUpdate: true, Unchanged: true}
+	if got.AppUpdate == nil || *got.AppUpdate != wantSlim {
+		t.Fatalf("matching known = %+v, want the slim appUpdate %+v", got.AppUpdate, wantSlim)
+	}
+	for _, field := range []string{`"url"`, `"notes"`, `"sha256"`} {
+		if strings.Contains(body, field) {
+			t.Fatalf("matching known heartbeat = %s, want no %s", body, field)
+		}
+	}
+
+	// 设备级覆盖照样生效：精简形状里的 autoUpdate 不是发布包上的值。
+	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML, "autoUpdate": false})
+	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.26-0", wantSHA)
+	got, _ = decode(data)
+	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || !got.AppUpdate.Unchanged || got.AppUpdate.AutoUpdate {
+		t.Fatalf("matching known after a device override = %d %+v, want unchanged with autoUpdate false", res.StatusCode, got.AppUpdate)
 	}
 }
 

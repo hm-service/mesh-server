@@ -17,7 +17,7 @@ const busy = ref(false);
 // 时显示成空，和「重置为模板」实际拿到的内容对不上。
 onMounted(async () => {
   try {
-    toml.value = (await api.template()).toml;
+    toml.value = (await api.template()).template;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       emit("unauthorized");
@@ -69,8 +69,8 @@ async function save() {
       <div class="panel-body">
         <textarea v-model="toml" class="template-editor" spellcheck="false" />
         <p class="hint">
-          模板里可以写 <code v-pre>{{ IP }}</code>：创建设备时替换成下一个空闲的固定地址（裸 IPv4，不含前缀长度），
-          网段取现有设备里最小那台所在的 /24；改已有设备的配置时沿用它当前的地址。
+          模板里可以写占位符，例如 <code v-pre>{{ IP }}</code>：新建设备时控制台把它们列成表单并预填建议值，
+          提交前必须全部填完，落库的是填好的裸配置。
         </p>
         <p class="hint">只影响之后的新建设备与显式重置；已建设备的配置在设备详情里单独修改。</p>
         <div v-if="error" class="err">{{ error }}</div>

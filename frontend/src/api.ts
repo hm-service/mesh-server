@@ -82,6 +82,12 @@ export interface ReleasePublish {
   defaultToml?: string;
 }
 
+/** TemplatePayload 是默认模板原文（占位符还在）。占位符怎么变成表单、默认值
+ * 怎么算都是前端的事，见 template.ts。 */
+export interface TemplatePayload {
+  template: string;
+}
+
 /** ReleasesPayload 是管理端看到的全部平台发布状态，外加默认模板。 */
 export interface ReleasesPayload {
   defaultToml: string;
@@ -235,8 +241,8 @@ export const api = {
   deleteGroup(id: number): Promise<void> {
     return jsonRequest<void>("DELETE", "/api/admin/groups/" + id);
   },
-  template(): Promise<{ toml: string }> {
-    return jsonRequest<{ toml: string }>("GET", "/api/admin/template");
+  template(): Promise<TemplatePayload> {
+    return jsonRequest<TemplatePayload>("GET", "/api/admin/template");
   },
   getReleases(): Promise<ReleasesPayload> {
     return releasesRequest("/api/admin/releases", { method: "GET" });

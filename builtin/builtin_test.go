@@ -46,6 +46,18 @@ func TestDefaultTemplateDescribesNetworkOnly(t *testing.T) {
 	}
 }
 
+// TestDefaultTemplateLeavesTheAddressToTheConsole 钉住地址那一行：占位符顶掉整个
+// 值，前缀长度由控制台给的完整 CIDR 带上。控制面只做字符串校验，不做任何替换，
+// 所以模板里不能自己写 /24。
+func TestDefaultTemplateLeavesTheAddressToTheConsole(t *testing.T) {
+	if got := quotedValues(DefaultTemplate(), "ipv4"); len(got) != 1 || got[0] != "{{ IP }}" {
+		t.Fatalf("ipv4 = %v, want the single {{ IP }} placeholder", got)
+	}
+	if strings.Contains(DefaultTemplate(), "{{ IP }}/") {
+		t.Fatal("the template writes the prefix length itself; the console supplies the whole CIDR")
+	}
+}
+
 // hasKey reports whether an uncommented `key = …` line exists.
 func hasKey(text, key string) bool {
 	for _, line := range strings.Split(text, "\n") {

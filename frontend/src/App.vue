@@ -234,6 +234,7 @@ onBeforeUnmount(() => {
 
     <NewDeviceDialog
       v-if="showNew"
+      :devices="devices"
       @close="showNew = false"
       @created="onCreated"
       @toast="showToast"

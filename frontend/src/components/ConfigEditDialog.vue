@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { api, ApiError, type DeviceDetail } from "../api";
 import { validateToml } from "../format";
+import { remainingPlaceholder } from "../template";
 
 const props = defineProps<{ device: DeviceDetail }>();
 const emit = defineEmits<{
@@ -32,7 +33,7 @@ async function resetToTemplate() {
   error.value = "";
   resetting.value = true;
   try {
-    toml.value = (await api.template()).toml;
+    toml.value = (await api.template()).template;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       emit("unauthorized");
@@ -54,6 +55,12 @@ async function save() {
   }
   if (!toml.value.trim()) {
     error.value = "请填写配置内容";
+    return;
+  }
+  // 控制面原样收下配置，所以只能在这里拦：留了占位符，设备会拿到一段坏配置。
+  const left = remainingPlaceholder(toml.value);
+  if (left) {
+    error.value = "配置里还有占位符 " + left + "，保存前请换成具体值";
     return;
   }
   const warning = validateToml(toml.value);
@@ -101,7 +108,9 @@ async function save() {
         <textarea id="cfg-toml" v-model="toml" class="toml-editor" spellcheck="false" />
         <p class="hint">「重置为模板」只替换编辑框内容，保存后才会下发给设备。</p>
         <p class="hint">
-          模板里的 <code v-pre>{{ IP }}</code> 保存时换成这台设备现在的地址：改配置不会换地址。
+          这里编辑的是设备实际使用的裸配置：不能留 <code v-pre>{{ ... }}</code> 占位符。
+          重置模板带进来的占位符要先换成具体地址，否则保存会被拒绝。
+          <template v-if="device.ipv4">这台设备现在是 <code>{{ device.ipv4 }}</code>。</template>
         </p>
         <div v-if="error" class="err">{{ error }}</div>
       </div>

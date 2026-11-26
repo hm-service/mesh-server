@@ -128,37 +128,8 @@ func (a *App) DeviceByToken(token string) (db.Device, bool, error) {
 	return device, err == nil, err
 }
 
-// expandTemplateFor 展开配置模板里的注入占位。
-//
-// existing 是这台设备现在用的裸地址：改已有设备时沿用它（改配置不该换地址），
-// 新建设备时为空，由控制面现分配一个空闲地址。
-func (a *App) expandTemplateFor(configTOML, existing string) (string, error) {
-	if token := firstUnknownPlaceholder(configTOML); token != "" {
-		return "", fmt.Errorf("%w: %s", ErrUnknownPlaceholder, token)
-	}
-	if !hasIPPlaceholder(configTOML) {
-		return configTOML, nil
-	}
-	addr := existing
-	if addr == "" {
-		devices, err := a.database.List()
-		if err != nil {
-			return "", err
-		}
-		used := make([]string, 0, len(devices))
-		for _, device := range devices {
-			used = append(used, ConfigFactsOf(device.ConfigTOML).IPv4)
-		}
-		addr, err = AllocateIPv4(used)
-		if err != nil {
-			return "", err
-		}
-	}
-	return expandTemplate(configTOML, addr), nil
-}
-
 // CreateDevice stores a new slot and returns it together with its one-time
-// registration token. 模板里的 {{ IP }} 在这里换成一台空闲的固定地址。
+// registration token. 配置原样落库：控制面不解释、不填充、不校验它的内容。
 func (a *App) CreateDevice(name, configTOML string) (db.Device, string, error) {
 	name = trimName(name)
 	if name == "" || len([]rune(name)) > MaxNameRunes {
@@ -167,11 +138,6 @@ func (a *App) CreateDevice(name, configTOML string) (db.Device, string, error) {
 	if isBlank(configTOML) {
 		return db.Device{}, "", ErrInvalidInput
 	}
-	expanded, err := a.expandTemplateFor(configTOML, "")
-	if err != nil {
-		return db.Device{}, "", err
-	}
-	configTOML = expanded
 	id, err := a.newDeviceID()
 	if err != nil {
 		return db.Device{}, "", err
@@ -198,8 +164,8 @@ func (a *App) CreateDevice(name, configTOML string) (db.Device, string, error) {
 
 // UpdateDevice replaces the display name and the assigned configuration.
 //
-// 配置里带 {{ IP }} 时用这台设备现在的地址展开：改配置不该换地址，否则设备
-// 下次心跳就会拿着新地址重启 core，而别的节点可能已经把旧地址分出去了。
+// 配置原样落库：地址写在配置里，控制面不再替它保留或改写，也不判断它与别的
+// 设备是否一样——那可能是多网卡、迁移期并存或临时排查时的有意为之。
 func (a *App) UpdateDevice(publicID, name, configTOML string) (db.Device, error) {
 	name = trimName(name)
 	if name == "" || len([]rune(name)) > MaxNameRunes {
@@ -208,15 +174,9 @@ func (a *App) UpdateDevice(publicID, name, configTOML string) (db.Device, error)
 	if isBlank(configTOML) {
 		return db.Device{}, ErrInvalidInput
 	}
-	current, err := a.database.Get(publicID)
-	if err != nil {
+	if _, err := a.database.Get(publicID); err != nil {
 		return db.Device{}, err
 	}
-	expanded, err := a.expandTemplateFor(configTOML, hostPart(ConfigFactsOf(current.ConfigTOML).IPv4))
-	if err != nil {
-		return db.Device{}, err
-	}
-	configTOML = expanded
 	hash := core.Hash(configTOML)
 	return a.database.Update(publicID, func(d *db.Device) error {
 		d.Name = name

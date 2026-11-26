@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api, ApiError } from "../api";
 import { copyText } from "../clipboard";
 import { validateToml } from "../format";
+import { applyTemplate, fieldWarning, fieldsFor, nextFreeAddress, resolveTemplate, type TemplateField } from "../template";
+
+// devices 是控制台已经在手上的设备列表：建议地址与撞车提示都从它算，不再另开接口。
+const props = defineProps<{ devices: { name: string; ipv4: string }[] }>();
 
 const emit = defineEmits<{
   close: [];
@@ -11,8 +15,15 @@ const emit = defineEmits<{
   unauthorized: [];
 }>();
 
+type Tab = "form" | "file";
+
 const name = ref("");
-const toml = ref("");
+// 状态只有两份：template 是唯一源，带着占位符；values 只放表单值。
+const template = ref("");
+// suggestion 是加载时算出的建议地址，之后不再跟着轮询变。
+const suggestion = ref("");
+const values = ref<Record<string, string>>({});
+const tab = ref<Tab>("form");
 const error = ref("");
 const token = ref("");
 const address = ref("");
@@ -21,11 +32,37 @@ const locked = ref(false);
 const templateReady = ref(false);
 const templateError = ref("");
 
+// 表单按模板现扫：模板里没有的占位符不出现在「配置」里。
+const fields = computed<TemplateField[]>(() => fieldsFor(template.value, suggestion.value));
+
+// 撞车只提示、不阻断：同一个地址有时是有意为之（多网卡、迁移期并存、临时排查）。
+const warnings = computed<Record<string, string>>(() => {
+  const out: Record<string, string> = {};
+  for (const field of fields.value) {
+    const warning = fieldWarning(field.key, values.value[field.key] ?? "", props.devices);
+    if (warning) out[field.key] = warning;
+  }
+  return out;
+});
+
+// syncValues 按模板重新梳理 values：已有的 key 保留用户填的值，新出现的 key 用
+// 服务端给的默认值（没有就留空），模板里删掉的 key 直接丢掉。
+function syncValues() {
+  const next: Record<string, string> = {};
+  for (const field of fields.value) {
+    next[field.key] = values.value[field.key] ?? field.value;
+  }
+  values.value = next;
+}
+
 // 默认模板只有服务端一份：取不到就不让建，否则会写出一份和全网不一致的配置。
 async function loadTemplate() {
   templateError.value = "";
   try {
-    toml.value = (await api.template()).toml;
+    const payload = await api.template();
+    template.value = payload.template;
+    suggestion.value = nextFreeAddress(props.devices);
+    syncValues();
     templateReady.value = true;
   } catch (err) {
     templateReady.value = false;
@@ -39,6 +76,36 @@ async function loadTemplate() {
 
 onMounted(loadTemplate);
 
+// 用户在「配置文件」里改了模板：重新扫一遍占位符，表单跟着变，已填的值按 key 保住。
+function onTemplateInput() {
+  syncValues();
+}
+
+/** placeholderOf 把 key 还原成模板里的写法，用于界面提示。 */
+function placeholderOf(key: string): string {
+  return "{{ " + key + " }}";
+}
+
+// block 把问题指到「配置文件」：那里能直接看到还留着的是哪个占位符。
+function block(message: string): null {
+  error.value = message;
+  tab.value = "file";
+  return null;
+}
+
+// buildConfig 把表单值填进模板，得到要提交的裸配置。填不完整返回 null。
+function buildConfig(): string | null {
+  const missing = resolveTemplate(template.value).find((key) => !(values.value[key] ?? "").trim());
+  if (missing !== undefined) {
+    return block("占位符 " + placeholderOf(missing) + " 还没有值：请在「配置」里填好，或者直接在「配置文件」里把它换成具体值");
+  }
+  try {
+    return applyTemplate(template.value, values.value);
+  } catch (err) {
+    return block(err instanceof Error ? err.message : "配置模板里有没填完的占位符");
+  }
+}
+
 async function submit() {
   if (busy.value || locked.value) return;
   error.value = "";
@@ -51,18 +118,20 @@ async function submit() {
     error.value = "请填写设备名称";
     return;
   }
-  if (!toml.value.trim()) {
+  if (!template.value.trim()) {
     error.value = "请填写配置内容";
     return;
   }
-  const warning = validateToml(toml.value);
+  const body = buildConfig();
+  if (body === null) return;
+  const warning = validateToml(body);
   if (warning) {
     error.value = warning;
     return;
   }
   busy.value = true;
   try {
-    const created = await api.createDevice(trimmed, toml.value);
+    const created = await api.createDevice(trimmed, body);
     token.value = created.token;
     address.value = created.ipv4 ?? "";
     locked.value = true;
@@ -86,7 +155,7 @@ async function copy() {
 
 <template>
   <div class="modal" @click.self="emit('close')">
-    <div class="dialog wide" role="dialog" aria-modal="true">
+    <div class="dialog wide scrolling" role="dialog" aria-modal="true">
       <h2 class="dialog-title">新建设备</h2>
       <p class="dialog-sub">配置由默认模板预填。生成一次性令牌，设备注册后自动绑定，之后从心跳取配置。</p>
       <div class="dialog-body">
@@ -102,17 +171,65 @@ async function copy() {
             :disabled="locked"
           />
         </div>
-        <div class="field">
-          <label class="field-label" for="new-device-toml">EasyTier 配置（TOML）</label>
-          <textarea id="new-device-toml" v-model="toml" class="new-toml" :disabled="locked" spellcheck="false" />
+
+        <div class="tab-bar" role="tablist">
+          <button
+            class="tab"
+            :class="{ on: tab === 'form' }"
+            type="button"
+            role="tab"
+            :aria-selected="tab === 'form'"
+            @click="tab = 'form'"
+          >
+            配置
+          </button>
+          <button
+            class="tab"
+            :class="{ on: tab === 'file' }"
+            type="button"
+            role="tab"
+            :aria-selected="tab === 'file'"
+            @click="tab = 'file'"
+          >
+            配置文件
+          </button>
         </div>
-        <p class="hint">
-          名称只用于控制台展示，可重复；同一网络内每台设备的 ipv4 必须唯一，不要填网段地址（末尾 .0）。
-        </p>
-        <p class="hint">
-          配置里的 <code v-pre>{{ IP }}</code> 由控制面分配：取现有设备里最小那台所在的 /24，
-          从它之后挑第一个没被占用的值。要自己指定地址就直接改写 ipv4 那一行。
-        </p>
+
+        <template v-if="tab === 'form'">
+          <div v-for="field in fields" :key="field.key" class="field">
+            <label class="field-label" :for="'new-device-' + field.key">{{ field.label }}</label>
+            <input
+              :id="'new-device-' + field.key"
+              v-model="values[field.key]"
+              type="text"
+              :placeholder="field.example"
+              autocomplete="off"
+              :disabled="locked"
+            />
+            <p class="field-hint">
+              模板里写作 <code>{{ placeholderOf(field.key) }}</code>，会原样换成这一栏的值（例如
+              <code>{{ field.example }}</code>）。
+            </p>
+            <p v-if="warnings[field.key]" class="field-warn">{{ warnings[field.key] }}（仍可提交）</p>
+          </div>
+          <p v-if="!fields.length" class="hint">这份模板没有可填的占位符，直接提交即可。</p>
+          <p class="hint">同一网络里每台设备的地址必须唯一，不要填网段地址（末尾 .0）。</p>
+        </template>
+
+        <template v-else>
+          <textarea
+            id="new-device-toml"
+            v-model="template"
+            class="new-toml"
+            :disabled="locked"
+            spellcheck="false"
+            @input="onTemplateInput"
+          />
+          <p class="hint">
+            这是模板原文：占位符（形如 <code v-pre>{{ IP }}</code>）原样保留，提交前必须全部填完——在「配置」里填，或直接在这里改成具体值。
+          </p>
+        </template>
+
         <div v-if="templateError" class="err">
           {{ templateError }}
           <button class="ghost" type="button" @click="loadTemplate">重试</button>
@@ -120,7 +237,7 @@ async function copy() {
         <div v-if="token" class="token-box">
           <div class="token-label">
             一次性令牌（10 分钟内有效，注册成功后作废）
-            <template v-if="address"> · 已分配 <code>{{ address }}</code></template>
+            <template v-if="address"> · 地址 <code>{{ address }}</code></template>
           </div>
           <div class="token-row">
             <code class="token-value">{{ token }}</code>

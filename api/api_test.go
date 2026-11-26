@@ -134,6 +134,11 @@ type releasesResponse struct {
 	Releases    []releaseView `json:"releases"`
 }
 
+// templateResponse mirrors GET /api/admin/template.
+type templateResponse struct {
+	Template string `json:"template"`
+}
+
 // releaseOf returns the entry of platform, or a zero view when absent.
 func (r releasesResponse) releaseOf(platform string) releaseView {
 	for _, v := range r.Releases {
@@ -1419,16 +1424,37 @@ func TestBlankTemplateRestoresBuiltin(t *testing.T) {
 			t.Fatalf("blank save left peer.default.toml behind: %v", err)
 		}
 		// GET /api/admin/template falls back to the embedded template.
-		res, data := env.Do("GET", "/api/admin/template", nil)
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("GET template = %d: %s", res.StatusCode, data)
+		if tmpl := getTemplate(t, env); tmpl.Template != builtin.DefaultTemplate() {
+			t.Fatalf("template after a blank save = %q, want the embedded one", tmpl.Template)
 		}
-		var tmpl struct {
-			TOML string `json:"toml"`
-		}
-		if err := json.Unmarshal(data, &tmpl); err != nil || tmpl.TOML != builtin.DefaultTemplate() {
-			t.Fatalf("template after a blank save = %q (%v), want the embedded one", tmpl.TOML, err)
-		}
+	}
+}
+
+// getTemplate reads GET /api/admin/template.
+func getTemplate(t *testing.T, env *testenv.Env) templateResponse {
+	t.Helper()
+	res, data := env.Do("GET", "/api/admin/template", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET template = %d: %s", res.StatusCode, data)
+	}
+	var out templateResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	return out
+}
+
+// TestTemplatePayload pins the prefill shape: the template exactly as stored,
+// placeholders and all. Everything else — which placeholders become form
+// fields, what they default to — is the console's business.
+func TestTemplatePayload(t *testing.T) {
+	env := testenv.New(t)
+	tmpl := getTemplate(t, env)
+	if tmpl.Template != builtin.DefaultTemplate() {
+		t.Fatalf("template = %q, want the embedded one", tmpl.Template)
+	}
+	if !strings.Contains(tmpl.Template, "{{ IP }}") {
+		t.Fatalf("template lost its placeholder: %q", tmpl.Template)
 	}
 }
 
@@ -1439,22 +1465,13 @@ ipv4 = "10.126.126.9/24"`
 	putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
 
 	// The create dialog prefills from GET /api/admin/template.
-	res, data := env.Do("GET", "/api/admin/template", nil)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("GET template = %d: %s", res.StatusCode, data)
-	}
-	var tmpl struct {
-		TOML string `json:"toml"`
-	}
-	if err := json.Unmarshal(data, &tmpl); err != nil {
-		t.Fatalf("decode template: %v", err)
-	}
-	if tmpl.TOML != custom {
-		t.Fatalf("template = %q, want %q", tmpl.TOML, custom)
+	tmpl := getTemplate(t, env)
+	if tmpl.Template != custom {
+		t.Fatalf("template = %q, want %q", tmpl.Template, custom)
 	}
 
-	id, _ := createDevice(t, env, "fresh", tmpl.TOML)
-	res, data = env.Do("GET", "/api/admin/devices/"+id, nil)
+	id, _ := createDevice(t, env, "fresh", tmpl.Template)
+	res, data := env.Do("GET", "/api/admin/devices/"+id, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get device = %d: %s", res.StatusCode, data)
 	}
@@ -1464,5 +1481,34 @@ ipv4 = "10.126.126.9/24"`
 	}
 	if device.ConfigTOML != custom || device.ConfigHash != core.Hash(custom) {
 		t.Fatalf("new device config = %q/%q, want the saved template", device.ConfigTOML, device.ConfigHash)
+	}
+}
+
+// TestDeviceConfigIsStoredVerbatim pins the boundary the console relies on: the
+// control plane stores whatever configuration it is handed. It does not know
+// about placeholders, addresses or their uniqueness — filling the template is
+// the console's job, and a repeated address may be intentional on the machines.
+func TestDeviceConfigIsStoredVerbatim(t *testing.T) {
+	env := testenv.New(t)
+	// 连占位符都会被原样收下：控制面不认识它。
+	const withPlaceholder = "ipv4 = \"{{ IP }}\"\n"
+	id, _ := createDevice(t, env, "laptop", withPlaceholder)
+
+	// 同一个地址建两台也不拦：多网卡、迁移期并存都可能是有意为之。
+	createDevice(t, env, "ali-seed", "ipv4 = \"10.126.126.1/24\"\n")
+	createDevice(t, env, "wsl", "ipv4 = \"10.126.126.1/24\"\n")
+
+	const rewritten = "dhcp = false\nipv4 = \"10.126.126.4/24\"\n"
+	res, data := env.Do("PUT", "/api/admin/devices/"+id, map[string]string{"name": "laptop", "configToml": rewritten})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("update = %d: %s, want 200", res.StatusCode, data)
+	}
+	res, data = env.Do("GET", "/api/admin/devices/"+id, nil)
+	var device deviceDetail
+	if err := json.Unmarshal(data, &device); err != nil {
+		t.Fatalf("decode device: %v", err)
+	}
+	if device.ConfigTOML != rewritten || device.ConfigHash != core.Hash(rewritten) {
+		t.Fatalf("stored config = %q/%q, want the submitted text verbatim", device.ConfigTOML, device.ConfigHash)
 	}
 }

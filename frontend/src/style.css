@@ -421,6 +421,27 @@ textarea {
 .edit-form { display: flex; flex-direction: column; gap: 10px; }
 .toml-editor, .new-toml { height: 320px; }
 .new-toml { height: 360px; }
+
+/* 新建设备：正文自己滚动，标题与底部按钮留在视野里。 */
+.dialog.scrolling { display: flex; flex-direction: column; overflow: hidden; }
+.dialog.scrolling .dialog-body { overflow: auto; min-height: 0; }
+/* 弹窗内的分段 tab：当前 tab 用主色下划线标出，下划线压住分隔线。 */
+.tab-bar { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+.tab {
+  margin-bottom: -1px;
+  padding: 5px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+}
+.tab:hover:not(:disabled) { background: none; color: var(--ink); }
+.tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+/* 输入框下面那行浅色说明。 */
+.field-hint { margin-top: 4px; color: var(--muted); font-size: var(--fs-xs); line-height: 1.6; }
+/* 撞车提示：只是提醒，不挡住提交。 */
+.field-warn { margin-top: 2px; color: var(--warn); font-size: var(--fs-xs); line-height: 1.6; }
 .fact.wide { grid-column: 1 / -1; }
 
 .op-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2) var(--s4); }

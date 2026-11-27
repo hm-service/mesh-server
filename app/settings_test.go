@@ -55,6 +55,47 @@ func TestStateJSONIsIgnored(t *testing.T) {
 
 // TestPublishRefusesInternalAddresses pins the download guard: a published URL
 // must not turn the control plane into an HTTP client for its own network.
+func TestValidTokenRequiresSixtyFourLowercaseHex(t *testing.T) {
+	good := strings.Repeat("ab", TokenLength/2)
+	if !ValidToken(good) {
+		t.Fatalf("%q was rejected", good)
+	}
+	bad := []string{
+		"",
+		strings.Repeat("a", TokenLength-1),
+		strings.Repeat("a", TokenLength+1),
+		"etk_" + strings.Repeat("a", TokenLength-4),
+		strings.Repeat("A", TokenLength),
+		strings.Repeat("a", TokenLength-1) + "-",
+	}
+	for _, token := range bad {
+		if ValidToken(token) {
+			t.Fatalf("%q was accepted", token)
+		}
+	}
+}
+
+// TestIssuedTokenHasTheContractShape pins the generator to the same rule the
+// validator enforces: a shape change on one side would make every freshly
+// issued token unusable at registration.
+func TestIssuedTokenHasTheContractShape(t *testing.T) {
+	instance := openTemp(t)
+	device, token, err := instance.CreateDevice("laptop", "hostname = \"auto\"\n")
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	if !ValidToken(token) {
+		t.Fatalf("issued token %q does not match the shape", token)
+	}
+	if got, ok, err := instance.DeviceByToken(token); err != nil || !ok || got.PublicID != device.PublicID {
+		t.Fatalf("lookup = %+v, %v, %v", got, ok, err)
+	}
+	// 形状不对的令牌不查库就当作没有。
+	if _, ok, err := instance.DeviceByToken(strings.Repeat("A", TokenLength)); err != nil || ok {
+		t.Fatalf("an uppercase token was looked up: %v, %v", ok, err)
+	}
+}
+
 func TestPublishRefusesInternalAddresses(t *testing.T) {
 	a := openTemp(t)
 	err := a.Publish(PublishInput{

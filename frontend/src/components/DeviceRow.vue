@@ -49,8 +49,12 @@ const seen = computed(() =>
       <span :class="configStateClass(device.configState)">{{ configStateText(device.configState) }}</span>
     </div>
     <div class="cell app" data-label="版本">
-      <template v-if="device.appVersion">
-        <span class="version">{{ device.appVersion }}</span>
+      <template v-if="device.lastAppVersion">
+        <span class="version">{{ device.lastAppVersion }}</span>
+        <span v-if="appStateLabel(device)" :class="appStateClass(device)">{{ appStateLabel(device) }}</span>
+      </template>
+      <template v-else-if="device.appVersion">
+        <span class="muted">未上报</span>
         <span v-if="appStateLabel(device)" :class="appStateClass(device)">{{ appStateLabel(device) }}</span>
       </template>
       <span v-else-if="device.lastPlatform" class="muted">未发布</span>

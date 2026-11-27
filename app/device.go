@@ -23,8 +23,12 @@ const (
 	// 列表要读全部配置来算派生字段：不在这里收口，200 台设备就能让一次列表请求
 	// 同时持有 200MiB。配置只有几 KB，64KiB 已经宽到不必再想。
 	MaxConfigBytes = 64 << 10
-	// tokenPrefix marks registration tokens.
-	tokenPrefix = "etk_"
+	// TokenLength is the exact shape of a registration token: 64 characters,
+	// lowercase hex only, which is 32 bytes of entropy. The control plane
+	// refuses anything else before it looks at the database, so a token-shaped
+	// string pasted from somewhere else cannot reach the expiry branch and blur
+	// "wrong shape" into "unknown token".
+	TokenLength = 64
 )
 
 var (
@@ -123,8 +127,29 @@ func (a *App) DeviceByDeviceID(deviceID string) (db.Device, bool, error) {
 	return device, err == nil, err
 }
 
-// DeviceByToken returns the device holding a registration token.
+// ValidToken reports whether s has the shape every registration token has.
+// The shape is part of the contract: admins copy tokens around, and a token
+// that is one character off should fail at the door.
+func ValidToken(s string) bool {
+	if len(s) != TokenLength {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// DeviceByToken returns the device holding a registration token. A token of
+// the wrong shape is answered as "no such device" without touching the
+// database.
 func (a *App) DeviceByToken(token string) (db.Device, bool, error) {
+	if !ValidToken(token) {
+		return db.Device{}, false, nil
+	}
 	device, err := a.database.GetByToken(token)
 	if errors.Is(err, db.ErrNotFound) {
 		return db.Device{}, false, nil
@@ -206,6 +231,11 @@ func (a *App) IssueToken(publicID string) (string, error) {
 	token, err := newToken()
 	if err != nil {
 		return "", err
+	}
+	// 生成端也自检一次：形状变了（改常量、改编码）要在这里炸，而不是让每个
+	// 刚发出的令牌在注册时被自己拒掉。
+	if !ValidToken(token) {
+		return "", fmt.Errorf("generated token does not match the %d-character shape", TokenLength)
 	}
 	now := a.now()
 	_, err = a.database.Update(publicID, func(d *db.Device) error {
@@ -392,9 +422,6 @@ func (a *App) newDeviceID() (string, error) {
 }
 
 func newToken() (string, error) {
-	raw, err := core.RandomHex(24)
-	if err != nil {
-		return "", err
-	}
-	return tokenPrefix + raw, nil
+	// 32 字节 → 64 个十六进制字符，正好是 TokenLength。
+	return core.RandomHex(TokenLength / 2)
 }

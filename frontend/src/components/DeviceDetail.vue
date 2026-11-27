@@ -290,9 +290,13 @@ async function remove() {
         <div class="fact">
           <div class="k">客户端</div>
           <div class="v">
-            <template v-if="device.appVersion">
-              {{ device.appVersion }}
+            <template v-if="device.lastAppVersion">
+              {{ device.lastAppVersion }}
               <span :class="appStateClass(device)">{{ appStateLabel(device) || "已同步" }}</span>
+            </template>
+            <template v-else-if="device.appVersion">
+              <span class="muted">未上报</span>
+              <span :class="appStateClass(device)">{{ appStateLabel(device) || "待更新" }}</span>
             </template>
             <template v-else-if="device.lastPlatform">未发布</template>
             <template v-else>未上报平台</template>

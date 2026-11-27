@@ -24,6 +24,7 @@ import (
 
 	"mesh-server/builtin"
 	"mesh-server/db"
+	"mesh-server/text"
 )
 
 const (
@@ -59,8 +60,9 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string { return e.Message }
 
-func invalid(format string, args ...any) error {
-	return &ValidationError{Message: fmt.Sprintf(format, args...)}
+// invalid 记下一条已经渲染好的拒绝说明：文案由 text 给出，这里不再格式化。
+func invalid(message string) error {
+	return &ValidationError{Message: message}
 }
 
 // ValidPlatform reports whether p can key a release row.
@@ -143,7 +145,7 @@ func (a *App) Publish(in PublishInput) error {
 	)
 	if in.Client != nil {
 		if !ValidPlatform(in.Platform) {
-			return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+			return invalid(text.Get(text.AppPlatformInvalid))
 		}
 		prepared, err := a.prepareClientSlot(*in.Client)
 		if err != nil {
@@ -153,7 +155,7 @@ func (a *App) Publish(in PublishInput) error {
 	}
 	if in.Launcher != nil {
 		if !ValidPlatform(in.Platform) {
-			return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+			return invalid(text.Get(text.AppPlatformInvalid))
 		}
 		prepared, err := a.prepareLauncherSlot(*in.Launcher)
 		if err != nil {
@@ -206,17 +208,17 @@ func (a *App) prepareClientSlot(pkg ClientPackage) (db.ClientSlot, error) {
 		return db.ClientSlot{}, err
 	}
 	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
-		return db.ClientSlot{}, invalid("appNotes 最长 %d 字符", maxAppNotesRunes)
+		return db.ClientSlot{}, invalid(text.Format(text.AppNotesTooLong, maxAppNotesRunes))
 	}
 	sha, version, err := a.fetchClientPackage(next.URL)
 	if err != nil {
-		return db.ClientSlot{}, invalid("无法读取 appUrl 指向的文件：%v", err)
+		return db.ClientSlot{}, invalid(text.Format(text.AppClientFileUnreadable, err))
 	}
 	// 版本号要与设备上报的版本排序（CompareVersions），否则「是否更新」无从
 	// 判断，只能一直下发或一直不下发。
 	if !ValidAppVersion(version) || utf8.RuneCountInString(version) > MaxAppVersionRunes {
-		return db.ClientSlot{}, invalid("包内 %s 的 version 必须是 YYYY.MM.DD-N 形式（最长 %d 字符），实际是 %q",
-			manifestName, MaxAppVersionRunes, version)
+		return db.ClientSlot{}, invalid(text.Format(text.AppPackageVersionInvalid,
+			manifestName, MaxAppVersionRunes, version))
 	}
 	next.Version = version
 	next.SHA256 = sha
@@ -235,7 +237,7 @@ func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error)
 	}
 	sha, err := a.fetchDigest(next.URL)
 	if err != nil {
-		return db.LauncherSlot{}, invalid("无法读取 launcherUrl 指向的文件：%v", err)
+		return db.LauncherSlot{}, invalid(text.Format(text.AppLauncherFileUnreadable, err))
 	}
 	next.SHA256 = sha
 	return next, nil
@@ -244,7 +246,7 @@ func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error)
 // ClearRelease removes every slot published for platform.
 func (a *App) ClearRelease(platform string) error {
 	if !ValidPlatform(platform) {
-		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+		return invalid(text.Get(text.AppPlatformInvalid))
 	}
 	return a.database.DeleteRelease(platform)
 }
@@ -252,7 +254,7 @@ func (a *App) ClearRelease(platform string) error {
 // ClearLauncher removes only the launcher slot published for platform.
 func (a *App) ClearLauncher(platform string) error {
 	if !ValidPlatform(platform) {
-		return invalid("platform 必须是 GOOS/GOARCH 形式，如 windows/amd64")
+		return invalid(text.Get(text.AppPlatformInvalid))
 	}
 	return a.database.ClearLauncher(platform)
 }
@@ -263,10 +265,10 @@ func (a *App) ClearLauncher(platform string) error {
 // ("launcher").
 func validateSlotVersion(slot, version string) error {
 	if version == "" {
-		return invalid("%s_version 不能为空", slot)
+		return invalid(text.Format(text.AppSlotVersionRequired, slot))
 	}
 	if utf8.RuneCountInString(version) > MaxAppVersionRunes {
-		return invalid("%s_version 最长 %d 字符", slot, MaxAppVersionRunes)
+		return invalid(text.Format(text.AppSlotVersionTooLong, slot, MaxAppVersionRunes))
 	}
 	return nil
 }
@@ -275,14 +277,14 @@ func validateSlotVersion(slot, version string) error {
 // http(s) URL. slot is the field prefix ("app" or "launcher").
 func validateSlotURL(slot, rawURL string) error {
 	if rawURL == "" {
-		return invalid("%s_url 不能为空", slot)
+		return invalid(text.Format(text.AppSlotURLRequired, slot))
 	}
 	if utf8.RuneCountInString(rawURL) > maxAppURLRunes {
-		return invalid("%s_url 最长 %d 字符", slot, maxAppURLRunes)
+		return invalid(text.Format(text.AppSlotURLTooLong, slot, maxAppURLRunes))
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return invalid("%s_url 必须是 http(s) 地址", slot)
+		return invalid(text.Format(text.AppSlotURLInvalid, slot))
 	}
 	return nil
 }
@@ -308,7 +310,7 @@ func newFetchClient(allow []netip.Prefix) *http.Client {
 		},
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			if len(via) >= maxFetchRedirects {
-				return fmt.Errorf("超过 %d 次重定向", maxFetchRedirects)
+				return errors.New(text.Format(text.AppRedirectLimit, maxFetchRedirects))
 			}
 			return nil
 		},
@@ -323,7 +325,7 @@ func dialGuard(allow []netip.Prefix) func(network, address string, c syscall.Raw
 	return func(_, address string, _ syscall.RawConn) error {
 		addrPort, err := netip.ParseAddrPort(address)
 		if err != nil {
-			return fmt.Errorf("无法识别的连接地址 %q: %w", address, err)
+			return fmt.Errorf("%s：%w", text.Format(text.AppDialAddressInvalid, address), err)
 		}
 		addr := addrPort.Addr().Unmap()
 		if !addr.IsValid() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() ||
@@ -333,7 +335,7 @@ func dialGuard(allow []netip.Prefix) func(network, address string, c syscall.Raw
 					return nil
 				}
 			}
-			return fmt.Errorf("拒绝连接非公网地址 %s", addr)
+			return errors.New(text.Format(text.AppDialAddressBlocked, addr))
 		}
 		return nil
 	}
@@ -367,7 +369,7 @@ func (a *App) fetchDigest(rawURL string) (sha string, err error) {
 		return "", err
 	}
 	if n > MaxReleaseBytes {
-		return "", errors.New("文件超过 200MB")
+		return "", errors.New(text.Get(text.AppFileTooLarge))
 	}
 	return hex.EncodeToString(sum.Sum(nil)), nil
 }
@@ -393,7 +395,7 @@ func (a *App) fetchClientPackage(rawURL string) (sha, version string, err error)
 		return "", "", err
 	}
 	if counted.n > MaxReleaseBytes {
-		return "", "", errors.New("文件超过 200MB")
+		return "", "", errors.New(text.Get(text.AppFileTooLarge))
 	}
 	return hex.EncodeToString(sum.Sum(nil)), version, nil
 }
@@ -418,36 +420,36 @@ func (c *countingReader) Read(p []byte) (int, error) {
 func packageVersion(r io.Reader) (string, error) {
 	zr, err := zstd.NewReader(r)
 	if err != nil {
-		return "", fmt.Errorf("解压更新包失败: %w", err)
+		return "", fmt.Errorf("%s：%w", text.Get(text.AppDecompressFailed), err)
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("包内缺少 %s", manifestName)
+			return "", errors.New(text.Format(text.AppManifestMissing, manifestName))
 		}
 		if err != nil {
-			return "", fmt.Errorf("读取更新包失败: %w", err)
+			return "", fmt.Errorf("%s：%w", text.Get(text.AppPackageReadFailed), err)
 		}
 		if path.Clean(hdr.Name) != manifestName {
 			continue
 		}
 		raw, err := io.ReadAll(io.LimitReader(tr, maxManifestBytes+1))
 		if err != nil {
-			return "", fmt.Errorf("读取 %s 失败: %w", manifestName, err)
+			return "", fmt.Errorf("%s：%w", text.Format(text.AppManifestReadFailed, manifestName), err)
 		}
 		if len(raw) > maxManifestBytes {
-			return "", fmt.Errorf("%s 超过 %d 字节", manifestName, maxManifestBytes)
+			return "", errors.New(text.Format(text.AppManifestTooLarge, manifestName, maxManifestBytes))
 		}
 		var manifest struct {
 			Version string `json:"version"`
 		}
 		if err := json.Unmarshal(raw, &manifest); err != nil {
-			return "", fmt.Errorf("解析 %s 失败: %w", manifestName, err)
+			return "", fmt.Errorf("%s：%w", text.Format(text.AppManifestParseFailed, manifestName), err)
 		}
 		if manifest.Version == "" {
-			return "", fmt.Errorf("%s 缺少 version", manifestName)
+			return "", errors.New(text.Format(text.AppManifestVersionMissing, manifestName))
 		}
 		return manifest.Version, nil
 	}

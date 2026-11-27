@@ -1,0 +1,48 @@
+# 控制面文案：中文。
+#
+# 每行是 <包>.<类>.<标识> = value；# 开头的行与空行忽略，按第一个 = 切分。
+# 占位符 {0}、{1}… 从 0 开始连续编号，value 里没有别的花括号。
+# 类取 text（响应里的 message）或 error（Go error 的文案）。
+
+# api：管理面请求的错误说明。
+api.text.auto_update_per_device = autoUpdate 只能逐台设置：新设备一律跟随发布包，建好后再 PUT /api/admin/devices/<id>
+api.text.formal_node_credential = 这台设备是正式节点（配置里有 network_secret），不使用凭据，轮换没有意义
+api.text.credential_channel_unconfigured = 未配置凭据签发通道（ET_CLI），无法在种子上撤销；请在种子上手工撤销这些凭据
+api.text.invalid_request_body = 请求内容不合法
+api.text.app_version_not_input = appVersion 由包内 version.json 读出，不再作为请求字段
+api.text.app_notes_requires_url = appNotes 必须与 appUrl 一起给出
+api.text.auto_update_requires_url = autoUpdate 必须与 appUrl 一起给出
+api.text.launcher_slot_requires_both = launcherVersion 与 launcherUrl 必须同时给出
+api.text.platform_required = platform 不能为空
+api.text.slot_only_launcher = slot 只能是 launcher
+
+# app：发布输入的校验说明。
+app.text.platform_invalid = platform 必须是 GOOS/GOARCH 形式，如 windows/amd64
+app.text.notes_too_long = appNotes 最长 {0} 字符
+app.text.client_file_unreadable = 无法读取 appUrl 指向的文件：{0}
+app.text.package_version_invalid = 包内 {0} 的 version 必须是 YYYY.MM.DD-N 形式（最长 {1} 字符），实际是「{2}」
+app.text.launcher_file_unreadable = 无法读取 launcherUrl 指向的文件：{0}
+app.text.slot_version_required = {0}_version 不能为空
+app.text.slot_version_too_long = {0}_version 最长 {1} 字符
+app.text.slot_url_required = {0}_url 不能为空
+app.text.slot_url_too_long = {0}_url 最长 {1} 字符
+app.text.slot_url_invalid = {0}_url 必须是 http(s) 地址
+
+# app：错误文案。
+app.error.credential_parse_failed = 解析签发结果失败
+app.error.credential_incomplete = 签发结果缺少密钥或到期时间
+app.error.cli_failed = easytier-cli 失败：{0}
+app.error.redirect_limit = 超过 {0} 次重定向
+app.error.dial_address_invalid = 无法识别的连接地址「{0}」
+app.error.dial_address_blocked = 拒绝连接非公网地址 {0}
+app.error.file_too_large = 文件超过 200MB
+app.error.decompress_failed = 解压更新包失败
+app.error.manifest_missing = 包内缺少 {0}
+app.error.package_read_failed = 读取更新包失败
+app.error.manifest_read_failed = 读取 {0} 失败
+app.error.manifest_too_large = {0} 超过 {1} 字节
+app.error.manifest_parse_failed = 解析 {0} 失败
+app.error.manifest_version_missing = {0} 缺少 version
+
+# httpx：入参解析。
+httpx.error.address_invalid = 非法的地址或网段「{0}」

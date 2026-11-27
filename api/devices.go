@@ -9,6 +9,7 @@ import (
 	"mesh-server/app"
 	"mesh-server/db"
 	"mesh-server/httpx"
+	"mesh-server/text"
 )
 
 // deviceSummary is one row of GET /api/admin/devices (contract/admin-api.md).
@@ -243,8 +244,7 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.AutoUpdate.Set {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument",
-			"autoUpdate 只能逐台设置：新设备一律跟随发布包，建好后再 PUT /api/admin/devices/{id}")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAutoUpdatePerDevice))
 		return
 	}
 	device, token, err := s.app.CreateDevice(req.Name, req.ConfigTOML)
@@ -365,8 +365,7 @@ func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
 	case errors.Is(err, app.ErrFormalNode):
-		httpx.WriteErrorDetail(w, http.StatusConflict, "formal_node",
-			"这台设备是正式节点（配置里有 network_secret），不使用凭据，轮换没有意义")
+		httpx.WriteErrorDetail(w, http.StatusConflict, "formal_node", text.Get(text.APIFormalNodeCredential))
 		return
 	case errors.Is(err, app.ErrCredentialChannelUnconfigured):
 		writeCredentialChannelUnconfigured(w)
@@ -401,6 +400,5 @@ func (s *Server) handleRevokeCredential(w http.ResponseWriter, r *http.Request) 
 // writeCredentialChannelUnconfigured 回答「这台控制面没有签发通道，却要动种子
 // 上的凭据」：记录留着，种子侧那张凭据仍然有效，只能由运维手工撤销。
 func writeCredentialChannelUnconfigured(w http.ResponseWriter) {
-	httpx.WriteErrorDetail(w, http.StatusConflict, "credential_channel_unconfigured",
-		"未配置凭据签发通道（ET_CLI），无法在种子上撤销；请在种子上手工撤销这些凭据")
+	httpx.WriteErrorDetail(w, http.StatusConflict, "credential_channel_unconfigured", text.Get(text.APICredentialChannelUnconfigured))
 }

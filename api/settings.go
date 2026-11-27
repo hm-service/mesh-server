@@ -9,6 +9,7 @@ import (
 	"mesh-server/app"
 	"mesh-server/db"
 	"mesh-server/httpx"
+	"mesh-server/text"
 )
 
 // releaseView is one platform's two published slots in the admin payload.
@@ -99,12 +100,11 @@ func (s *Server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	var req releaseInput
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", "请求内容不合法")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", text.Get(text.APIInvalidRequestBody))
 		return
 	}
 	if req.AppVersion != nil {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument",
-			"appVersion 由包内 version.json 读出，不再作为请求字段")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAppVersionNotInput))
 		return
 	}
 	platform := ""
@@ -116,19 +116,19 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	// 备注与自动安装开关都属于客户端包，没有包可挂时不接受：否则要么写进一行
 	// 没有发布内容的记录，要么被悄悄丢掉，两种都不是调用方要的结果。
 	if req.AppNotes != nil && !client {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "appNotes 必须与 appUrl 一起给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAppNotesRequiresURL))
 		return
 	}
 	if req.AutoUpdate != nil && !client {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "autoUpdate 必须与 appUrl 一起给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAutoUpdateRequiresURL))
 		return
 	}
 	if launcher && (req.LauncherVersion == nil || req.LauncherURL == nil) {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "launcherVersion 与 launcherUrl 必须同时给出")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APILauncherSlotRequiresBoth))
 		return
 	}
 	if (client || launcher) && platform == "" {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "platform 不能为空")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIPlatformRequired))
 		return
 	}
 	publish := app.PublishInput{Platform: platform, DefaultTOML: req.DefaultTOML}
@@ -168,7 +168,7 @@ func (s *Server) handleDeleteRelease(w http.ResponseWriter, r *http.Request) {
 	case "launcher":
 		err = s.app.ClearLauncher(platform)
 	default:
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", "slot 只能是 launcher")
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APISlotOnlyLauncher))
 		return
 	}
 	if err != nil {

@@ -1,12 +1,14 @@
 package httpx
 
 import (
-	"fmt"
+	"errors"
 	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
+
+	"mesh-server/text"
 )
 
 // ParsePrefixes turns a comma-separated list of IPs and CIDRs into prefixes. A
@@ -28,7 +30,7 @@ func ParsePrefixes(spec string) ([]netip.Prefix, error) {
 		}
 		addr, err := netip.ParseAddr(item)
 		if err != nil {
-			return nil, fmt.Errorf("非法的地址或网段 %q", item)
+			return nil, errors.New(text.Format(text.HTTPXAddressInvalid, item))
 		}
 		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
 	}

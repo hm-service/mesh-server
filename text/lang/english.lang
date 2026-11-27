@@ -1,0 +1,49 @@
+# Control-plane text: English.
+#
+# One entry per line: <package>.<class>.<name> = value; lines starting with #
+# and blank lines are ignored, the first = splits the line.
+# Placeholders {0}, {1}, ... are numbered from 0 without gaps; no other braces.
+# Class is text (a message in a response) or error (the text of a Go error).
+
+# api: rejected admin requests.
+api.text.auto_update_per_device = autoUpdate can only be set per device: a new device follows the published package, set it with PUT /api/admin/devices/<id> after creation
+api.text.formal_node_credential = this device is a formal node (its configuration has network_secret), it does not use credentials, so rotating them is meaningless
+api.text.credential_channel_unconfigured = the credential channel (ET_CLI) is not configured, so the credentials cannot be revoked on the seeds; revoke them on the seeds by hand
+api.text.invalid_request_body = the request body is invalid
+api.text.app_version_not_input = appVersion is read from version.json inside the package and is no longer a request field
+api.text.app_notes_requires_url = appNotes must be given together with appUrl
+api.text.auto_update_requires_url = autoUpdate must be given together with appUrl
+api.text.launcher_slot_requires_both = launcherVersion and launcherUrl must be given together
+api.text.platform_required = platform must not be empty
+api.text.slot_only_launcher = slot can only be launcher
+
+# app: validation of a publish request.
+app.text.platform_invalid = platform must be in GOOS/GOARCH form, such as windows/amd64
+app.text.notes_too_long = appNotes is at most {0} characters
+app.text.client_file_unreadable = cannot read the file appUrl points to: {0}
+app.text.package_version_invalid = the version in {0} must have the form YYYY.MM.DD-N (at most {1} characters), but it is "{2}"
+app.text.launcher_file_unreadable = cannot read the file launcherUrl points to: {0}
+app.text.slot_version_required = {0}_version must not be empty
+app.text.slot_version_too_long = {0}_version is at most {1} characters
+app.text.slot_url_required = {0}_url must not be empty
+app.text.slot_url_too_long = {0}_url is at most {1} characters
+app.text.slot_url_invalid = {0}_url must be an http(s) URL
+
+# app: error text.
+app.error.credential_parse_failed = failed to parse the credential response
+app.error.credential_incomplete = the credential response has no secret or expiry
+app.error.cli_failed = easytier-cli failed: {0}
+app.error.redirect_limit = more than {0} redirects
+app.error.dial_address_invalid = unrecognized dial address "{0}"
+app.error.dial_address_blocked = refusing to dial non-public address {0}
+app.error.file_too_large = file exceeds 200MB
+app.error.decompress_failed = failed to decompress the update package
+app.error.manifest_missing = the package has no {0}
+app.error.package_read_failed = failed to read the update package
+app.error.manifest_read_failed = failed to read {0}
+app.error.manifest_too_large = {0} exceeds {1} bytes
+app.error.manifest_parse_failed = failed to parse {0}
+app.error.manifest_version_missing = {0} has no version
+
+# httpx: input parsing.
+httpx.error.address_invalid = invalid address or prefix "{0}"

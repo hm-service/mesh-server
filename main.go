@@ -84,6 +84,19 @@ func run() int {
 	logger := newLogger(io.MultiWriter(os.Stdout, logFile), loc)
 	slog.SetDefault(logger)
 
+	// 签发通道可以走 unix socket：容器里的 easytier-cli 只认 ip:port，所以先在进程内
+	// 桥出一个回环端口。socket 文件由宿主创建并挂进来，mesh 上的其它节点够不着它。
+	if conf.credentialSocket != "" {
+		addr, err := app.StartRPCSocketBridge(conf.credentialSocket)
+		if err != nil {
+			logger.Error("startup failed", "error", err)
+			_ = logFile.Close()
+			return 1
+		}
+		conf.credentialRPC = addr
+		logger.Info("credential rpc bridged", "socket", conf.credentialSocket, "addr", addr)
+	}
+
 	application, err := app.Open(dataDir, app.Options{
 		Now:           time.Now,
 		FetchAllow:    conf.fetchAllow,
@@ -202,8 +215,9 @@ type environment struct {
 	maxStatic      int
 	// credentialCLI/credentialRPC 指向 easytier-cli 与种子的 management RPC；
 	// CLI 为空表示这台控制面不签发凭据。
-	credentialCLI string
-	credentialRPC string
+	credentialCLI    string
+	credentialRPC    string
+	credentialSocket string
 }
 
 func readEnvironment() (environment, error) {
@@ -236,8 +250,14 @@ func readEnvironment() (environment, error) {
 	// 凭据签发通道：CLI 由镜像提供，RPC 地址是宿主上转发到种子回环的入口。
 	credentialCLI := strings.TrimSpace(os.Getenv("ET_CLI"))
 	credentialRPC := strings.TrimSpace(os.Getenv("ET_RPC_ADDR"))
-	if credentialCLI != "" && credentialRPC == "" {
-		return environment{}, fmt.Errorf("ET_RPC_ADDR is required when ET_CLI is set")
+	credentialSocket := strings.TrimSpace(os.Getenv("ET_RPC_SOCKET"))
+	if credentialCLI != "" {
+		switch {
+		case credentialRPC == "" && credentialSocket == "":
+			return environment{}, fmt.Errorf("ET_RPC_ADDR or ET_RPC_SOCKET is required when ET_CLI is set")
+		case credentialRPC != "" && credentialSocket != "":
+			return environment{}, fmt.Errorf("ET_RPC_ADDR and ET_RPC_SOCKET are mutually exclusive")
+		}
 	}
 	readyzToken := os.Getenv("READYZ_TOKEN")
 	// Secrets leave the environment table as soon as they are in memory.
@@ -279,19 +299,20 @@ func readEnvironment() (environment, error) {
 		debug.SetMemoryLimit(memoryLimit)
 	}
 	return environment{
-		dataDir:        dataDir,
-		host:           host,
-		port:           port,
-		trustedProxies: proxies,
-		fetchAllow:     fetchAllow,
-		readyzToken:    readyzToken,
-		tokenHash:      tokenHash,
-		sessionKey:     []byte(sessionKey),
-		maxAuth:        maxAuth,
-		maxAPI:         maxAPI,
-		maxStatic:      maxStatic,
-		credentialCLI:  credentialCLI,
-		credentialRPC:  credentialRPC,
+		dataDir:          dataDir,
+		host:             host,
+		port:             port,
+		trustedProxies:   proxies,
+		fetchAllow:       fetchAllow,
+		readyzToken:      readyzToken,
+		tokenHash:        tokenHash,
+		sessionKey:       []byte(sessionKey),
+		maxAuth:          maxAuth,
+		maxAPI:           maxAPI,
+		maxStatic:        maxStatic,
+		credentialCLI:    credentialCLI,
+		credentialRPC:    credentialRPC,
+		credentialSocket: credentialSocket,
 	}, nil
 }
 

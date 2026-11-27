@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"mesh-server/db"
+	"mesh-server/text"
 )
 
 // credentialIssuer 调种子的 management RPC 签发与撤销凭据。
@@ -67,11 +68,11 @@ func (c *credentialIssuer) generate(ctx context.Context, ttl time.Duration) (Iss
 		Expiry string `json:"expiry_unix"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return IssuedCredential{}, fmt.Errorf("解析签发结果失败: %w", err)
+		return IssuedCredential{}, fmt.Errorf("%s：%w", text.Get(text.AppCredentialParseFailed), err)
 	}
 	expiry, err := strconv.ParseInt(strings.TrimSpace(raw.Expiry), 10, 64)
 	if err != nil || raw.Secret == "" {
-		return IssuedCredential{}, fmt.Errorf("签发结果缺少密钥或到期时间")
+		return IssuedCredential{}, errors.New(text.Get(text.AppCredentialIncomplete))
 	}
 	return IssuedCredential{ID: raw.ID, Secret: raw.Secret, Expiry: expiry}, nil
 }
@@ -100,7 +101,7 @@ func (c *credentialIssuer) run(ctx context.Context, args ...string) ([]byte, err
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("easytier-cli 失败: %s", msg)
+		return nil, errors.New(text.Format(text.AppCLIFailed, msg))
 	}
 	return stdout.Bytes(), nil
 }

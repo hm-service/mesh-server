@@ -1,0 +1,18 @@
+# 宿主上的签发通道入口。控制面容器用 hostPath 挂载 /run/mesh，读里面的 socket。
+#
+# 这个文件不含秘密：SocketUser 换成容器内 root 映射到的宿主账号（rootless podman
+# 下就是运行 podman 的那个用户），其余路径与端口与具体部署无关。
+[Unit]
+Description=Mesh management RPC socket
+
+[Socket]
+ListenStream=/run/mesh/rpc.sock
+RuntimeDirectory=mesh
+RuntimeDirectoryMode=0755
+SocketMode=0600
+SocketUser=admin
+SocketGroup=admin
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

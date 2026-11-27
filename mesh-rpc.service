@@ -1,0 +1,15 @@
+# 把 socket 上的连接转给 EasyTier 的 loopback RPC。
+# core 的 RPC 能签发凭据（等价于 network_secret），只绑回环，不上网卡。
+# 不写 Type=notify：socket-proxyd 只在处理连接时才考虑就绪，默认的 simple 更稳。
+[Unit]
+Description=Forward the EasyTier management RPC over the unix socket
+Requires=mesh-rpc.socket
+After=mesh-rpc.socket
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:15888
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

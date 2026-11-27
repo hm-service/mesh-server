@@ -111,8 +111,9 @@ func signManifest(path, keyPath, slot, platform string) {
 			path, doc.Slot, doc.Platform, slot, platform,
 		))
 	}
-	if doc.Version == "" || doc.Files == nil {
-		fail(path + ": version and files are required")
+	// 形状由 signing 统一把关：两端各写一份规则，迟早有一份签得出来、装不上去。
+	if err := signing.ValidateManifest(doc.Slot, doc.Platform, doc.Version, doc.Files); err != nil {
+		fail(path + ": " + err.Error())
 	}
 	private := readKey(keyPath)
 	message := signing.ManifestString(doc.Slot, doc.Platform, doc.Version, signing.FilesDigest(doc.Files))

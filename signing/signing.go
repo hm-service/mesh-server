@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -80,6 +81,114 @@ func FilesDigest(files map[string]string) string {
 		hasher.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// ValidateManifest reports whether a manifest is inside the domain both ends
+// agree on. The signature only says who wrote it, not whether what it says can
+// be installed: a manifest for another platform, with an empty file set or with
+// a digest of the wrong length would sign and verify perfectly and still be
+// useless.
+//
+// The client enforces the same rules when it parses a manifest
+// (mesh_install::manifest::Manifest::validate), so the two lists must be kept
+// identical: a manifest this tool signs but the client refuses is a publish that
+// only fails on the devices.
+func ValidateManifest(slot, platform, version string, files map[string]string) error {
+	if slot != SlotClient && slot != SlotLauncher {
+		return fmt.Errorf("slot %q is not %q or %q", slot, SlotClient, SlotLauncher)
+	}
+	if !validVersion(version) {
+		return fmt.Errorf("version %q is not a release version", version)
+	}
+	if !validPlatform(platform) {
+		return fmt.Errorf("platform %q is not GOOS/GOARCH", platform)
+	}
+	if len(files) == 0 {
+		return fmt.Errorf("the manifest lists no files")
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !validFileName(name) {
+			return fmt.Errorf("file name %q is not a plain name under bin/", name)
+		}
+		if !validDigest(files[name]) {
+			return fmt.Errorf("%s has no 64-character lowercase hex digest", name)
+		}
+	}
+	return nil
+}
+
+// validVersion mirrors mesh_install::layout::valid_version: it is also used as a
+// directory and a file name, so anything that could escape the install root or
+// confuse a shell is out.
+func validVersion(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for i, r := range v {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case i > 0 && (r == '.' || r == '_' || r == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validPlatform is GOOS/GOARCH: one slash, lower-case alphanumerics on both sides.
+func validPlatform(p string) bool {
+	os, arch, ok := strings.Cut(p, "/")
+	if !ok || len(p) > 32 {
+		return false
+	}
+	return alnumLower(os) && alnumLower(arch)
+}
+
+func alnumLower(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// validFileName keeps every entry a plain file directly under bin/: no
+// separators, no parent segments, and not version.json itself, whose digest
+// cannot be written into itself.
+func validFileName(name string) bool {
+	if name == "" || len(name) > 128 || name == "." || name == ".." || name == "version.json" {
+		return false
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// validDigest is a fixed-length lower-case sha256. FilesDigest builds lines out
+// of name and digest, so a variable length or case would give one file set more
+// than one signed representation.
+func validDigest(d string) bool {
+	if len(d) != 64 {
+		return false
+	}
+	for _, r := range d {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultPublicKey is the key compiled into this binary.

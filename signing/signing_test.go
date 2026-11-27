@@ -8,6 +8,50 @@ import (
 	"testing"
 )
 
+const goodDigest = "abababababababababababababababababababababababababababababababab"
+
+// 与 Rust 端 Manifest::validate 同一份规则：签发端签得出来的东西，客户端必须
+// 能装；反过来，客户端拒绝的东西，签发端不该给出签名。
+func TestValidateManifestAcceptsAReleaseManifest(t *testing.T) {
+	err := ValidateManifest("client", "windows/amd64", "2026.11.27-115",
+		map[string]string{"mesh-client.exe": goodDigest})
+	if err != nil {
+		t.Fatalf("a plain release manifest must be accepted: %v", err)
+	}
+}
+
+func TestValidateManifestRejectsInputsOutsideTheContract(t *testing.T) {
+	cases := []struct {
+		name     string
+		slot     string
+		platform string
+		version  string
+		files    map[string]string
+	}{
+		{"unknown slot", "server", "windows/amd64", "2026.11.27-115", map[string]string{"a.exe": goodDigest}},
+		{"empty file set", "client", "windows/amd64", "2026.11.27-115", map[string]string{}},
+		{"nil file set", "client", "windows/amd64", "2026.11.27-115", nil},
+		{"short digest", "client", "windows/amd64", "2026.11.27-115", map[string]string{"a.exe": "ab"}},
+		{"uppercase digest", "client", "windows/amd64", "2026.11.27-115",
+			map[string]string{"a.exe": strings.ToUpper(goodDigest)}},
+		{"non-hex digest", "client", "windows/amd64", "2026.11.27-115",
+			map[string]string{"a.exe": strings.Repeat("zz", 32)}},
+		{"separator in name", "client", "windows/amd64", "2026.11.27-115",
+			map[string]string{"sub/a.exe": goodDigest}},
+		{"parent segment in name", "client", "windows/amd64", "2026.11.27-115",
+			map[string]string{"..": goodDigest}},
+		{"manifest lists itself", "client", "windows/amd64", "2026.11.27-115",
+			map[string]string{"version.json": goodDigest}},
+		{"bad platform", "client", "Windows", "2026.11.27-115", map[string]string{"a.exe": goodDigest}},
+		{"bad version", "client", "windows/amd64", "bad/version", map[string]string{"a.exe": goodDigest}},
+	}
+	for _, c := range cases {
+		if err := ValidateManifest(c.slot, c.platform, c.version, c.files); err == nil {
+			t.Errorf("%s: accepted", c.name)
+		}
+	}
+}
+
 func TestStringPinsTheFormat(t *testing.T) {
 	got := String("client", "windows/amd64", "2026.11.27-103",
 		"271f4887d06af1af51a1d7317072c21bf64d65733464b641ffe02152efadbf34")

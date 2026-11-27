@@ -59,7 +59,12 @@ func TestPublishRefusesInternalAddresses(t *testing.T) {
 	a := openTemp(t)
 	err := a.Publish(PublishInput{
 		Platform: "windows/amd64",
-		Launcher: &db.LauncherSlot{Version: "2026.11.25-9", URL: "http://127.0.0.1:9/mesh.exe"},
+		Launcher: &db.LauncherSlot{
+			Version: "2026.11.25-9",
+			URL:     "http://127.0.0.1:9/mesh.exe",
+			// 形状合法只为越过「签名格式」那一关，这个测试要测的是下载守卫。
+			Signature: strings.Repeat("0", 128),
+		},
 	})
 	var rejected *ValidationError
 	if !errors.As(err, &rejected) {

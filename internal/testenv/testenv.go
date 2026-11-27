@@ -74,8 +74,6 @@ type config struct {
 	dataDir string
 	// credentialCLI points the app at the test binary as easytier-cli.
 	credentialCLI bool
-	// releasePrivate overrides the key pair generated for this environment.
-	releasePrivate ed25519.PrivateKey
 }
 
 // WithReadyzToken protects /readyz the way a deployment does.
@@ -117,16 +115,10 @@ func New(t *testing.T, options ...Option) *Env {
 		dir = t.TempDir()
 	}
 	clock := &Clock{t: t, now: time.Unix(1_732_400_000, 0)}
-	private := cfg.releasePrivate
-	var public ed25519.PublicKey
-	if private == nil {
-		var err error
-		public, private, err = ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			t.Fatalf("generate release key: %v", err)
-		}
-	} else {
-		public = private.Public().(ed25519.PublicKey)
+	// 每个环境自带一对发布密钥：编进二进制的公钥属于那把离线私钥，这里没有。
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate release key: %v", err)
 	}
 	appOptions := app.Options{
 		Now:              clock.Now,

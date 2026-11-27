@@ -162,7 +162,7 @@ ET 的 management RPC 是自研协议（protobuf + 分片 + 压缩 + 事务）�
 
 RPC 能签发凭据，等价于 `network_secret`，所以只绑在种子回环（`127.0.0.1:15888`）。容器有自己的网络命名空间，够不到宿主回环，所以宿主用 `mesh-rpc.socket` 监听 `/run/mesh/rpc.sock`（`SocketMode=0600`、owner 为容器映射用户），`systemd-socket-proxyd` 把连接转给 `127.0.0.1:15888`；podman 用 hostPath 只读挂进容器，控制面再把 socket 桥成 `127.0.0.1` 的临时端口供 `easytier-cli -p` 使用（它只认 `ip:port`，见第 9 节 `ET_RPC_SOCKET`）。
 
-签发权因此从「网络可达」变成「文件系统可达」。`MESH_RPC_WHITELIST` 是同一目的的可选收窄手段，当前部署没有用。
+签发权因此从「网络可达」变成两道闸：宿主上的 socket 文件权限，加上「能进这个容器的网络命名空间」——控制面把 socket 桥成回环端口交给 `easytier-cli`，容器内任何进程都能连那个端口。`MESH_RPC_WHITELIST` 是同一目的的可选收窄手段，当前部署没有用。
 
 ET 自己的 `credential_file` 里存了每张凭据的私钥，它是全网凭据的唯一副本：丢了就得全量重签，部署时要一并备份。
 

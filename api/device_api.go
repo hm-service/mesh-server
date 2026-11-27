@@ -262,7 +262,9 @@ type launcherInfo struct {
 // platform has no launcher published. The URL is stored absolute (publishing
 // requires one), so it travels to the client unchanged.
 func launcherOf(release db.Release) *launcherInfo {
-	if release.LauncherSHA256 == "" {
+	// 有摘要没签名 = 这一行是加签名之前发布的。客户端会验签并拒装，那就等于
+	// 每 30 秒给全网发一个必然失败的槽位；按「没发布」处理，等重新发布。
+	if release.LauncherSHA256 == "" || release.LauncherSignature == "" {
 		return nil
 	}
 	return &launcherInfo{
@@ -315,7 +317,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	configChanged := req.ConfigHash != device.ConfigHash
 	// 只有设备上报的版本低于发布版本才算需要更新：设备版本更高（回滚过发布、
 	// 手工装过新包）时按 current 处理，不能让它每 30 秒被要求装同一个旧包。
-	appChanged := app.NeedsUpdate(req.AppVersion, release.Version)
+	//
+	// 签名为空的行同样不下发：那是加签名之前发布的记录，客户端一律拒装。按
+	// 未发布处理，管理端重新发布一次就恢复了。
+	appChanged := release.Signature != "" && app.NeedsUpdate(req.AppVersion, release.Version)
 	// 启动器不参与签名原文，服务端也就无从比较客户端手里那份，所以只要该平台
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。代价是这种情况没有
 	// 204，三十秒多几十字节。

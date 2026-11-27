@@ -217,6 +217,11 @@ func (a *App) prepareClientSlot(platform string, pkg ClientPackage) (db.ClientSl
 	if utf8.RuneCountInString(next.Notes) > maxAppNotesRunes {
 		return db.ClientSlot{}, invalid(text.Format(text.AppNotesTooLong, maxAppNotesRunes))
 	}
+	// 签名形状先查：缺签名或长度不对的请求根本不可能通过验签，没必要为它把
+	// 200 MB 的包先拉一遍。
+	if err := checkReleaseSignatureShape(signing.SlotClient, next.Signature); err != nil {
+		return db.ClientSlot{}, err
+	}
 	sha, version, err := a.fetchClientPackage(next.URL)
 	if err != nil {
 		return db.ClientSlot{}, invalid(text.Format(text.AppClientFileUnreadable, err))
@@ -249,6 +254,9 @@ func (a *App) prepareLauncherSlot(platform string, slot db.LauncherSlot) (db.Lau
 		return db.LauncherSlot{}, err
 	}
 	if err := validateSlotURL("launcher", next.URL); err != nil {
+		return db.LauncherSlot{}, err
+	}
+	if err := checkReleaseSignatureShape(signing.SlotLauncher, next.Signature); err != nil {
 		return db.LauncherSlot{}, err
 	}
 	sha, err := a.fetchDigest(next.URL)

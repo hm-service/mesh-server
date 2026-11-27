@@ -25,6 +25,7 @@ import (
 	"mesh-server/app"
 	"mesh-server/builtin"
 	"mesh-server/core"
+	"mesh-server/db"
 	"mesh-server/internal/testenv"
 	"mesh-server/signing"
 )
@@ -121,6 +122,12 @@ type heartbeatResponse struct {
 
 // testPlatform is the platform key the tests publish and heartbeat with.
 const testPlatform = "windows/amd64"
+
+// dummySignature has the shape of a release signature but no meaning: it lets a
+// test reach the failure it is about (unreadable package, unreachable URL)
+// instead of stopping at "the signature is malformed", which now fails first.
+const dummySignature = "0000000000000000000000000000000000000000000000000000000000000000" +
+	"0000000000000000000000000000000000000000000000000000000000000000"
 
 // releaseView mirrors one entry of GET /api/admin/releases.
 type releaseView struct {
@@ -1463,6 +1470,64 @@ func TestPublishRequiresASignatureForTheBytesItDownloaded(t *testing.T) {
 	}
 }
 
+// TestUnsignedReleaseIsNotOffered pins the upgrade path: a row published before
+// signatures existed keeps an empty signature, and every client would reject it
+// every 30 seconds if it were sent. Such a slot is treated as unpublished until
+// the admin publishes it again.
+func TestUnsignedReleaseIsNotOffered(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+	seedUnsignedRelease(t, env, testPlatform)
+
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-0")
+	if res.StatusCode != http.StatusNoContent || len(data) != 0 {
+		t.Fatalf("heartbeat = %d (%s), want 204: an unsigned slot must look unpublished", res.StatusCode, data)
+	}
+}
+
+// TestMalformedSignatureFailsBeforeDownloading pins the order: a signature that
+// cannot possibly be valid is rejected without fetching the package first.
+func TestMalformedSignatureFailsBeforeDownloading(t *testing.T) {
+	env := testenv.New(t)
+	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{
+		"platform":     testPlatform,
+		"appUrl":       "http://127.0.0.1:1/mesh-client.tar.zst",
+		"appSignature": "00",
+	})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "签名") {
+		t.Fatalf("publish = %d: %s, want 400 naming the signature", res.StatusCode, data)
+	}
+	if strings.Contains(string(data), "无法读取") {
+		t.Fatalf("publish = %s: the package was downloaded before the signature was checked", data)
+	}
+}
+
+// seedUnsignedRelease writes a release row the way the schema migration leaves
+// one: version and digest present, signature empty. The admin API cannot produce
+// it (it demands a signature), so the test writes straight to the database.
+func seedUnsignedRelease(t *testing.T, env *testenv.Env, platform string) {
+	t.Helper()
+	handle, err := db.Open(filepath.Join(env.DataDir, "mesh.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer handle.Close()
+	client := &db.ClientSlot{
+		Version: "2026.11.27-1",
+		URL:     "http://127.0.0.1:1/mesh-client.tar.zst",
+		SHA256:  strings.Repeat("a", 64),
+	}
+	launcher := &db.LauncherSlot{
+		Version: "2026.11.27-1",
+		URL:     "http://127.0.0.1:1/mesh.exe",
+		SHA256:  strings.Repeat("b", 64),
+	}
+	if err := handle.PublishSlots(platform, client, launcher); err != nil {
+		t.Fatalf("seed unsigned release: %v", err)
+	}
+}
+
 func TestLauncherRejectsIncompletePublish(t *testing.T) {
 	env := testenv.New(t)
 
@@ -1483,12 +1548,12 @@ func TestLauncherRejectsIncompletePublish(t *testing.T) {
 		},
 		{
 			name:   "non-http url",
-			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "ftp://example.com/mesh.exe", "launcherSignature": "00"},
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "ftp://example.com/mesh.exe", "launcherSignature": dummySignature},
 			want:   "http(s)",
 		},
 		{
 			name:   "unreachable url",
-			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "http://127.0.0.1:1/mesh.exe", "launcherSignature": "00"},
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "http://127.0.0.1:1/mesh.exe", "launcherSignature": dummySignature},
 			want:   "无法读取 launcherUrl",
 		},
 		{
@@ -1498,7 +1563,7 @@ func TestLauncherRejectsIncompletePublish(t *testing.T) {
 		},
 		{
 			name:   "missing platform",
-			fields: map[string]string{"launcherVersion": "2026.11.25-36", "launcherUrl": "http://example.com/mesh.exe", "launcherSignature": "00"},
+			fields: map[string]string{"launcherVersion": "2026.11.25-36", "launcherUrl": "http://example.com/mesh.exe", "launcherSignature": dummySignature},
 			want:   "platform",
 		},
 	}
@@ -1625,7 +1690,11 @@ func TestReleaseRejectsIncompletePublish(t *testing.T) {
 	}
 
 	// A URL the server cannot read is rejected.
-	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "appUrl": "http://127.0.0.1:1/mesh-client.tar.zst"})
+	res, data = env.Do("PUT", "/api/admin/releases", map[string]string{
+		"platform":     testPlatform,
+		"appUrl":       "http://127.0.0.1:1/mesh-client.tar.zst",
+		"appSignature": dummySignature,
+	})
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "无法读取 appUrl") {
 		t.Fatalf("unreachable url = %d: %s", res.StatusCode, data)
 	}
@@ -1681,8 +1750,9 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res, data := env.Do("PUT", "/api/admin/releases", map[string]string{
-				"platform": testPlatform,
-				"appUrl":   fileServer(t, tc.pkg),
+				"platform":     testPlatform,
+				"appUrl":       fileServer(t, tc.pkg),
+				"appSignature": dummySignature,
 			})
 			if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), tc.want) {
 				t.Fatalf("publish = %d: %s, want 400 containing %q", res.StatusCode, data, tc.want)

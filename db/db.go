@@ -144,7 +144,8 @@ func (d *DB) createSchema() error {
 		return err
 	}
 	// 发布签名：客户端据此确认包来自发布私钥，而不是只看控制面给的摘要。
-	// 旧记录留空串——它们本来就发不出去，重新发布会补上。
+	// 旧记录补出来是空串，而空签名等于「这个槽位没发布」——下发侧按未发布处理，
+	// 必须由管理端重新发布一次才会恢复。
 	if err := d.ensureColumn("release", "signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}

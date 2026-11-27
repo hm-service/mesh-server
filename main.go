@@ -86,15 +86,20 @@ func run() int {
 
 	// 签发通道可以走 unix socket：容器里的 easytier-cli 只认 ip:port，所以先在进程内
 	// 桥出一个回环端口。socket 文件由宿主创建并挂进来，mesh 上的其它节点够不着它。
+	var stopBridge func()
 	if conf.credentialSocket != "" {
-		addr, err := app.StartRPCSocketBridge(conf.credentialSocket)
+		addr, stop, err := app.StartRPCSocketBridge(conf.credentialSocket)
 		if err != nil {
 			logger.Error("startup failed", "error", err)
 			_ = logFile.Close()
 			return 1
 		}
+		stopBridge = stop
 		conf.credentialRPC = addr
 		logger.Info("credential rpc bridged", "socket", conf.credentialSocket, "addr", addr)
+	}
+	if stopBridge != nil {
+		defer stopBridge()
 	}
 
 	application, err := app.Open(dataDir, app.Options{
@@ -107,6 +112,20 @@ func run() int {
 		logger.Error("startup failed", "error", err)
 		_ = logFile.Close()
 		return 1
+	}
+	// 加签名之前发布的记录补出来是空签名，下发侧按「未发布」处理。这条日志是
+	// 唯一能让人知道「管理面板显示有这个版本，但谁都不会收到」的地方。
+	if releases, err := application.Releases(); err != nil {
+		logger.Warn("read releases", "error", err)
+	} else {
+		for _, release := range releases {
+			client := release.Signature == "" && release.Version != ""
+			launcher := release.LauncherSignature == "" && release.LauncherSHA256 != ""
+			if client || launcher {
+				logger.Warn("release slot has no signature and is not offered",
+					"platform", release.Platform, "client", client, "launcher", launcher)
+			}
+		}
 	}
 
 	port := conf.port

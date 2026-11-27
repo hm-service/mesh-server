@@ -47,6 +47,15 @@ func String(slot, platform, version, sha256 string) string {
 // DefaultPublicKey is the key compiled into this binary.
 func DefaultPublicKey() ed25519.PublicKey { return key }
 
+// ValidShape reports whether s looks like an Ed25519 signature: 128 hex
+// characters. It says nothing about whether the signature is correct — it is
+// the cheap check a publish runs before spending a 200 MB download on a
+// request that cannot possibly succeed.
+func ValidShape(s string) bool {
+	raw, err := hex.DecodeString(s)
+	return err == nil && len(raw) == ed25519.SignatureSize
+}
+
 // Verify reports whether signatureHex is a valid signature by public over String
 // for the same four fields. An empty or malformed signature is simply not valid.
 func Verify(public ed25519.PublicKey, slot, platform, version, sha256, signatureHex string) bool {

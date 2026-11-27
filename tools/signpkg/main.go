@@ -22,8 +22,10 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"mesh-server/signing"
@@ -33,6 +35,7 @@ func main() {
 	var (
 		keyPath  = flag.String("key", "", "PKCS#8 PEM private key to read or create")
 		newKey   = flag.Bool("newkey", false, "create a new key pair at -key and print its public half")
+		force    = flag.Bool("force", false, "with -newkey, replace an existing key file")
 		slot     = flag.String("slot", "", "slot to sign: client or launcher")
 		platform = flag.String("platform", "", "GOOS/GOARCH, such as windows/amd64")
 		version  = flag.String("version", "", "version label the package declares")
@@ -43,7 +46,7 @@ func main() {
 		fail("-key is required")
 	}
 	if *newKey {
-		createKey(*keyPath)
+		createKey(*keyPath, *force)
 		return
 	}
 	if *slot != signing.SlotClient && *slot != signing.SlotLauncher {
@@ -52,29 +55,57 @@ func main() {
 	if *platform == "" || *version == "" || *sum == "" {
 		fail("-platform, -version and -sha256 are required")
 	}
-	if raw, err := hex.DecodeString(*sum); err != nil || len(raw) != 32 {
+	raw, err := hex.DecodeString(*sum)
+	if err != nil || len(raw) != 32 {
 		fail("-sha256 must be 64 hex characters")
 	}
+	// 摘要统一成小写再进签名原文：控制面自己算的永远是小写，粘一个大写的进来
+	// 只会签出一个必然验不过的签名，报错却指着「签名无效」，把人往错方向带。
+	digest := hex.EncodeToString(raw)
 	private := readKey(*keyPath)
-	message := signing.String(*slot, *platform, *version, *sum)
+	message := signing.String(*slot, *platform, *version, digest)
 	fmt.Println(hex.EncodeToString(ed25519.Sign(private, []byte(message))))
 }
 
 // createKey writes a fresh PKCS#8 PEM private key and prints the public half.
-func createKey(path string) {
+//
+// The file is opened with O_EXCL: replacing the release key silently would
+// make every published client reject every future package, and there is no
+// way back — the clients only know the old public key.
+func createKey(path string, force bool) {
+	mode := os.O_CREATE | os.O_WRONLY
+	if force {
+		mode |= os.O_TRUNC
+	} else {
+		mode |= os.O_EXCL
+	}
+	file, err := os.OpenFile(path, mode, 0o600)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			fail(path + " already exists; pass -force to replace it")
+		}
+		fail(err.Error())
+	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		file.Close()
 		fail(err.Error())
 	}
 	der, err := x509.MarshalPKCS8PrivateKey(private)
 	if err != nil {
+		file.Close()
 		fail(err.Error())
 	}
 	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if err := os.WriteFile(path, block, 0o600); err != nil {
+	if _, err := file.Write(block); err != nil {
+		file.Close()
+		fail(err.Error())
+	}
+	if err := file.Close(); err != nil {
 		fail(err.Error())
 	}
 	fmt.Println(hex.EncodeToString(public))
+	fmt.Fprintln(os.Stderr, "写入 "+path+"；这个公钥要同时改 server/signing/signing.go 与 client/crates/remote/src/signing.rs")
 }
 
 // readKey loads the Ed25519 private key at path.

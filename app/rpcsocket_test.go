@@ -41,10 +41,11 @@ func TestRPCSocketBridgeForwardsBackAndForth(t *testing.T) {
 		_, _ = io.Copy(conn, conn)
 	}()
 
-	addr, err := StartRPCSocketBridge(socketPath)
+	addr, stop, err := StartRPCSocketBridge(socketPath)
 	if err != nil {
 		t.Fatalf("start bridge: %v", err)
 	}
+	t.Cleanup(stop)
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("dial bridge: %v", err)
@@ -67,14 +68,14 @@ func TestRPCSocketBridgeRejectsMissingSocket(t *testing.T) {
 		t.Skip("unix socket 在开发机上不验证，Linux CI 覆盖")
 	}
 	missing := filepath.Join(unixSocketDir(t), "absent.sock")
-	if _, err := StartRPCSocketBridge(missing); err == nil {
+	if _, _, err := StartRPCSocketBridge(missing); err == nil {
 		t.Fatal("缺少 socket 文件时应当报错")
 	}
 	plain := filepath.Join(unixSocketDir(t), "plain.txt")
 	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	if _, err := StartRPCSocketBridge(plain); err == nil {
+	if _, _, err := StartRPCSocketBridge(plain); err == nil {
 		t.Fatal("普通文件不是 socket，应当报错")
 	}
 }

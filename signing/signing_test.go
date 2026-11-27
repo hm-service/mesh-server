@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,22 @@ func TestVerifyRejectsMalformedSignatures(t *testing.T) {
 	}
 	if Verify(nil, "client", "windows/amd64", "2026.11.27-103", digest, "00") {
 		t.Fatal("a nil key was accepted")
+	}
+}
+
+func TestValidShape(t *testing.T) {
+	if !ValidShape(strings.Repeat("ab", ed25519.SignatureSize)) {
+		t.Fatal("a 128-hex signature was rejected")
+	}
+	for _, bad := range []string{
+		"",
+		"00",
+		strings.Repeat("zz", ed25519.SignatureSize),
+		strings.Repeat("ab", ed25519.SignatureSize-1),
+	} {
+		if ValidShape(bad) {
+			t.Fatalf("%q was accepted as a signature", bad)
+		}
 	}
 }
 

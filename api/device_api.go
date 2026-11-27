@@ -51,10 +51,6 @@ type heartbeatRequest struct {
 	// CredentialID 是客户端正在用的凭据：不参与签名，只决定签发与确认的时机；
 	// 它与其余字段一样受合法域约束（core.DeviceRequestFields）。
 	CredentialID string `json:"credentialId"`
-	// AppUpdateKnown 是客户端内存里那份 appUpdate 的 sha256（不是版本号：同一
-	// 版本号重新发布时内容会变）。命中时只回精简形状，省掉每轮重复的 notes。
-	// 不参与签名，也不影响鉴权：它只决定下发多少内容。
-	AppUpdateKnown string `json:"appUpdateKnown"`
 }
 
 // deviceAuth verifies a signed request and returns the identity it proved. On
@@ -65,15 +61,14 @@ func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds heartb
 	// 值域先于一切：签名原文按 \n 拼接，一个带换行的字段就能把同一段文本拆成
 	// 另一组字段。形状不对与签名错误走同一条 401，响应不说明是哪一步失败的。
 	fields := core.DeviceRequestFields{
-		DeviceID:       creds.DeviceID,
-		Timestamp:      creds.Timestamp,
-		Nonce:          creds.Nonce,
-		Platform:       creds.Platform,
-		ConfigHash:     creds.ConfigHash,
-		AppVersion:     creds.AppVersion,
-		Signature:      creds.Signature,
-		CredentialID:   creds.CredentialID,
-		AppUpdateKnown: creds.AppUpdateKnown,
+		DeviceID:     creds.DeviceID,
+		Timestamp:    creds.Timestamp,
+		Nonce:        creds.Nonce,
+		Platform:     creds.Platform,
+		ConfigHash:   creds.ConfigHash,
+		AppVersion:   creds.AppVersion,
+		Signature:    creds.Signature,
+		CredentialID: creds.CredentialID,
 	}
 	if err := fields.Validate(); err != nil {
 		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
@@ -248,21 +243,19 @@ func (s *Server) registerSignatureValid(pubkey string, req registerRequest, now 
 // the download after the fact. AutoUpdate 是这个包自己带的选择——发布方决定它
 // 能不能自己装，设备是不是无人值守不参与判断，所以它跟着 appUpdate 走，永远有值。
 //
-// 两种形状：设备报的 appUpdateKnown 与发布摘要一致时只回 version/autoUpdate/
-// unchanged，内容字段整个不出现（发布要求 appUrl 非空，完整形状里 url 一定有
-// 值）；否则回完整形状，且不带 unchanged。
+// 字段集合固定：只要这个 offer 出现，url、sha256、signature 就一定在里面（发布
+// 要求 appUrl 非空，摘要与签名在发布时算出）。只有 notes 随发布记录为空而不出现。
+// 「这份我手上已经有」由客户端按版本与摘要自己判，服务端不回第二种形状。
 type updateInfo struct {
 	Version string `json:"version"`
-	URL     string `json:"url,omitempty"`
+	URL     string `json:"url"`
 	Notes   string `json:"notes,omitempty"`
-	SHA256  string `json:"sha256,omitempty"`
+	SHA256  string `json:"sha256"`
 	// Signature 覆盖 {client, platform, version, sha256}（MESH3 行串）。客户端
 	// 验不过就拒装——摘要来自控制面、内容来自任意地址，签名把这一对绑在一起。
-	Signature string `json:"signature,omitempty"`
-	// AutoUpdate 在两种形状里都有：管理员可能刚改过设备级覆盖。
+	Signature string `json:"signature"`
+	// AutoUpdate 是设备级覆盖后的结果，每轮心跳取当前值：管理员可能刚改过。
 	AutoUpdate bool `json:"autoUpdate"`
-	// Unchanged 表示设备手里已经是这一份：跳过下载与提示，只认 autoUpdate。
-	Unchanged bool `json:"unchanged,omitempty"`
 }
 
 // launcherInfo points a client at the launcher published for its platform. It
@@ -308,12 +301,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// 整个业务动作在 app 里一次完成：锁内复核绑定、一次条件写入、再按写出来的
 	// 那一行规划响应与凭据步骤。api 不写设备，也不切换快照。
 	result, err := s.app.Heartbeat(r.Context(), auth, app.HeartbeatObservation{
-		ConfigHash:     req.ConfigHash,
-		AppVersion:     req.AppVersion,
-		Platform:       req.Platform,
-		CredentialID:   req.CredentialID,
-		AppUpdateKnown: req.AppUpdateKnown,
-		IP:             s.clientIP(r),
+		ConfigHash:   req.ConfigHash,
+		AppVersion:   req.AppVersion,
+		Platform:     req.Platform,
+		CredentialID: req.CredentialID,
+		IP:           s.clientIP(r),
 	})
 	if err != nil {
 		// 认证之后换绑或删除插进来：这次请求的身份已经不持有槽位，什么都不回。
@@ -342,7 +334,6 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			SHA256:     result.Update.SHA256,
 			Signature:  result.Update.Signature,
 			AutoUpdate: result.Update.AutoUpdate,
-			Unchanged:  result.Update.Known,
 		}
 	}
 	if result.Launcher != nil {

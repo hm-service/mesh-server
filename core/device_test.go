@@ -8,15 +8,14 @@ import (
 // validFields is a complete heartbeat request inside the protocol domain.
 func validFields() DeviceRequestFields {
 	return DeviceRequestFields{
-		DeviceID:       "d_8f3a1c",
-		Timestamp:      "1732400000",
-		Nonce:          strings.Repeat("ab", 16),
-		Platform:       "windows/amd64",
-		ConfigHash:     "0000000000000000",
-		AppVersion:     "2026.11.26-11",
-		Signature:      "AAAA",
-		CredentialID:   "none",
-		AppUpdateKnown: strings.Repeat("a", 64),
+		DeviceID:     "d_8f3a1c",
+		Timestamp:    "1732400000",
+		Nonce:        strings.Repeat("ab", 16),
+		Platform:     "windows/amd64",
+		ConfigHash:   "0000000000000000",
+		AppVersion:   "2026.11.26-11",
+		Signature:    "AAAA",
+		CredentialID: "none",
 	}
 }
 
@@ -92,11 +91,6 @@ func TestValidateDeviceFields(t *testing.T) {
 			name:   "credential id over the length limit",
 			change: func(f *DeviceRequestFields) { f.CredentialID = strings.Repeat("a", MaxCredentialIDBytes+1) },
 			want:   "credentialId",
-		},
-		{
-			name:   "appUpdateKnown over the length limit",
-			change: func(f *DeviceRequestFields) { f.AppUpdateKnown = strings.Repeat("a", MaxAppUpdateKnownBytes+1) },
-			want:   "appUpdateKnown",
 		},
 	}
 	for _, tc := range cases {

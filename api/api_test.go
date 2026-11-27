@@ -98,12 +98,11 @@ type configResponse struct {
 
 type updateInfo struct {
 	Version    string `json:"version"`
-	URL        string `json:"url,omitempty"`
+	URL        string `json:"url"`
 	Notes      string `json:"notes,omitempty"`
-	SHA256     string `json:"sha256,omitempty"`
-	Signature  string `json:"signature,omitempty"`
+	SHA256     string `json:"sha256"`
+	Signature  string `json:"signature"`
 	AutoUpdate bool   `json:"autoUpdate"`
-	Unchanged  bool   `json:"unchanged,omitempty"`
 }
 
 type launcherInfo struct {
@@ -191,32 +190,23 @@ func signedRegisterBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, 
 // heartbeatBody builds the signed heartbeat payload for one device.
 func heartbeatBody(t *testing.T, dev registeredDevice, ts int64, nonce, configHash, appVersion string) []byte {
 	t.Helper()
-	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appVersion, "")
-}
-
-// heartbeatBodyKnown is heartbeatBody carrying the appUpdate digest the client
-// already holds in memory.
-func heartbeatBodyKnown(t *testing.T, dev registeredDevice, ts int64, nonce, configHash, appVersion, appUpdateKnown string) []byte {
-	t.Helper()
-	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appVersion, appUpdateKnown)
+	return signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, ts, nonce, configHash, appVersion)
 }
 
 // signedHeartbeatBody is heartbeatBody with every signed field spelled out, so
-// the tampering tests can break exactly one of them. appUpdateKnown rides along
-// without being signed.
-func signedHeartbeatBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, platform string, ts int64, nonce, configHash, appVersion, appUpdateKnown string) []byte {
+// the tampering tests can break exactly one of them.
+func signedHeartbeatBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, platform string, ts int64, nonce, configHash, appVersion string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
 	msg := core.SigningString("POST", "/api/v1/heartbeat", deviceID, stamp, nonce, platform, configHash, appVersion)
 	body, err := json.Marshal(map[string]string{
-		"deviceId":       deviceID,
-		"timestamp":      stamp,
-		"nonce":          nonce,
-		"signature":      base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
-		"platform":       platform,
-		"configHash":     configHash,
-		"appVersion":     appVersion,
-		"appUpdateKnown": appUpdateKnown,
+		"deviceId":   deviceID,
+		"timestamp":  stamp,
+		"nonce":      nonce,
+		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
+		"platform":   platform,
+		"configHash": configHash,
+		"appVersion": appVersion,
 	})
 	if err != nil {
 		t.Fatalf("marshal heartbeat: %v", err)
@@ -561,7 +551,7 @@ func TestSignatureTampering(t *testing.T) {
 	}
 
 	// An unknown device id cannot authenticate even with a valid key.
-	unknown := signedHeartbeatBody(t, "dev-unknown", dev.priv, testPlatform, now, newNonce(&nonces), dev.configHash, "", "")
+	unknown := signedHeartbeatBody(t, "dev-unknown", dev.priv, testPlatform, now, newNonce(&nonces), dev.configHash, "")
 	res, _ = signed(t, env, "POST", "/api/v1/heartbeat", unknown, nil)
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unknown device = %d, want 401", res.StatusCode)
@@ -616,7 +606,7 @@ func TestDeviceFieldDomainIsRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			body := signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, now, tc.nonce, tc.configHash, tc.appVersion, "")
+			body := signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, now, tc.nonce, tc.configHash, tc.appVersion)
 			res, data := signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 			if res.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("heartbeat = %d, want 401: %s", res.StatusCode, data)
@@ -756,12 +746,7 @@ func publishLauncher(t *testing.T, env *testenv.Env, platform, version string, l
 
 func heartbeat(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appVersion string) (*http.Response, []byte) {
 	t.Helper()
-	return heartbeatKnown(t, env, dev, nonces, configHash, appVersion, "")
-}
-
-func heartbeatKnown(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64, configHash, appVersion, appUpdateKnown string) (*http.Response, []byte) {
-	t.Helper()
-	body := heartbeatBodyKnown(t, dev, env.Clock.Now().Unix(), newNonce(nonces), configHash, appVersion, appUpdateKnown)
+	body := heartbeatBody(t, dev, env.Clock.Now().Unix(), newNonce(nonces), configHash, appVersion)
 	return signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
 }
 
@@ -866,12 +851,11 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 }
 
-// TestHeartbeatAppUpdateKnown pins the two shapes of appUpdate: a device that
-// reports the digest of the build it already holds gets version/autoUpdate/
-// unchanged only, while a wrong or missing digest still gets the full payload.
-// appUpdateKnown is not part of the signed string, so the signatures here are
-// built without it.
-func TestHeartbeatAppUpdateKnown(t *testing.T) {
+// TestHeartbeatAppUpdateIsAlwaysFull pins the shape of appUpdate: every
+// heartbeat from a device reporting an older build carries the same complete
+// offer, with url, sha256 and signature always present and no marker field for
+// "the client already has this". Repeated heartbeats must not switch shapes.
+func TestHeartbeatAppUpdateIsAlwaysFull(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
@@ -888,61 +872,56 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 		t.Fatalf("published sha256 = %q, want %q", release.AppSHA256, wantSHA)
 	}
 
-	decode := func(data []byte) (heartbeatResponse, string) {
+	// decode returns the offer plus the raw field set, so a second shape or a
+	// "present only sometimes" field is visible even when the struct matches.
+	decode := func(data []byte) (heartbeatResponse, map[string]json.RawMessage) {
 		t.Helper()
 		var out heartbeatResponse
 		if err := json.Unmarshal(data, &out); err != nil {
 			t.Fatalf("decode heartbeat: %v", err)
 		}
-		return out, string(data)
+		var fields struct {
+			AppUpdate map[string]json.RawMessage `json:"appUpdate"`
+		}
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatalf("decode heartbeat fields: %v", err)
+		}
+		return out, fields.AppUpdate
 	}
 
-	// 没报 known：完整形状，且不带 unchanged。
-	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-1")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("heartbeat without known = %d, want 200: %s", res.StatusCode, data)
-	}
-	got, body := decode(data)
 	wantFull := updateInfo{Version: "2026.11.26-18", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA, Signature: release.AppSignature, AutoUpdate: true}
-	if got.AppUpdate == nil || *got.AppUpdate != wantFull {
-		t.Fatalf("heartbeat without known = %+v, want the full appUpdate %+v", got.AppUpdate, wantFull)
-	}
-	if strings.Contains(body, `"unchanged"`) {
-		t.Fatalf("heartbeat without known = %s, want no unchanged", body)
-	}
-
-	// 报了一个对不上的摘要：仍然完整，不能因为"报了个值"就当成已知。
-	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.25-1", strings.Repeat("0", 64))
-	got, body = decode(data)
-	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || *got.AppUpdate != wantFull {
-		t.Fatalf("heartbeat with a wrong known = %d %+v, want the full appUpdate", res.StatusCode, got.AppUpdate)
-	}
-	if strings.Contains(body, `"unchanged"`) {
-		t.Fatalf("wrong known heartbeat = %s, want no unchanged", body)
-	}
-
-	// 摘要一致：精简形状，只带 version/autoUpdate/unchanged。
-	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.25-1", wantSHA)
-	got, body = decode(data)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("heartbeat with a matching known = %d, want 200: %s", res.StatusCode, data)
-	}
-	wantSlim := updateInfo{Version: "2026.11.26-18", AutoUpdate: true, Unchanged: true}
-	if got.AppUpdate == nil || *got.AppUpdate != wantSlim {
-		t.Fatalf("matching known = %+v, want the slim appUpdate %+v", got.AppUpdate, wantSlim)
-	}
-	for _, field := range []string{`"url"`, `"notes"`, `"sha256"`} {
-		if strings.Contains(body, field) {
-			t.Fatalf("matching known heartbeat = %s, want no %s", body, field)
+	// 两次心跳的输入完全相同（设备还报旧版本）：第三次只要形状变了就会露馅。
+	for round := 0; round < 2; round++ {
+		res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-1")
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("round %d heartbeat = %d, want 200: %s", round, res.StatusCode, data)
+		}
+		got, fields := decode(data)
+		if got.AppUpdate == nil || *got.AppUpdate != wantFull {
+			t.Fatalf("round %d heartbeat = %+v, want the full appUpdate %+v", round, got.AppUpdate, wantFull)
+		}
+		want := []string{"autoUpdate", "notes", "sha256", "signature", "url", "version"}
+		var have []string
+		for name := range fields {
+			have = append(have, name)
+		}
+		sort.Strings(have)
+		if strings.Join(have, ",") != strings.Join(want, ",") {
+			t.Fatalf("round %d appUpdate fields = %v, want %v", round, have, want)
 		}
 	}
 
-	// 设备级覆盖照样生效：精简形状里的 autoUpdate 不是发布包上的值。
+	// 设备级覆盖照样生效：autoUpdate 是这台设备的值，不是发布包上的值。
 	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML, "autoUpdate": false})
-	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.25-1", wantSHA)
-	got, _ = decode(data)
-	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || !got.AppUpdate.Unchanged || got.AppUpdate.AutoUpdate {
-		t.Fatalf("matching known after a device override = %d %+v, want unchanged with autoUpdate false", res.StatusCode, got.AppUpdate)
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-1")
+	got, fields := decode(data)
+	wantOverride := wantFull
+	wantOverride.AutoUpdate = false
+	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || *got.AppUpdate != wantOverride {
+		t.Fatalf("heartbeat after a device override = %d %+v, want autoUpdate false", res.StatusCode, got.AppUpdate)
+	}
+	if len(fields) != 6 {
+		t.Fatalf("appUpdate after a device override = %v, want the same six fields", fields)
 	}
 }
 

@@ -9,15 +9,14 @@ import "fmt"
 // what the replay cache, the logs and the stored observation columns have to
 // hold.
 const (
-	MaxDeviceIDBytes       = 128
-	MaxTimestampDigits     = 19
-	MaxNonceBytes          = 64
-	MaxPlatformBytes       = 32
-	MaxConfigHashBytes     = 64
-	MaxAppVersionBytes     = 64
-	MaxSignatureBytes      = 128
-	MaxCredentialIDBytes   = 64
-	MaxAppUpdateKnownBytes = 64
+	MaxDeviceIDBytes     = 128
+	MaxTimestampDigits   = 19
+	MaxNonceBytes        = 64
+	MaxPlatformBytes     = 32
+	MaxConfigHashBytes   = 64
+	MaxAppVersionBytes   = 64
+	MaxSignatureBytes    = 128
+	MaxCredentialIDBytes = 64
 )
 
 // DeviceRequestFields are the fields of a device request body. Timestamp,
@@ -31,10 +30,9 @@ type DeviceRequestFields struct {
 	ConfigHash string
 	AppVersion string
 	Signature  string
-	// CredentialID and AppUpdateKnown are not signed. They are compared and
-	// stored, so their length belongs to the same budget.
-	CredentialID   string
-	AppUpdateKnown string
+	// CredentialID is not signed. It is compared and stored, so its length
+	// belongs to the same budget.
+	CredentialID string
 }
 
 // Validate reports whether every field lies inside the domain the contract
@@ -53,7 +51,6 @@ func (f DeviceRequestFields) Validate() error {
 		{"configHash", f.ConfigHash, MaxConfigHashBytes},
 		{"appVersion", f.AppVersion, MaxAppVersionBytes},
 		{"credentialId", f.CredentialID, MaxCredentialIDBytes},
-		{"appUpdateKnown", f.AppUpdateKnown, MaxAppUpdateKnownBytes},
 	}
 	for _, field := range optional {
 		if err := checkField(field.name, field.value, 0, field.max); err != nil {

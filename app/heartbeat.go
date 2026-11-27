@@ -8,15 +8,14 @@ import (
 )
 
 // HeartbeatObservation is what one heartbeat reports about the device it runs on:
-// the signed business fields, the two fields that only choose how much to send,
-// and the request's source address.
+// the signed business fields, the credential the core has loaded, and the
+// request's source address.
 type HeartbeatObservation struct {
-	ConfigHash     string
-	AppVersion     string
-	Platform       string
-	CredentialID   string
-	AppUpdateKnown string
-	IP             string
+	ConfigHash   string
+	AppVersion   string
+	Platform     string
+	CredentialID string
+	IP           string
 }
 
 // HeartbeatResult is everything one heartbeat resolves to. Every field was
@@ -36,12 +35,11 @@ type ConfigDelivery struct {
 }
 
 // AppUpdateOffer is the client package published for the device's platform.
-// Known means the device reported the digest of exactly these bytes, so the
-// content fields stay empty and the answer can be the short form.
+// Every field is filled whenever the offer exists: the client decides from the
+// version and the digest whether it already holds these bytes.
 type AppUpdateOffer struct {
 	Version    string
 	AutoUpdate bool
-	Known      bool
 	URL        string
 	Notes      string
 	SHA256     string
@@ -91,21 +89,16 @@ func (a *App) Heartbeat(ctx context.Context, auth DeviceAuth, beat HeartbeatObse
 	// 签名为空的行同样不下发：那是加签名之前发布的记录，客户端一律拒装。按
 	// 未发布处理，管理端重新发布一次就恢复了。
 	if release.Signature != "" && NeedsUpdate(beat.AppVersion, release.Version) {
-		update := &AppUpdateOffer{
+		// 每次心跳都带完整的一份：「我手上是哪一份」由客户端按版本与摘要自己判，
+		// 服务端不持有客户端的内存，也就没有可省的第二种形状。
+		result.Update = &AppUpdateOffer{
 			Version:    release.Version,
 			AutoUpdate: EffectiveAutoUpdate(device.AutoUpdate, release.AutoUpdate),
+			URL:        release.URL,
+			Notes:      release.Notes,
+			SHA256:     release.SHA256,
+			Signature:  release.Signature,
 		}
-		// 摘要一致才算同一份：同一版本号重新发布时内容会变，只有 sha256 能表达
-		// "我手上是哪一份"。已知就只带版本与开关，notes 不必每 30 秒重复一次。
-		if beat.AppUpdateKnown != "" && beat.AppUpdateKnown == release.SHA256 {
-			update.Known = true
-		} else {
-			update.URL = release.URL
-			update.Notes = release.Notes
-			update.SHA256 = release.SHA256
-			update.Signature = release.Signature
-		}
-		result.Update = update
 	}
 	// 启动器不参与签名原文，服务端也就无从比较客户端手里那份，所以只要该平台
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。

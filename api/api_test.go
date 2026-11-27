@@ -26,6 +26,7 @@ import (
 	"mesh-server/builtin"
 	"mesh-server/core"
 	"mesh-server/internal/testenv"
+	"mesh-server/signing"
 )
 
 const testTOML = "hostname = \"auto\"\n"
@@ -96,14 +97,16 @@ type updateInfo struct {
 	URL        string `json:"url,omitempty"`
 	Notes      string `json:"notes,omitempty"`
 	SHA256     string `json:"sha256,omitempty"`
+	Signature  string `json:"signature,omitempty"`
 	AutoUpdate bool   `json:"autoUpdate"`
 	Unchanged  bool   `json:"unchanged,omitempty"`
 }
 
 type launcherInfo struct {
-	Version string `json:"version"`
-	URL     string `json:"url"`
-	SHA256  string `json:"sha256"`
+	Version   string `json:"version"`
+	URL       string `json:"url"`
+	SHA256    string `json:"sha256"`
+	Signature string `json:"signature"`
 }
 
 type heartbeatResponse struct {
@@ -121,15 +124,17 @@ const testPlatform = "windows/amd64"
 
 // releaseView mirrors one entry of GET /api/admin/releases.
 type releaseView struct {
-	Platform        string `json:"platform"`
-	AppVersion      string `json:"appVersion"`
-	AppURL          string `json:"appUrl"`
-	AppSHA256       string `json:"appSha256"`
-	AppNotes        string `json:"appNotes"`
-	AutoUpdate      bool   `json:"autoUpdate"`
-	LauncherVersion string `json:"launcherVersion"`
-	LauncherURL     string `json:"launcherUrl"`
-	LauncherSHA256  string `json:"launcherSha256"`
+	Platform          string `json:"platform"`
+	AppVersion        string `json:"appVersion"`
+	AppURL            string `json:"appUrl"`
+	AppSHA256         string `json:"appSha256"`
+	AppSignature      string `json:"appSignature"`
+	AppNotes          string `json:"appNotes"`
+	AutoUpdate        bool   `json:"autoUpdate"`
+	LauncherVersion   string `json:"launcherVersion"`
+	LauncherURL       string `json:"launcherUrl"`
+	LauncherSHA256    string `json:"launcherSha256"`
+	LauncherSignature string `json:"launcherSignature"`
 }
 
 // releasesResponse mirrors GET /api/admin/releases.
@@ -563,9 +568,12 @@ func TestNonceReplayIsRejected(t *testing.T) {
 	}
 }
 
-// putReleases saves through the admin API and returns the response.
+// putReleases saves through the admin API and returns the response. Whatever
+// the caller left unsigned is signed here, the way the operator's offline key
+// would, so a test about slots does not have to know any digest.
 func putReleases(t *testing.T, env *testenv.Env, fields map[string]any) releasesResponse {
 	t.Helper()
+	fillReleaseSignatures(t, env, fields)
 	res, data := env.Do("PUT", "/api/admin/releases", fields)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("PUT releases = %d, want 200: %s", res.StatusCode, data)
@@ -575,6 +583,79 @@ func putReleases(t *testing.T, env *testenv.Env, fields map[string]any) releases
 		t.Fatalf("decode releases: %v", err)
 	}
 	return out
+}
+
+// fillReleaseSignatures signs every slot in fields that the caller left without
+// a signature. It downloads exactly what the control plane will download, so
+// the digest and the version in the signature are the ones being published.
+func fillReleaseSignatures(t *testing.T, env *testenv.Env, fields map[string]any) {
+	t.Helper()
+	platform, _ := fields["platform"].(string)
+	if platform == "" {
+		return
+	}
+	if rawURL, ok := fields["appUrl"].(string); ok {
+		if _, given := fields["appSignature"]; !given {
+			pkg := fetchURL(t, rawURL)
+			fields["appSignature"] = env.Sign(signing.SlotClient, platform,
+				packageVersionOf(t, pkg), digestOf(pkg))
+		}
+	}
+	if rawURL, ok := fields["launcherUrl"].(string); ok {
+		if _, given := fields["launcherSignature"]; !given {
+			version, _ := fields["launcherVersion"].(string)
+			fields["launcherSignature"] = env.Sign(signing.SlotLauncher, platform,
+				version, digestOf(fetchURL(t, rawURL)))
+		}
+	}
+}
+
+// digestOf is the full sha256 the control plane computes for a package.
+func digestOf(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// packageVersionOf reads the version the package's manifest declares.
+func packageVersionOf(t *testing.T, pkg []byte) string {
+	t.Helper()
+	zr, err := zstd.NewReader(bytes.NewReader(pkg))
+	if err != nil {
+		t.Fatalf("open package: %v", err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			t.Fatalf("find version.json: %v", err)
+		}
+		if hdr.Name != "version.json" {
+			continue
+		}
+		var manifest struct {
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(tr).Decode(&manifest); err != nil {
+			t.Fatalf("decode version.json: %v", err)
+		}
+		return manifest.Version
+	}
+}
+
+// fetchURL reads what a release URL serves.
+func fetchURL(t *testing.T, rawURL string) []byte {
+	t.Helper()
+	res, err := http.Get(rawURL)
+	if err != nil {
+		t.Fatalf("fetch %s: %v", rawURL, err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read %s: %v", rawURL, err)
+	}
+	return body
 }
 
 // publishExternal points the platform at a served package and returns its view.
@@ -641,7 +722,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 		t.Fatalf("app-only heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}
 	got := decode(data)
-	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA}
+	wantUpdate := updateInfo{Version: "2026.11.24-4", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA, Signature: release.AppSignature}
 	if got.ConfigHash != "" || got.AppUpdate == nil || *got.AppUpdate != wantUpdate {
 		t.Fatalf("app-only heartbeat = %+v, want only appUpdate %+v", got, wantUpdate)
 	}
@@ -747,7 +828,7 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 		t.Fatalf("heartbeat without known = %d, want 200: %s", res.StatusCode, data)
 	}
 	got, body := decode(data)
-	wantFull := updateInfo{Version: "2026.11.26-18", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA, AutoUpdate: true}
+	wantFull := updateInfo{Version: "2026.11.26-18", URL: release.AppURL, Notes: "修复窄屏布局", SHA256: wantSHA, Signature: release.AppSignature, AutoUpdate: true}
 	if got.AppUpdate == nil || *got.AppUpdate != wantFull {
 		t.Fatalf("heartbeat without known = %+v, want the full appUpdate %+v", got.AppUpdate, wantFull)
 	}
@@ -1330,6 +1411,58 @@ func TestReleaseSlotsKeepOnlyPublishedRows(t *testing.T) {
 	}
 }
 
+// TestPublishRequiresASignatureForTheBytesItDownloaded pins the three ways a
+// release signature can fail: nothing signed, a signature over another digest,
+// and a signature made for the other slot. All of them must be refused before
+// the row is written, so no device is ever offered a package it will reject.
+func TestPublishRequiresASignatureForTheBytesItDownloaded(t *testing.T) {
+	env := testenv.New(t)
+	file := releasePkg(t, "2026.11.27-1", []byte("client build"))
+	rawURL := fileServer(t, file)
+	zero := strings.Repeat("0", 64)
+
+	cases := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name:   "unsigned",
+			fields: map[string]string{"platform": testPlatform, "appUrl": rawURL},
+			want:   "缺少发布签名",
+		},
+		{
+			name: "signature over another digest",
+			fields: map[string]string{
+				"platform":     testPlatform,
+				"appUrl":       rawURL,
+				"appSignature": env.Sign(signing.SlotClient, testPlatform, "2026.11.27-1", zero),
+			},
+			want: "不符",
+		},
+		{
+			name: "signature for the launcher slot",
+			fields: map[string]string{
+				"platform":     testPlatform,
+				"appUrl":       rawURL,
+				"appSignature": env.Sign(signing.SlotLauncher, testPlatform, "2026.11.27-1", digestOf(file)),
+			},
+			want: "不符",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, body := env.Do("PUT", "/api/admin/releases", tc.fields)
+			if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), tc.want) {
+				t.Fatalf("publish = %d: %s, want 400 containing %q", res.StatusCode, body, tc.want)
+			}
+		})
+	}
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("a rejected publish stored a slot: found %v, %v", found, err)
+	}
+}
+
 func TestLauncherRejectsIncompletePublish(t *testing.T) {
 	env := testenv.New(t)
 
@@ -1350,17 +1483,22 @@ func TestLauncherRejectsIncompletePublish(t *testing.T) {
 		},
 		{
 			name:   "non-http url",
-			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "ftp://example.com/mesh.exe"},
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "ftp://example.com/mesh.exe", "launcherSignature": "00"},
 			want:   "http(s)",
 		},
 		{
 			name:   "unreachable url",
-			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "http://127.0.0.1:1/mesh.exe"},
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": "http://127.0.0.1:1/mesh.exe", "launcherSignature": "00"},
 			want:   "无法读取 launcherUrl",
 		},
 		{
+			name:   "empty signature",
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.25-36", "launcherUrl": fileServer(t, []byte("launcher one")), "launcherSignature": ""},
+			want:   "缺少发布签名",
+		},
+		{
 			name:   "missing platform",
-			fields: map[string]string{"launcherVersion": "2026.11.25-36", "launcherUrl": "http://example.com/mesh.exe"},
+			fields: map[string]string{"launcherVersion": "2026.11.25-36", "launcherUrl": "http://example.com/mesh.exe", "launcherSignature": "00"},
 			want:   "platform",
 		},
 	}
@@ -1392,7 +1530,7 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-36", []byte("client build")))
 	launcher := publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher one"))
-	wantLauncher := launcherInfo{Version: "2026.11.25-36", URL: launcher.LauncherURL, SHA256: launcher.LauncherSHA256}
+	wantLauncher := launcherInfo{Version: "2026.11.25-36", URL: launcher.LauncherURL, SHA256: launcher.LauncherSHA256, Signature: launcher.LauncherSignature}
 
 	decode := func(data []byte) heartbeatResponse {
 		t.Helper()

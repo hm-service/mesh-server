@@ -24,6 +24,7 @@ import (
 
 	"mesh-server/builtin"
 	"mesh-server/db"
+	"mesh-server/signing"
 	"mesh-server/text"
 )
 
@@ -118,7 +119,12 @@ func (a *App) Release(platform string) (db.Release, bool, error) {
 // read from the version.json manifest inside the package, which is the only
 // place a build states its own version (AGENTS.md「bin/version.json」).
 type ClientPackage struct {
-	URL        string
+	URL string
+	// Signature is the Ed25519 signature over ReleaseSigningString printed by
+	// the offline release key. It is an input, not something the control plane
+	// produces: a server-side signature would only prove the server signed its
+	// own download.
+	Signature  string
 	Notes      string
 	AutoUpdate bool
 }
@@ -147,7 +153,7 @@ func (a *App) Publish(in PublishInput) error {
 		if !ValidPlatform(in.Platform) {
 			return invalid(text.Get(text.AppPlatformInvalid))
 		}
-		prepared, err := a.prepareClientSlot(*in.Client)
+		prepared, err := a.prepareClientSlot(in.Platform, *in.Client)
 		if err != nil {
 			return err
 		}
@@ -157,7 +163,7 @@ func (a *App) Publish(in PublishInput) error {
 		if !ValidPlatform(in.Platform) {
 			return invalid(text.Get(text.AppPlatformInvalid))
 		}
-		prepared, err := a.prepareLauncherSlot(*in.Launcher)
+		prepared, err := a.prepareLauncherSlot(in.Platform, *in.Launcher)
 		if err != nil {
 			return err
 		}
@@ -198,9 +204,10 @@ func (a *App) Publish(in PublishInput) error {
 // prepareClientSlot validates one client package, computes the digest of the
 // bytes clients will download and reads the version the package declares. It
 // writes nothing.
-func (a *App) prepareClientSlot(pkg ClientPackage) (db.ClientSlot, error) {
+func (a *App) prepareClientSlot(platform string, pkg ClientPackage) (db.ClientSlot, error) {
 	next := db.ClientSlot{
 		URL:        strings.TrimSpace(pkg.URL),
+		Signature:  strings.TrimSpace(pkg.Signature),
 		Notes:      strings.TrimSpace(pkg.Notes),
 		AutoUpdate: pkg.AutoUpdate,
 	}
@@ -220,6 +227,11 @@ func (a *App) prepareClientSlot(pkg ClientPackage) (db.ClientSlot, error) {
 		return db.ClientSlot{}, invalid(text.Format(text.AppPackageVersionInvalid,
 			manifestName, MaxAppVersionRunes, version))
 	}
+	// 验签放在摘要算完之后：签名覆盖的是服务端刚下载到的那些字节的摘要，
+	// 而不是管理员在表单里填的那个。包在传输中被换掉时，这里对不上。
+	if err := a.VerifyReleaseSignature(signing.SlotClient, platform, version, sha, next.Signature); err != nil {
+		return db.ClientSlot{}, err
+	}
 	next.Version = version
 	next.SHA256 = sha
 	return next, nil
@@ -227,8 +239,12 @@ func (a *App) prepareClientSlot(pkg ClientPackage) (db.ClientSlot, error) {
 
 // prepareLauncherSlot validates one launcher slot and computes the digest of the
 // file clients will download. It writes nothing.
-func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error) {
-	next := db.LauncherSlot{Version: strings.TrimSpace(slot.Version), URL: strings.TrimSpace(slot.URL)}
+func (a *App) prepareLauncherSlot(platform string, slot db.LauncherSlot) (db.LauncherSlot, error) {
+	next := db.LauncherSlot{
+		Version:   strings.TrimSpace(slot.Version),
+		URL:       strings.TrimSpace(slot.URL),
+		Signature: strings.TrimSpace(slot.Signature),
+	}
 	if err := validateSlotVersion("launcher", next.Version); err != nil {
 		return db.LauncherSlot{}, err
 	}
@@ -238,6 +254,9 @@ func (a *App) prepareLauncherSlot(slot db.LauncherSlot) (db.LauncherSlot, error)
 	sha, err := a.fetchDigest(next.URL)
 	if err != nil {
 		return db.LauncherSlot{}, invalid(text.Format(text.AppLauncherFileUnreadable, err))
+	}
+	if err := a.VerifyReleaseSignature(signing.SlotLauncher, platform, next.Version, sha, next.Signature); err != nil {
+		return db.LauncherSlot{}, err
 	}
 	next.SHA256 = sha
 	return next, nil

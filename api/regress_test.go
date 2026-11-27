@@ -16,6 +16,7 @@ import (
 	"mesh-server/api"
 	"mesh-server/app"
 	"mesh-server/internal/testenv"
+	"mesh-server/signing"
 )
 
 // TestRegisterIdempotentBranchRequiresCredential pins the fix for the worst hole
@@ -154,11 +155,16 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 func TestPublishRejectsBothSlotsTogether(t *testing.T) {
 	env := testenv.New(t)
 	file := releasePkg(t, "2026.11.25-1", []byte("a whole mesh client binary"))
+	// Both slots are signed: the launcher URL is the one that must fail, and a
+	// missing signature would fail first and hide that.
+	appURL := fileServer(t, file)
 	res, body := env.Do("PUT", "/api/admin/releases", map[string]string{
-		"platform":        testPlatform,
-		"appUrl":          fileServer(t, file),
-		"launcherVersion": "2026.11.25-9",
-		"launcherUrl":     "http://127.0.0.1:1/mesh.exe",
+		"platform":          testPlatform,
+		"appUrl":            appURL,
+		"appSignature":      env.Sign(signing.SlotClient, testPlatform, "2026.11.25-1", digestOf(file)),
+		"launcherVersion":   "2026.11.25-9",
+		"launcherUrl":       "http://127.0.0.1:1/mesh.exe",
+		"launcherSignature": env.Sign(signing.SlotLauncher, testPlatform, "2026.11.25-9", strings.Repeat("0", 64)),
 	})
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("publish = %d, want 400: %s", res.StatusCode, body)

@@ -12,7 +12,8 @@ api.text.invalid_request_body = 请求内容不合法
 api.text.app_version_not_input = appVersion 由包内 version.json 读出，不再作为请求字段
 api.text.app_notes_requires_url = appNotes 必须与 appUrl 一起给出
 api.text.auto_update_requires_url = autoUpdate 必须与 appUrl 一起给出
-api.text.launcher_slot_requires_both = launcherVersion 与 launcherUrl 必须同时给出
+api.text.signature_requires_url = appSignature 必须与 appUrl 一起给出
+api.text.launcher_slot_requires_both = launcherVersion、launcherUrl、launcherSignature 必须同时给出
 api.text.platform_required = platform 不能为空
 api.text.slot_only_launcher = slot 只能是 launcher
 
@@ -27,6 +28,8 @@ app.text.slot_version_too_long = {0}_version 最长 {1} 字符
 app.text.slot_url_required = {0}_url 不能为空
 app.text.slot_url_too_long = {0}_url 最长 {1} 字符
 app.text.slot_url_invalid = {0}_url 必须是 http(s) 地址
+app.text.release_signature_missing = {0} 槽位缺少发布签名
+app.text.release_signature_invalid = {0} 槽位的发布签名与下载到的包不符
 
 # app：错误文案。
 app.error.credential_parse_failed = 解析签发结果失败

@@ -13,7 +13,8 @@ api.text.invalid_request_body = the request body is invalid
 api.text.app_version_not_input = appVersion is read from version.json inside the package and is no longer a request field
 api.text.app_notes_requires_url = appNotes must be given together with appUrl
 api.text.auto_update_requires_url = autoUpdate must be given together with appUrl
-api.text.launcher_slot_requires_both = launcherVersion and launcherUrl must be given together
+api.text.signature_requires_url = appSignature must be given together with appUrl
+api.text.launcher_slot_requires_both = launcherVersion, launcherUrl and launcherSignature must be given together
 api.text.platform_required = platform must not be empty
 api.text.slot_only_launcher = slot can only be launcher
 
@@ -28,6 +29,8 @@ app.text.slot_version_too_long = {0}_version is at most {1} characters
 app.text.slot_url_required = {0}_url must not be empty
 app.text.slot_url_too_long = {0}_url is at most {1} characters
 app.text.slot_url_invalid = {0}_url must be an http(s) URL
+app.text.release_signature_missing = the {0} slot has no release signature
+app.text.release_signature_invalid = the {0} slot's release signature does not match the downloaded package
 
 # app: error text.
 app.error.credential_parse_failed = failed to parse the credential response

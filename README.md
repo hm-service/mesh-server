@@ -33,6 +33,18 @@ Windows 上跑 `just` 需要一个 bash（Git Bash 即可），`stop` 等 recipe
 `SocketUser` 要换成容器内 root 映射到的宿主账号：rootless podman 下容器 root 就是运行
 podman 的那个用户，换成别人会导致容器连不上。这份单元不含任何秘密，`15888` 是 EasyTier
 的默认 RPC 端口。
+## 发布签名
+
+发布包由离线私钥签名，控制面只验签、不签名。工具与验证共用 `signing` 包，格式不会两边各写一份。
+
+```bash
+go run ./tools/signpkg -newkey ../build/release.key        # 建一对密钥，打印公钥
+go run ./tools/signpkg -key ../build/release.key -slot client \
+    -platform windows/amd64 -version 2026.11.27-103 -sha256 <64 位摘要>
+```
+
+`-newkey` 打印的公钥要同时写进 `signing.PublicKeyHex` 与客户端 `crates/remote/src/signing.rs`；两处不一致时客户端会拒装而非报错。私钥不进仓库、不随镜像分发。`build/publish.ps1` 会自动签名并提交 `appSignature`。
+
 ## 控制台
 
 ![设备列表](docs/admin-devices.png)

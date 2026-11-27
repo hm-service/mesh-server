@@ -15,6 +15,8 @@ const KNOWN = ["windows/amd64", "linux/amd64"];
 /** SlotDraft 是两个槽位共用的编辑状态：各自提交、各自报错。 */
 interface SlotDraft {
   url: string;
+  /** 离线发布私钥对这个槽位的签名（128 位十六进制），发布时必填。 */
+  signature: string;
   busy: boolean;
   error: string;
   hint: string;
@@ -53,15 +55,26 @@ function releaseOf(platform: string): ReleaseView | null {
 }
 
 function emptySlot(): SlotDraft {
-  return { url: "", busy: false, error: "", hint: "" };
+  return { url: "", signature: "", busy: false, error: "", hint: "" };
 }
 
 // 每个平台各存两份草稿；保存后按服务端返回的发布内容重置，不保留半截编辑。
 function reset(platform: string, payload: ReleasesPayload | null = props.releases): Draft {
   const value = releaseIn(payload, platform);
   drafts[platform] = {
-    launcher: { ...emptySlot(), version: value?.launcherVersion ?? "", url: value?.launcherUrl ?? "" },
-    client: { ...emptySlot(), url: value?.appUrl ?? "", notes: value?.appNotes ?? "", autoUpdate: value?.autoUpdate ?? false },
+    launcher: {
+      ...emptySlot(),
+      version: value?.launcherVersion ?? "",
+      url: value?.launcherUrl ?? "",
+      signature: value?.launcherSignature ?? "",
+    },
+    client: {
+      ...emptySlot(),
+      url: value?.appUrl ?? "",
+      signature: value?.appSignature ?? "",
+      notes: value?.appNotes ?? "",
+      autoUpdate: value?.autoUpdate ?? false,
+    },
   };
   return drafts[platform] as Draft;
 }
@@ -108,6 +121,20 @@ function requireURL(slot: SlotDraft): boolean {
   return true;
 }
 
+/**
+ * requireSignature 校验发布签名。签名覆盖槽位、平台、版本与摘要，服务端会重新
+ * 下载同一个文件再对一遍：它不能在这里算出来，只能由持有私钥的人给出。
+ */
+function requireSignature(slot: SlotDraft): boolean {
+  const value = slot.signature.trim().toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(value)) {
+    slot.error = "发布签名必须是 128 位十六进制（64 字节 Ed25519 签名）";
+    return false;
+  }
+  slot.signature = value;
+  return true;
+}
+
 async function saveLauncher(platform: string) {
   const draft = drafts[platform]!.launcher;
   if (draft.busy) return;
@@ -117,6 +144,7 @@ async function saveLauncher(platform: string) {
     return;
   }
   if (!requireURL(draft)) return;
+  if (!requireSignature(draft)) return;
   const version = draft.version.trim();
   draft.busy = true;
   draft.hint = "正在解析远程文件…（服务端下载并计算 sha256，最长约 60 秒）";
@@ -125,6 +153,7 @@ async function saveLauncher(platform: string) {
       platform,
       launcherVersion: version,
       launcherUrl: draft.url.trim(),
+      launcherSignature: draft.signature,
     });
     emit("saved", saved);
     reset(platform, saved);
@@ -142,6 +171,7 @@ async function saveClient(platform: string) {
   if (draft.busy) return;
   draft.error = "";
   if (!requireURL(draft)) return;
+  if (!requireSignature(draft)) return;
   draft.busy = true;
   draft.hint = "正在解析远程文件…（服务端下载、读出包内版本并计算 sha256，最长约 60 秒）";
   try {
@@ -149,6 +179,7 @@ async function saveClient(platform: string) {
     const saved = await api.publishRelease({
       platform,
       appUrl: draft.url.trim(),
+      appSignature: draft.signature,
       appNotes: draft.notes,
       autoUpdate: draft.autoUpdate,
     });
@@ -244,6 +275,18 @@ async function clearPlatform(platform: string) {
                 autocomplete="off"
               />
             </div>
+            <div class="field full">
+              <label :for="platform + '-launcher-signature'">发布签名</label>
+              <input
+                :id="platform + '-launcher-signature'"
+                v-model="drafts[platform]!.launcher.signature"
+                type="text"
+                placeholder="128 位十六进制"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <span class="hint">覆盖槽位、平台、版本与摘要；用 server/tools/signpkg 签出，服务端会重新下载同一份文件再对一遍。</span>
+            </div>
           </div>
           <div v-if="drafts[platform]!.launcher.hint" class="hint">{{ drafts[platform]!.launcher.hint }}</div>
           <div v-if="drafts[platform]!.launcher.error" class="err">{{ drafts[platform]!.launcher.error }}</div>
@@ -279,6 +322,17 @@ async function clearPlatform(platform: string) {
                 autocomplete="off"
               />
               <span class="hint">版本号不在这里填：服务端从包内 version.json 读出，发布后按它比较设备版本。</span>
+            </div>
+            <div class="field full">
+              <label :for="platform + '-app-signature'">发布签名</label>
+              <textarea
+                :id="platform + '-app-signature'"
+                v-model="drafts[platform]!.client.signature"
+                rows="2"
+                placeholder="128 位十六进制"
+                spellcheck="false"
+              />
+              <span class="hint">签的是包内 version.json 声明的版本与服务端算出的摘要；两项都在发布时才定，所以签名只能由发布私钥持有者事后给出（build/publish.ps1 会自动签）。</span>
             </div>
             <div class="field full">
               <label :for="platform + '-notes'">说明（可选，随更新下发给客户端）</label>

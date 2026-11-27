@@ -238,6 +238,9 @@ type updateInfo struct {
 	URL     string `json:"url,omitempty"`
 	Notes   string `json:"notes,omitempty"`
 	SHA256  string `json:"sha256,omitempty"`
+	// Signature 覆盖 {client, platform, version, sha256}（MESH3 行串）。客户端
+	// 验不过就拒装——摘要来自控制面、内容来自任意地址，签名把这一对绑在一起。
+	Signature string `json:"signature,omitempty"`
 	// AutoUpdate 在两种形状里都有：管理员可能刚改过设备级覆盖。
 	AutoUpdate bool `json:"autoUpdate"`
 	// Unchanged 表示设备手里已经是这一份：跳过下载与提示，只认 autoUpdate。
@@ -249,9 +252,10 @@ type updateInfo struct {
 // the client hashes the launcher it already has itself, so the server has
 // nothing to compare and cannot tell whether the local copy is current.
 type launcherInfo struct {
-	Version string `json:"version"`
-	URL     string `json:"url"`
-	SHA256  string `json:"sha256"`
+	Version   string `json:"version"`
+	URL       string `json:"url"`
+	SHA256    string `json:"sha256"`
+	Signature string `json:"signature"`
 }
 
 // launcherOf is the launcher slot of release as a heartbeat field; nil when the
@@ -262,9 +266,10 @@ func launcherOf(release db.Release) *launcherInfo {
 		return nil
 	}
 	return &launcherInfo{
-		Version: release.LauncherVersion,
-		URL:     release.LauncherURL,
-		SHA256:  release.LauncherSHA256,
+		Version:   release.LauncherVersion,
+		URL:       release.LauncherURL,
+		SHA256:    release.LauncherSHA256,
+		Signature: release.LauncherSignature,
 	}
 }
 
@@ -352,6 +357,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 			appUpdate.URL = release.URL
 			appUpdate.Notes = release.Notes
 			appUpdate.SHA256 = release.SHA256
+			appUpdate.Signature = release.Signature
 		}
 		resp.AppUpdate = appUpdate
 	}

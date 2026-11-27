@@ -63,12 +63,16 @@ export interface ReleaseView {
   appVersion: string;
   appUrl: string;
   appSha256: string;
+  /** 离线发布私钥对「client 槽位」那段五行文本的签名（128 位十六进制）。 */
+  appSignature: string;
   appNotes: string;
   /** autoUpdate 跟着客户端包走：true 时客户端收到这个版本会自己装。 */
   autoUpdate: boolean;
   launcherVersion: string;
   launcherUrl: string;
   launcherSha256: string;
+  /** 启动器槽位的发布签名，格式同上，槽位是 launcher。 */
+  launcherSignature: string;
 }
 
 /** ReleasePublish 是一次发布要写的槽位；启动器的版本号与地址必须成对给出。 */
@@ -76,11 +80,14 @@ export interface ReleasePublish {
   platform?: string;
   /** 客户端包的版本号不从请求里给：服务端从包内 version.json 读出。 */
   appUrl?: string;
+  /** 必填：服务端下载并算完摘要之后用它验签，验不过整单 400。 */
+  appSignature?: string;
   appNotes?: string;
   /** 只随客户端包一起给出，省略即 false（手动安装）。 */
   autoUpdate?: boolean;
   launcherVersion?: string;
   launcherUrl?: string;
+  launcherSignature?: string;
   defaultToml?: string;
 }
 

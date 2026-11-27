@@ -4,6 +4,9 @@ package testenv
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -18,6 +21,7 @@ import (
 	"mesh-server/app"
 	"mesh-server/core"
 	"mesh-server/internal/fakecli"
+	"mesh-server/signing"
 )
 
 // Token is the AUTH_TOKEN every test environment uses.
@@ -36,6 +40,10 @@ type Env struct {
 	Clock   *Clock
 	// credential is the bearer token obtained by Login; empty before that.
 	credential string
+	// releasePrivate signs publish requests. Every environment gets its own key
+	// pair and hands the public half to the app, because the compiled-in key
+	// belongs to the offline release key nobody has here.
+	releasePrivate ed25519.PrivateKey
 }
 
 // Clock is the injectable application clock.
@@ -66,6 +74,8 @@ type config struct {
 	dataDir string
 	// credentialCLI points the app at the test binary as easytier-cli.
 	credentialCLI bool
+	// releasePrivate overrides the key pair generated for this environment.
+	releasePrivate ed25519.PrivateKey
 }
 
 // WithReadyzToken protects /readyz the way a deployment does.
@@ -107,8 +117,20 @@ func New(t *testing.T, options ...Option) *Env {
 		dir = t.TempDir()
 	}
 	clock := &Clock{t: t, now: time.Unix(1_732_400_000, 0)}
+	private := cfg.releasePrivate
+	var public ed25519.PublicKey
+	if private == nil {
+		var err error
+		public, private, err = ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate release key: %v", err)
+		}
+	} else {
+		public = private.Public().(ed25519.PublicKey)
+	}
 	appOptions := app.Options{
-		Now: clock.Now,
+		Now:              clock.Now,
+		ReleasePublicKey: public,
 		// The publish tests serve packages from an httptest server on loopback,
 		// which the hardened download client refuses by design.
 		FetchClient: &http.Client{Timeout: 10 * time.Second},
@@ -149,7 +171,7 @@ func New(t *testing.T, options ...Option) *Env {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	client := &http.Client{Timeout: 5 * time.Second, Transport: server.Client().Transport}
-	env := &Env{T: t, DataDir: dir, App: instance, Server: server, Client: client, Clock: clock}
+	env := &Env{T: t, DataDir: dir, App: instance, Server: server, Client: client, Clock: clock, releasePrivate: private}
 	if cfg.login {
 		env.Login()
 	}
@@ -174,6 +196,14 @@ func (e *Env) Login() {
 
 // Credential returns the current bearer token, empty when not logged in.
 func (e *Env) Credential() string { return e.credential }
+
+// Sign returns the release signature (hex) for one slot, as the operator's
+// offline key would produce it.
+func (e *Env) Sign(slot, platform, version, sha256 string) string {
+	e.T.Helper()
+	return hex.EncodeToString(ed25519.Sign(e.releasePrivate,
+		[]byte(signing.String(slot, platform, version, sha256))))
+}
 
 // Do sends a JSON request with the bearer credential.
 func (e *Env) Do(method, path string, body any) (*http.Response, []byte) {

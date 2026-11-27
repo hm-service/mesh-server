@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"mesh-server/db"
+	"mesh-server/signing"
 )
 
 const (
@@ -38,6 +40,10 @@ type Options struct {
 	// 的地址（经宿主的转发服务）。CLI 为空时不提供签发能力。
 	CredentialCLI string
 	CredentialRPC string
+	// ReleasePublicKey 是校验发布签名用的公钥。nil 表示用编进二进制的这把
+	// （signing.DefaultPublicKey）；测试在这里放自己的密钥对，这样才能构造出
+	// 一个真正有效的签名。它不改变信任锚：客户端用的是它自己那份常量。
+	ReleasePublicKey ed25519.PublicKey
 }
 
 // App owns DATA_DIR: the SQLite database and peer.default.toml.
@@ -51,6 +57,8 @@ type App struct {
 	revoked   map[string]struct{}
 	// credential 为空表示这台控制面没有配置签发通道。
 	credential *credentialIssuer
+	// releaseKey 校验发布签名，见 Options.ReleasePublicKey。
+	releaseKey ed25519.PublicKey
 }
 
 // Open prepares DATA_DIR and returns the ready application.
@@ -69,11 +77,15 @@ func Open(dataDir string, opts Options) (*App, error) {
 		return nil, err
 	}
 	a := &App{
-		dataDir:  dataDir,
-		database: database,
-		now:      opts.Now,
-		fetch:    opts.FetchClient,
-		revoked:  make(map[string]struct{}),
+		dataDir:    dataDir,
+		database:   database,
+		now:        opts.Now,
+		fetch:      opts.FetchClient,
+		revoked:    make(map[string]struct{}),
+		releaseKey: opts.ReleasePublicKey,
+	}
+	if a.releaseKey == nil {
+		a.releaseKey = signing.DefaultPublicKey()
 	}
 	if strings.TrimSpace(opts.CredentialCLI) != "" {
 		a.credential = &credentialIssuer{

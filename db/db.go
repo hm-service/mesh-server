@@ -48,11 +48,13 @@ CREATE TABLE IF NOT EXISTS release (
     version          TEXT    NOT NULL DEFAULT '',
     url              TEXT    NOT NULL DEFAULT '',
     sha256           TEXT    NOT NULL DEFAULT '',
+    signature        TEXT    NOT NULL DEFAULT '',
     notes            TEXT    NOT NULL DEFAULT '',
     auto_update      BOOLEAN NOT NULL DEFAULT 0,
     launcher_version TEXT    NOT NULL DEFAULT '',
     launcher_url     TEXT    NOT NULL DEFAULT '',
-    launcher_sha256  TEXT    NOT NULL DEFAULT ''
+    launcher_sha256  TEXT    NOT NULL DEFAULT '',
+    launcher_signature TEXT  NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS credential (
@@ -139,6 +141,14 @@ func (d *DB) createSchema() error {
 	// A database written before the package-level switch existed keeps every
 	// package it published as manual: the column arrives as 0.
 	if err := d.ensureColumn("release", "auto_update", "BOOLEAN NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// 发布签名：客户端据此确认包来自发布私钥，而不是只看控制面给的摘要。
+	// 旧记录留空串——它们本来就发不出去，重新发布会补上。
+	if err := d.ensureColumn("release", "signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := d.ensureColumn("release", "launcher_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := d.renameAppHashColumn(); err != nil {

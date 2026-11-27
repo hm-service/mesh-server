@@ -1,7 +1,8 @@
 # mesh-server 设计
 
 单文件静态二进制，控制面全部状态都在 `DATA_DIR`；前端构建产物用 `go:embed` 打进二进制。
-HTTP 契约以 [`../docs/`](../docs/) 为准，本文件只描述实现与部署。
+HTTP 契约以 [`../docs/`](../docs/) 为准；本文件只描述服务端这一侧的实现、部署与取舍，
+跨两端的取舍见 [`../DESIGN.md`](../DESIGN.md)。
 
 ## 1. 部署
 
@@ -13,7 +14,7 @@ HTTP 契约以 [`../docs/`](../docs/) 为准，本文件只描述实现与部署
   ```
 
   镜像由 CI（GitHub Actions）构建并推到 `ghcr.io/hm-service/mesh-server`，部署机只拉取，清单用 `imagePullPolicy: Always`；
-- 从源码出镜像用 `Dockerfile`（多阶段，`ghcr.io/hm-service/mesh-server:<yyyy-MM-dd>` 与 `latest`，`linux/amd64` + `linux/arm64`；最后一个阶段带进 `easytier-cli`，见第 6 节）；
+- 从源码出镜像用 `Dockerfile`（多阶段，`ghcr.io/hm-service/mesh-server:<yyyy-MM-dd>` 与 `latest`，`linux/amd64` + `linux/arm64`；最后一个阶段带进 `easytier-cli`，见第 7 节）；
 - `Dockerfile.runtime` 是离线兜底：把交叉编译好的 `linux/amd64` 二进制放在同目录，在目标机本地出镜像，不依赖镜像仓库。它没有 `easytier-cli`，用它时 `ET_CLI` 留空，或者自己把 CLI 打进镜像；
 - 容器只跑一个二进制，根文件系统可只读，唯一可写路径是 `DATA_DIR`（默认 `/data`）；
 - 应用不做 TLS，反向代理负责终止 TLS、限速与域名；应用的监听地址只来自 `HOST`/`PORT`，客户端地址只在请求来自 `TRUSTED_PROXIES` 内的反代时采信 `X-Forwarded-For`/`X-Real-IP`；
@@ -129,13 +130,43 @@ CREATE INDEX credential_device ON credential (device_public_id);
 
 `release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。`auto_update` 属于客户端包槽位：发布这个包时一起写，发布或清空启动器不改动它。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
 
-`credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 6 节的 `ET_CLI`）。
+`credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 9 节的 `ET_CLI`）。
 
 表结构变化只在 `db/db.go` 的 `createSchema` 里处理：后来新增的列由 `ensureColumn` 逐列补上（`release.auto_update` 就是这样加上来的，存量行一律为 0，即手动安装；`device.auto_update` 同样由它补上，存量行是 `NULL`，即跟随发布包）；`device.last_app_hash` 由 `renameAppHashColumn` 原地改名为 `last_app_version` 并清空旧值（旧的 16 位包摘要在新语义下不是版本号），`release.hash` 由 `dropReleaseHashColumn` 删除；旧版 JSON 导入留下的 `device.legacy_id` 列、它的唯一索引与 `setting` 表由 `dropLegacySchema` 删除，导入本身已不存在。
 
 `config_hash` 是数据而不是结构：启动时把每台设备的摘要按当前算法（`core.Hash`，即 `sha256(toml)` 前 16 位）重算一遍，只写不一致的行。摘要算法变化后存量行由此迁移，设备不会停在永远 `stale`、每轮心跳都被重发配置的状态。
 
-## 5. 安全模型
+## 5. 默认模板
+
+新建设备对话框里的默认配置来自 `DATA_DIR/peer.default.toml`；该文件不存在或全为空白时用编进二进制的 `builtin/peer.default.toml`。模板只在新建或改写设备配置时被复制一次，之后每台设备各自持有自己的 `config.toml` 原文，改模板不影响已建成的设备。
+
+模板里没有 `network_secret`，也没有任何别的密钥：从它建出来的设备一律是凭据节点，身份来自控制面签发的 `config/credential.json`（`ET_CREDENTIAL`）。首次启动还没有凭据时 core 先不起，心跳不依赖 core，下一轮就把凭据发下来。三个种子是正式节点，配置里带 `network_secret` 与 `credential_file`，用 `config/secure.key` 的固定私钥走 `--secure-mode`；它们的配置单独维护，不从模板复制。模板因此可以进仓库、编进二进制——它不含需要保密的材料。
+
+模板的内容怎么被 core 解释（`[secure_mode]`、`[[peer]]`、`dhcp` 的写法与理由）见 [../client/DESIGN.md](../client/DESIGN.md)「配置内容」。
+
+## 6. 模板占位符
+
+默认模板里可以写 `{{ KEY }}` 形式的占位符，目前只有 `{{ IP }}`。识别与替换只发生在管理面板里：控制面把模板原文存下来、原样发给前端，前端解析出有哪些洞、填好之后把裸配置提交回来。后端不解析占位符，也不理解地址格式。
+
+这样分是因为控制面存的是不透明文本，它没有能力也没有资格理解文本语义。让后端校验「这个地址有没有被占用」，就得先让它知道 `/24` 怎么归一、`ipv4` 可能是数组、哪几种写法指向同一个主机地址——easytier 的配置知识又从后门回到了后端，而这正是要解耦掉的部分。
+
+`{{ IP }}` 注入的是完整 CIDR（`10.126.126.4/24`）而不是裸地址：模板写 `ipv4 = "{{ IP }}"`，占位符的值就是表单里那一栏的原文。前缀长度因此留在模板与表单两侧，占位符机制退化成纯字符串替换。
+
+新建时那一栏的默认值由前端从设备列表算出来：取现有设备里最小地址所在的 `/24`，从它往后找第一个空闲主机地址；一台设备都没有时用 `10.126.126.1`。地址冲突只提示、不阻断——同一个 IP 在多网卡、迁移期新旧设备并存、临时排查时都可能是故意的，控制面没有立场判它是错的。
+
+代价是绕过面板直接调 API 不做任何模板处理：提交带 `{{ IP }}` 的配置会被原样存下去，那台设备起不来。接受这个代价，因为 API 只有管理员在用，而把校验挪回后端会把上面那些配置知识一起带回来。
+
+## 7. 种子 RPC 与凭据签发
+
+ET 的 management RPC 是自研协议（protobuf + 分片 + 压缩 + 事务），不是 gRPC，没有现成的客户端库。控制面用 `easytier-cli -o json` 子进程调用，解析固定字段。镜像里的 `easytier-cli` 必须与种子上的 `easytier-core` 同一发布次版本（`Dockerfile` 的 `EASYTIER_VERSION` 固定它）：签发与撤销的参数名、JSON 字段都随版本变化。
+
+RPC 能签发凭据，等价于 `network_secret`，所以只绑在种子回环（`127.0.0.1:15888`）。容器有自己的网络命名空间，够不到宿主回环，所以宿主用 `mesh-rpc.socket` 监听 `/run/mesh/rpc.sock`（`SocketMode=0600`、owner 为容器映射用户），`systemd-socket-proxyd` 把连接转给 `127.0.0.1:15888`；podman 用 hostPath 只读挂进容器，控制面再把 socket 桥成 `127.0.0.1` 的临时端口供 `easytier-cli -p` 使用（它只认 `ip:port`，见第 9 节 `ET_RPC_SOCKET`）。
+
+签发权因此从「网络可达」变成「文件系统可达」。`MESH_RPC_WHITELIST` 是同一目的的可选收窄手段，当前部署没有用。
+
+ET 自己的 `credential_file` 里存了每张凭据的私钥，它是全网凭据的唯一副本：丢了就得全量重签，部署时要一并备份。
+
+## 8. 安全模型
 
 | 面 | 机制 |
 | --- | --- |
@@ -143,6 +174,7 @@ CREATE INDEX credential_device ON credential (device_public_id);
 | 设备面 | Ed25519 请求签名（`MESH2` 八行原文）+ 300 秒时间窗 + nonce 重放缓存；普通节点在 mesh 里的身份是种子签发的凭据，控制面只留 `credential_id` 与到期时间 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
 | 发布包 | 客户端包：版本号取自包内 `version.json`（必须与 `YYYY.MM.DD-N` 一致），发布时连包一起校验；`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
+| 发布签名 | 两个槽位各带一份 Ed25519 签名，原文是 `MESH3`、槽位、平台、版本、摘要五行。私钥离线，公钥编进两端二进制；控制面在下载并算完摘要之后验签，不过就 `400` 且不写槽位。这一环只让坏包在发布时失败，信任锚在客户端 |
 | 发布下载 | 服务端下载发布地址时拒绝回环、私网、链路本地、组播与未指定地址（`net.Dialer.Control` 逐个连接校验），最多 5 次重定向且每一跳重新校验，不走代理 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |
@@ -150,7 +182,7 @@ CREATE INDEX credential_device ON credential (device_public_id);
 | 并发 | `/api/auth`、管理面 `/api/admin/*`、设备面 `/api/v1/*`、静态资源、`/readyz` 各自独立信号量（管理面与设备面互不挤占）；Argon2id 并发上限 4 |
 | 超时 | 连接读请求头 10 秒、读整个请求 15 秒、空闲 60 秒；发布包下载 60 秒 |
 
-## 6. 环境变量与 Secrets
+## 9. 环境变量与 Secrets
 
 | 变量 | 必填 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -175,9 +207,7 @@ CREATE INDEX credential_device ON credential (device_public_id);
 
 数值型变量解析失败或越界时直接拒绝启动，退出码 1。
 
-镜像里的 `easytier-cli` 必须与种子上的 `easytier-core` 同一发布次版本（`Dockerfile` 的 `EASYTIER_VERSION` 固定它）：签发与撤销的参数名、JSON 字段都随版本变化。
-
-## 7. 日志与生命周期
+## 10. 日志与生命周期
 
 - 日志是 JSON 行，同时写 stdout 与 `DATA_DIR/server.log`；每条访问日志带 `client_ip`、`method`、`path`、`status`、`duration_ms`、`timestamp`；`/livez` 不记；
 - 启动成功后打印 `server started`，停止时依次打印 `shutdown signal received`、`server shutdown`；

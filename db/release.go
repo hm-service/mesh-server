@@ -7,9 +7,14 @@ import (
 )
 
 // Release is what one platform publishes: the client package (Version, URL,
-// SHA256, Notes, AutoUpdate) and the launcher (LauncherVersion, LauncherURL,
-// LauncherSHA256). The two slots are written and cleared independently, so a row
-// exists as long as at least one of them is published.
+// SHA256, Signature, Notes, AutoUpdate) and the launcher (LauncherVersion,
+// LauncherURL, LauncherSHA256, LauncherSignature). The two slots are written and
+// cleared independently, so a row exists as long as at least one of them is
+// published.
+//
+// Signature is the Ed25519 signature over the slot's signing string (app
+// package). It is stored, not re-derived: the control plane cannot sign, and a
+// signature it recomputed would prove nothing.
 //
 // Version is the string clients report in their heartbeat and the control plane
 // compares; SHA256 is the full digest they verify the download against. The
@@ -20,15 +25,17 @@ import (
 // build may install itself, not whether this device is unattended. It belongs to
 // the client package slot because one platform publishes one package at a time.
 type Release struct {
-	Platform        string
-	Version         string
-	URL             string
-	SHA256          string
-	Notes           string
-	AutoUpdate      bool
-	LauncherVersion string
-	LauncherURL     string
-	LauncherSHA256  string
+	Platform          string
+	Version           string
+	URL               string
+	SHA256            string
+	Signature         string
+	Notes             string
+	AutoUpdate        bool
+	LauncherVersion   string
+	LauncherURL       string
+	LauncherSHA256    string
+	LauncherSignature string
 }
 
 // ClientSlot is the client package slot of one platform: the version the
@@ -38,6 +45,7 @@ type ClientSlot struct {
 	Version    string
 	URL        string
 	SHA256     string
+	Signature  string
 	Notes      string
 	AutoUpdate bool
 }
@@ -45,18 +53,19 @@ type ClientSlot struct {
 // LauncherSlot is the launcher slot of one platform. Only the full digest is
 // stored: the client hashes the launcher it already has itself.
 type LauncherSlot struct {
-	Version string
-	URL     string
-	SHA256  string
+	Version   string
+	URL       string
+	SHA256    string
+	Signature string
 }
 
-const releaseColumns = "platform, version, url, sha256, notes, auto_update, launcher_version, launcher_url, launcher_sha256"
+const releaseColumns = "platform, version, url, sha256, signature, notes, auto_update, launcher_version, launcher_url, launcher_sha256, launcher_signature"
 
 // scanRelease reads one row of releaseColumns.
 func scanRelease(row interface{ Scan(...any) error }) (Release, error) {
 	var r Release
-	err := row.Scan(&r.Platform, &r.Version, &r.URL, &r.SHA256, &r.Notes, &r.AutoUpdate,
-		&r.LauncherVersion, &r.LauncherURL, &r.LauncherSHA256)
+	err := row.Scan(&r.Platform, &r.Version, &r.URL, &r.SHA256, &r.Signature, &r.Notes,
+		&r.AutoUpdate, &r.LauncherVersion, &r.LauncherURL, &r.LauncherSHA256, &r.LauncherSignature)
 	return r, err
 }
 
@@ -107,14 +116,14 @@ func (d *DB) PublishSlots(platform string, client *ClientSlot, launcher *Launche
 		return fmt.Errorf("create release row: %w", err)
 	}
 	if client != nil {
-		if _, err := tx.Exec("UPDATE release SET version = ?, url = ?, sha256 = ?, notes = ?, auto_update = ? WHERE platform = ?",
-			client.Version, client.URL, client.SHA256, client.Notes, client.AutoUpdate, platform); err != nil {
+		if _, err := tx.Exec("UPDATE release SET version = ?, url = ?, sha256 = ?, signature = ?, notes = ?, auto_update = ? WHERE platform = ?",
+			client.Version, client.URL, client.SHA256, client.Signature, client.Notes, client.AutoUpdate, platform); err != nil {
 			return fmt.Errorf("publish client slot: %w", err)
 		}
 	}
 	if launcher != nil {
-		if _, err := tx.Exec("UPDATE release SET launcher_version = ?, launcher_url = ?, launcher_sha256 = ? WHERE platform = ?",
-			launcher.Version, launcher.URL, launcher.SHA256, platform); err != nil {
+		if _, err := tx.Exec("UPDATE release SET launcher_version = ?, launcher_url = ?, launcher_sha256 = ?, launcher_signature = ? WHERE platform = ?",
+			launcher.Version, launcher.URL, launcher.SHA256, launcher.Signature, platform); err != nil {
 			return fmt.Errorf("publish launcher slot: %w", err)
 		}
 	}
@@ -141,8 +150,8 @@ func (d *DB) ClearLauncher(platform string) error {
 		return fmt.Errorf("begin clear launcher: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("UPDATE release SET launcher_version = '', launcher_url = '', launcher_sha256 = '' "+
-		"WHERE platform = ?", platform); err != nil {
+	if _, err := tx.Exec("UPDATE release SET launcher_version = '', launcher_url = '', launcher_sha256 = '', "+
+		"launcher_signature = '' WHERE platform = ?", platform); err != nil {
 		return fmt.Errorf("clear launcher: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM release WHERE platform = ? AND version = ''", platform); err != nil {

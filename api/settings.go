@@ -16,15 +16,17 @@ import (
 // AutoUpdate 是跟着客户端包走的开关：true 表示客户端收到这个版本后可以自己装，
 // false 表示只提示、等用户手动确认。
 type releaseView struct {
-	Platform        string `json:"platform"`
-	AppVersion      string `json:"appVersion"`
-	AppURL          string `json:"appUrl"`
-	AppSHA256       string `json:"appSha256"`
-	AppNotes        string `json:"appNotes"`
-	AutoUpdate      bool   `json:"autoUpdate"`
-	LauncherVersion string `json:"launcherVersion"`
-	LauncherURL     string `json:"launcherUrl"`
-	LauncherSHA256  string `json:"launcherSha256"`
+	Platform          string `json:"platform"`
+	AppVersion        string `json:"appVersion"`
+	AppURL            string `json:"appUrl"`
+	AppSHA256         string `json:"appSha256"`
+	AppSignature      string `json:"appSignature"`
+	AppNotes          string `json:"appNotes"`
+	AutoUpdate        bool   `json:"autoUpdate"`
+	LauncherVersion   string `json:"launcherVersion"`
+	LauncherURL       string `json:"launcherUrl"`
+	LauncherSHA256    string `json:"launcherSha256"`
+	LauncherSignature string `json:"launcherSignature"`
 }
 
 // releasesResponse is the admin view of the release table plus the template.
@@ -41,27 +43,31 @@ type releasesResponse struct {
 // package's version.json declares, read while the digest is computed. Silently
 // ignoring the field would let a caller believe the label it sent was stored.
 type releaseInput struct {
-	Platform        *string `json:"platform"`
-	AppVersion      *string `json:"appVersion"`
-	AppURL          *string `json:"appUrl"`
-	AppNotes        *string `json:"appNotes"`
-	AutoUpdate      *bool   `json:"autoUpdate"`
-	LauncherVersion *string `json:"launcherVersion"`
-	LauncherURL     *string `json:"launcherUrl"`
-	DefaultTOML     *string `json:"defaultToml"`
+	Platform          *string `json:"platform"`
+	AppVersion        *string `json:"appVersion"`
+	AppURL            *string `json:"appUrl"`
+	AppSignature      *string `json:"appSignature"`
+	AppNotes          *string `json:"appNotes"`
+	AutoUpdate        *bool   `json:"autoUpdate"`
+	LauncherVersion   *string `json:"launcherVersion"`
+	LauncherURL       *string `json:"launcherUrl"`
+	LauncherSignature *string `json:"launcherSignature"`
+	DefaultTOML       *string `json:"defaultToml"`
 }
 
 func toView(r db.Release) releaseView {
 	return releaseView{
-		Platform:        r.Platform,
-		AppVersion:      r.Version,
-		AppURL:          r.URL,
-		AppSHA256:       r.SHA256,
-		AppNotes:        r.Notes,
-		AutoUpdate:      r.AutoUpdate,
-		LauncherVersion: r.LauncherVersion,
-		LauncherURL:     r.LauncherURL,
-		LauncherSHA256:  r.LauncherSHA256,
+		Platform:          r.Platform,
+		AppVersion:        r.Version,
+		AppURL:            r.URL,
+		AppSHA256:         r.SHA256,
+		AppSignature:      r.Signature,
+		AppNotes:          r.Notes,
+		AutoUpdate:        r.AutoUpdate,
+		LauncherVersion:   r.LauncherVersion,
+		LauncherURL:       r.LauncherURL,
+		LauncherSHA256:    r.LauncherSHA256,
+		LauncherSignature: r.LauncherSignature,
 	}
 }
 
@@ -112,7 +118,7 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		platform = strings.TrimSpace(*req.Platform)
 	}
 	client := req.AppURL != nil
-	launcher := req.LauncherVersion != nil || req.LauncherURL != nil
+	launcher := req.LauncherVersion != nil || req.LauncherURL != nil || req.LauncherSignature != nil
 	// 备注与自动安装开关都属于客户端包，没有包可挂时不接受：否则要么写进一行
 	// 没有发布内容的记录，要么被悄悄丢掉，两种都不是调用方要的结果。
 	if req.AppNotes != nil && !client {
@@ -123,7 +129,13 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAutoUpdateRequiresURL))
 		return
 	}
-	if launcher && (req.LauncherVersion == nil || req.LauncherURL == nil) {
+	// 签名与它覆盖的槽位同生同灭：只带签名等于发布了一个不含签名的槽位，
+	// 那台设备会拒装，而管理员以为签名生效了。
+	if req.AppSignature != nil && !client {
+		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APISignatureRequiresURL))
+		return
+	}
+	if launcher && (req.LauncherVersion == nil || req.LauncherURL == nil || req.LauncherSignature == nil) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APILauncherSlotRequiresBoth))
 		return
 	}
@@ -143,10 +155,14 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		if req.AutoUpdate != nil {
 			autoUpdate = *req.AutoUpdate
 		}
-		publish.Client = &app.ClientPackage{URL: *req.AppURL, Notes: notes, AutoUpdate: autoUpdate}
+		signature := ""
+		if req.AppSignature != nil {
+			signature = *req.AppSignature
+		}
+		publish.Client = &app.ClientPackage{URL: *req.AppURL, Signature: signature, Notes: notes, AutoUpdate: autoUpdate}
 	}
 	if launcher {
-		publish.Launcher = &db.LauncherSlot{Version: *req.LauncherVersion, URL: *req.LauncherURL}
+		publish.Launcher = &db.LauncherSlot{Version: *req.LauncherVersion, URL: *req.LauncherURL, Signature: *req.LauncherSignature}
 	}
 	// One call for both slots and the template: a rejected request has written
 	// nothing, so the admin never sees a 400 for a half-applied publish.

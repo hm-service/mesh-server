@@ -200,8 +200,8 @@ func TestFormat(t *testing.T) {
 	}{
 		{
 			name: "no placeholder",
-			id:   APIInvalidRequestBody,
-			want: "请求内容不合法",
+			id:   APIPlatformRequired,
+			want: "platform 不能为空",
 		},
 		{
 			name: "one placeholder",

@@ -188,6 +188,7 @@ func (s *Server) HandlerFor(surface Surface) http.Handler {
 	admin("POST", "/api/auth", s.withGate(s.authGate, s.handleAuth))
 	// Admin surface: everything under /api/admin is bearer-guarded.
 	admin("GET", "/api/admin/template", s.admin(s.handleTemplate))
+	admin("PUT", "/api/admin/template", s.admin(s.handleSaveTemplate))
 	admin("GET", "/api/admin/devices", s.admin(s.handleListDevices))
 	admin("POST", "/api/admin/devices", s.admin(s.handleCreateDevice))
 	admin("GET", "/api/admin/devices/{id}", s.admin(s.handleGetDevice))

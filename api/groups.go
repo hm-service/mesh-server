@@ -89,8 +89,7 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 	var req groupInput
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	group, err := s.app.CreateGroup(req.Name)
@@ -108,8 +107,7 @@ func (s *Server) handleUpdateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req groupPatch
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	group, err := s.app.UpdateGroup(id, req.Name, req.Position)
@@ -135,8 +133,7 @@ func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetDeviceGroup(w http.ResponseWriter, r *http.Request) {
 	var req deviceGroupInput
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	groupID := int64(0)
@@ -153,8 +150,7 @@ func (s *Server) handleSetDeviceGroup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeviceLayout(w http.ResponseWriter, r *http.Request) {
 	var req layoutInput
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	items := make([]db.DevicePlacement, 0, len(req.Devices))

@@ -149,8 +149,7 @@ type releaseView struct {
 
 // releasesResponse mirrors GET /api/admin/releases.
 type releasesResponse struct {
-	DefaultTOML string        `json:"defaultToml"`
-	Releases    []releaseView `json:"releases"`
+	Releases []releaseView `json:"releases"`
 }
 
 // templateResponse mirrors GET /api/admin/template.
@@ -1146,25 +1145,23 @@ func TestReleaseRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &empty); err != nil {
 		t.Fatalf("decode releases: %v", err)
 	}
-	if empty.DefaultTOML != "" || len(empty.Releases) != 0 {
+	if len(empty.Releases) != 0 {
 		t.Fatalf("fresh releases = %+v, want empty", empty)
 	}
 
-	const toml = `hostname = "saved-by-settings"`
 	externalPkg := releasePkg(t, env, "2026.11.24-4", []byte("external mesh client binary"))
 	rawURL := fileServer(t, externalPkg)
 	saved := putReleases(t, env, map[string]any{
-		"platform":    testPlatform,
-		"defaultToml": toml,
-		"appUrl":      rawURL,
-		"appNotes":    "修复窄屏布局",
+		"platform": testPlatform,
+		"appUrl":   rawURL,
+		"appNotes": "修复窄屏布局",
 	})
 	// The label is the one inside the package; appSha256 describes the bytes
 	// clients download.
 	got := saved.releaseOf(testPlatform)
 	pkgSum := sha256.Sum256(externalPkg)
 	wantPkg := hex.EncodeToString(pkgSum[:])
-	if saved.DefaultTOML != toml || got.AppVersion != "2026.11.24-4" || got.AppURL != rawURL ||
+	if got.AppVersion != "2026.11.24-4" || got.AppURL != rawURL ||
 		got.AppNotes != "修复窄屏布局" || got.AppSHA256 != wantPkg {
 		t.Fatalf("save response = %+v, want sha256 %s", saved, wantPkg)
 	}
@@ -1174,26 +1171,11 @@ func TestReleaseRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &read); err != nil {
 		t.Fatalf("decode releases: %v", err)
 	}
-	if read.DefaultTOML != toml || read.releaseOf(testPlatform) != got {
+	if read.releaseOf(testPlatform) != got {
 		t.Fatalf("GET releases = %+v, want %+v", read, saved)
-	}
-
-	// The template is a file; the release lives in the database.
-	raw, err := os.ReadFile(filepath.Join(env.DataDir, "peer.default.toml"))
-	if err != nil {
-		t.Fatalf("read peer.default.toml: %v", err)
-	}
-	if string(raw) != toml {
-		t.Fatalf("peer.default.toml = %q, want %q", raw, toml)
 	}
 	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Version != "2026.11.24-4" || stored.URL != rawURL {
 		t.Fatalf("stored release = %+v, found %v, %v", stored, found, err)
-	}
-
-	// Editing only the template keeps the release.
-	revised := putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": `hostname = "only-template"`})
-	if r := revised.releaseOf(testPlatform); r.AppVersion != "2026.11.24-4" {
-		t.Fatalf("template-only save = %+v, want the release kept", revised)
 	}
 
 	// Deleting clears only that platform.
@@ -1814,11 +1796,11 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 func TestReleaseRejectsIncompletePublish(t *testing.T) {
 	env := testenv.New(t)
 
-	// appVersion is not an input any more: the version is read from the
-	// package, so a request carrying it is rejected instead of half-used.
+	// appVersion is not an input any more: the version is read from the package,
+	// and an undeclared field is rejected by the one decoding rule.
 	res, data := env.Do("PUT", "/api/admin/releases", map[string]string{"platform": testPlatform, "appVersion": "2026.11.24-4"})
-	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "version.json") {
-		t.Fatalf("appVersion as input = %d: %s, want 400 naming version.json", res.StatusCode, data)
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_request") {
+		t.Fatalf("appVersion as input = %d: %s, want 400 invalid_request", res.StatusCode, data)
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("rejected publish was stored: found %v, %v", found, err)
@@ -1998,36 +1980,78 @@ func TestHeartbeatOnlyUpgrades(t *testing.T) {
 	}
 }
 
-// TestBlankTemplateRestoresBuiltin pins F5: a blank defaultToml deletes the
-// custom template file. A missing file already means "use the embedded
-// template", so the save has a defined effect instead of silently doing
-// nothing, and there is exactly one representation of "no custom template".
-func TestBlankTemplateRestoresBuiltin(t *testing.T) {
+// putTemplate saves the default template through its own route.
+func putTemplate(t *testing.T, env *testenv.Env, template string) templateResponse {
+	t.Helper()
+	res, data := env.Do("PUT", "/api/admin/template", map[string]string{"template": template})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT template = %d: %s", res.StatusCode, data)
+	}
+	var out templateResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	return out
+}
+
+// TestTemplateSaveHasItsOwnOutcome pins the split: the template is its own
+// resource with its own write, so a publish never touches it and a template save
+// never touches a published slot. A blank value deletes the file and falls back
+// to the embedded template, so "no custom template" has exactly one
+// representation.
+func TestTemplateSaveHasItsOwnOutcome(t *testing.T) {
 	env := testenv.New(t)
 	path := filepath.Join(env.DataDir, "peer.default.toml")
 	const custom = `hostname = "custom"`
 
-	putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
+	// 先发布一个客户端包：保存模板不能改动它。
+	file := releasePkg(t, env, "2026.11.26-2", []byte("a whole mesh client binary"))
+	savedRelease := putReleases(t, env, map[string]any{"platform": testPlatform, "appUrl": fileServer(t, file)}).releaseOf(testPlatform)
+
+	if saved := putTemplate(t, env, custom); saved.Template != custom {
+		t.Fatalf("PUT template answered %q, want %q", saved.Template, custom)
+	}
 	if raw, err := os.ReadFile(path); err != nil || string(raw) != custom {
 		t.Fatalf("peer.default.toml = %q, %v; want the saved template", raw, err)
+	}
+	stored, found, err := env.App.Release(testPlatform)
+	if err != nil || !found || stored.Version != "2026.11.26-2" {
+		t.Fatalf("template save changed the release: %+v, found %v, %v", stored, found, err)
+	}
+	if stored.SHA256 != savedRelease.AppSHA256 {
+		t.Fatalf("release digest = %q, want %q", stored.SHA256, savedRelease.AppSHA256)
+	}
+
+	// 发布请求里带 defaultToml（或任何未声明字段）由统一的解码规则拒绝：模板
+	// 只有 PUT /api/admin/template 一个写入口，发布请求里没有它的位置。
+	res, data := env.Do("PUT", "/api/admin/releases", map[string]any{
+		"platform":    testPlatform,
+		"appUrl":      fileServer(t, file),
+		"defaultToml": `hostname = "ignored-by-publish"`,
+	})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_request") {
+		t.Fatalf("defaultToml in a publish = %d: %s, want 400 invalid_request", res.StatusCode, data)
+	}
+	if tmpl := getTemplate(t, env); tmpl.Template != custom {
+		t.Fatalf("publish wrote the template: %q, want %q", tmpl.Template, custom)
 	}
 
 	for _, blank := range []string{"", "   \n\t\n"} {
 		if blank != "" {
 			// Put the custom template back, so the second round proves the
 			// whitespace-only value acts the same way as the empty one.
-			putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
+			putTemplate(t, env, custom)
 		}
-		saved := putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": blank})
-		if saved.DefaultTOML != "" {
-			t.Fatalf("defaultToml after a blank save = %q, want empty", saved.DefaultTOML)
+		saved := putTemplate(t, env, blank)
+		if saved.Template != builtin.DefaultTemplate() {
+			t.Fatalf("template after a blank save = %q, want the embedded one", saved.Template)
 		}
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("blank save left peer.default.toml behind: %v", err)
 		}
-		// GET /api/admin/template falls back to the embedded template.
+		// GET falls back to the embedded template too.
 		if tmpl := getTemplate(t, env); tmpl.Template != builtin.DefaultTemplate() {
-			t.Fatalf("template after a blank save = %q, want the embedded one", tmpl.Template)
+			t.Fatalf("GET template after a blank save = %q, want the embedded one", tmpl.Template)
 		}
 	}
 }
@@ -2064,7 +2088,7 @@ func TestSavedTemplateAppliesToNewDevices(t *testing.T) {
 	env := testenv.New(t)
 	const custom = `hostname = "from-settings"
 ipv4 = "10.126.126.9/24"`
-	putReleases(t, env, map[string]any{"platform": testPlatform, "defaultToml": custom})
+	putTemplate(t, env, custom)
 
 	// The create dialog prefills from GET /api/admin/template.
 	tmpl := getTemplate(t, env)

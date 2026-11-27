@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { api, ApiError, type ReleasesPayload } from "../api";
+import { api, ApiError } from "../api";
 
 const emit = defineEmits<{
-  saved: [releases: ReleasesPayload];
   toast: [title: string, message: string, kind: "ok" | "err"];
   unauthorized: [];
 }>();
@@ -13,8 +12,8 @@ const error = ref("");
 const busy = ref(false);
 
 // 编辑器显示的是当前生效的模板：DATA_DIR/peer.default.toml，缺失或空白时是内置
-// 模板（GET /api/admin/template 的语义）。只看发布记录里的 defaultToml 会在文件不存在
-// 时显示成空，和「重置为模板」实际拿到的内容对不上。
+// 模板（GET /api/admin/template 的语义）。保存走同一个资源的 PUT，响应就是保存
+// 之后生效的那一份，不必再读一次。
 onMounted(async () => {
   try {
     toml.value = (await api.template()).template;
@@ -36,8 +35,8 @@ async function save() {
   }
   busy.value = true;
   try {
-    const saved = await api.publishRelease({ defaultToml: toml.value });
-    emit("saved", saved);
+    const saved = await api.saveTemplate(toml.value);
+    toml.value = saved.template;
     emit("toast", "默认模板已保存", "之后新建设备与「重置为模板」都用它", "ok");
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {

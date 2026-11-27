@@ -89,6 +89,7 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 		path   string
 	}{
 		{"GET", "/api/admin/template"},
+		{"PUT", "/api/admin/template"},
 		{"GET", "/api/admin/devices"},
 		{"POST", "/api/admin/devices"},
 		{"GET", "/api/admin/devices/d_000000"},
@@ -398,7 +399,8 @@ func TestBoundSlotAcceptsValidTokenDespiteBrokenSignature(t *testing.T) {
 }
 
 // TestCreateDeviceRejectsAutoUpdate pins F4: 新设备一律跟随发布包，请求里带这个
-// 字段就明说不行，而不是收下 200 再悄悄丢掉。
+// 字段就 400，而不是收下 200 再悄悄丢掉。autoUpdate 不是这个请求声明的字段，
+// 由统一的严格解码拒绝（400 invalid_request），不是这一处单独检查。
 func TestCreateDeviceRejectsAutoUpdate(t *testing.T) {
 	env := testenv.New(t)
 	count := func() int {
@@ -417,8 +419,8 @@ func TestCreateDeviceRejectsAutoUpdate(t *testing.T) {
 		res, data := env.Do("POST", "/api/admin/devices", map[string]any{
 			"name": "unused", "configToml": testTOML, "autoUpdate": value,
 		})
-		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_argument") {
-			t.Fatalf("create with autoUpdate=%v = %d, want 400 invalid_argument: %s", value, res.StatusCode, data)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_request") {
+			t.Fatalf("create with autoUpdate=%v = %d, want 400 invalid_request: %s", value, res.StatusCode, data)
 		}
 	}
 	if after := count(); after != before {

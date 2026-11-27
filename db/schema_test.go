@@ -135,3 +135,51 @@ func TestOpenRejectsAnIndexThatLostItsConstraint(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenRejectsAnExtraUniqueIndex pins F3: an added index lies outside what the
+// declaration describes only while it changes nothing the table accepts. A plain
+// index only accelerates a query and is allowed; a UNIQUE one decides which rows
+// the table will store, so it is a structural difference.
+func TestOpenRejectsAnExtraUniqueIndex(t *testing.T) {
+	aged := func(t *testing.T, statement string) error {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "mesh.db")
+		current, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open() on a fresh database: %v", err)
+		}
+		if err := current.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+		conn, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatalf("reopen the file: %v", err)
+		}
+		if _, err := conn.Exec(statement); err != nil {
+			conn.Close()
+			t.Fatalf("apply %q: %v", statement, err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatalf("close the aged file: %v", err)
+		}
+		db, err := Open(path)
+		if db != nil {
+			if closeErr := db.Close(); closeErr != nil {
+				t.Fatalf("Close() error: %v", closeErr)
+			}
+		}
+		return err
+	}
+
+	err := aged(t, "CREATE UNIQUE INDEX device_name_unique ON device (name)")
+	if err == nil {
+		t.Fatal("Open() accepted an added UNIQUE index")
+	}
+	if !strings.Contains(err.Error(), "device_name_unique") || !strings.Contains(err.Error(), "unique index") {
+		t.Fatalf("Open() error %q does not name the added unique index", err)
+	}
+
+	if err := aged(t, "CREATE INDEX device_name_lookup ON device (name)"); err != nil {
+		t.Fatalf("Open() rejected a plain added index: %v", err)
+	}
+}

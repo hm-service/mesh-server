@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,8 +130,9 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	if _, err := a.BindDevice(context.Background(), token, "dev-1", "OLD-HOST", "pk1", "10.0.0.1"); err != nil {
 		t.Fatalf("first bind: %v", err)
 	}
-	if err := a.RecordHeartbeat(device.PublicID, "old-hash", "2026.11.26-1", "windows/amd64"); err != nil {
-		t.Fatalf("RecordHeartbeat() error: %v", err)
+	if _, err := a.Heartbeat(context.Background(), DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1"},
+		HeartbeatObservation{ConfigHash: "old-hash", AppVersion: "2026.11.26-1", Platform: "windows/amd64"}); err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
 	}
 	if _, err := a.UpdateDevice(device.PublicID, "renamed", "a = 2\n", AutoUpdateChoice{}); err != nil {
 		t.Fatalf("UpdateDevice() error: %v", err)
@@ -162,8 +164,9 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	}
 
 	// 同一身份重新注册不是换绑：观测值仍属于它。
-	if err := a.RecordHeartbeat(device.PublicID, "new-hash", "2026.11.27-1", "linux/amd64"); err != nil {
-		t.Fatalf("RecordHeartbeat() error: %v", err)
+	if _, err := a.Heartbeat(context.Background(), DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-2"},
+		HeartbeatObservation{ConfigHash: "new-hash", AppVersion: "2026.11.27-1", Platform: "linux/amd64"}); err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
 	}
 	again, err := a.IssueToken(device.PublicID)
 	if err != nil {
@@ -175,6 +178,117 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	}
 	if same.LastConfigHash != "new-hash" || same.LastAppVersion != "2026.11.27-1" || same.LastPlatform != "linux/amd64" {
 		t.Fatalf("observations cleared although the identity did not change: %+v", same)
+	}
+}
+
+// TestAcceptRegistrationSpendsTheTokenOnce pins the bound branch of /api/v1/register:
+// a token is proof of ownership exactly once. The write that answers also records
+// the request, so the slot's owner and its "last seen" move together.
+func TestAcceptRegistrationSpendsTheTokenOnce(t *testing.T) {
+	a := openTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(context.Background(), token, "dev-1", "HOST", "pk", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	proof := BoundRegistration{DeviceID: "dev-1", Pubkey: "pk", Token: reissued, IP: "10.0.0.5"}
+	answered, err := a.AcceptRegistration(device.PublicID, proof)
+	if err != nil {
+		t.Fatalf("AcceptRegistration() error: %v", err)
+	}
+	if answered.Token != "" || answered.TokenExpiresAt != 0 {
+		t.Fatalf("token not spent: %+v", answered)
+	}
+	if answered.LastIP != "10.0.0.5" {
+		t.Fatalf("last ip = %q, want the request address", answered.LastIP)
+	}
+	if _, err := a.AcceptRegistration(device.PublicID, proof); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("second AcceptRegistration() = %v, want ErrTokenInvalid", err)
+	}
+}
+
+// TestAcceptRegistrationRejectsAnotherIdentity pins the check under the lock: the
+// slot was rebound after the request's identity authenticated, so the request
+// must not read the configuration back — and must write nothing.
+func TestAcceptRegistrationRejectsAnotherIdentity(t *testing.T) {
+	a := openTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	if _, err := a.BindDevice(ctx, reissued, "dev-2", "HOST", "pk2", ""); err != nil {
+		t.Fatalf("rebind error: %v", err)
+	}
+	before, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+	_, err = a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "pk1", Signed: true, IP: "10.0.0.9"})
+	if !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("AcceptRegistration() of the old identity = %v, want ErrIdentityChanged", err)
+	}
+	after, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+	if after != before {
+		t.Fatalf("the refused registration wrote the row: %+v -> %+v", before, after)
+	}
+}
+
+// TestAcceptRegistrationKeepsTheTokenOnAPubkeyMismatch pins the 409 branch: the
+// request proved ownership but presented another key, so it must not consume the
+// token its owner may still need.
+func TestAcceptRegistrationKeepsTheTokenOnAPubkeyMismatch(t *testing.T) {
+	a := openTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(context.Background(), token, "dev-1", "HOST", "pk1", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	if _, err := a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "other", Token: reissued}); !errors.Is(err, ErrPubkeyMismatch) {
+		t.Fatalf("AcceptRegistration() with another pubkey = %v, want ErrPubkeyMismatch", err)
+	}
+	if _, err := a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "pk1", Token: reissued}); err != nil {
+		t.Fatalf("AcceptRegistration() with the right key = %v, want the untouched token to be spent", err)
+	}
+}
+
+// TestAcceptRegistrationChecksTheProofBeforeThePubkey pins the order that keeps
+// the 409 from being free: a caller who merely knows a device_id must not learn
+// whether the slot is bound to another key by presenting a bogus token.
+func TestAcceptRegistrationChecksTheProofBeforeThePubkey(t *testing.T) {
+	a := openTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(context.Background(), token, "dev-1", "HOST", "pk1", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	bogus := strings.Repeat("0", TokenLength)
+	if _, err := a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "other", Token: bogus}); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("AcceptRegistration() with a bogus token = %v, want ErrTokenInvalid", err)
 	}
 }
 

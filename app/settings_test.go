@@ -16,6 +16,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"mesh-server/builtin"
 	"mesh-server/db"
 	"mesh-server/text"
 )
@@ -138,6 +139,53 @@ func TestPublishRefusesInternalAddresses(t *testing.T) {
 
 // TestDialGuard covers the addresses the download client must not reach, and
 // the explicit prefixes it may reach anyway.
+// TestTemplateAndPublishHaveSeparateOutcomes pins the split: saving the template
+// and publishing slots are two writes with their own outcomes, so a rejected
+// publish leaves the template exactly as it was.
+func TestTemplateAndPublishHaveSeparateOutcomes(t *testing.T) {
+	a := openTemp(t)
+	const custom = "hostname = \"custom\"\n"
+	if err := a.SetTemplate(custom); err != nil {
+		t.Fatalf("SetTemplate() error: %v", err)
+	}
+	err := a.Publish(PublishInput{
+		Platform: "windows/amd64",
+		Launcher: &db.LauncherSlot{
+			Version:   "2026.11.25-9",
+			URL:       "http://127.0.0.1:9/mesh.exe",
+			Signature: strings.Repeat("0", 128),
+		},
+	})
+	if err == nil {
+		t.Fatal("Publish() of a loopback URL returned nil")
+	}
+	if got, err := a.TemplateTOML(); err != nil || got != custom {
+		t.Fatalf("template after a rejected publish = %q, %v; want %q", got, err, custom)
+	}
+	if _, found, err := a.Release("windows/amd64"); err != nil || found {
+		t.Fatalf("a rejected publish stored a slot: found %v, %v", found, err)
+	}
+}
+
+// TestSetTemplateBlankRestoresBuiltin pins the single representation of "no
+// custom template": a blank save deletes the file, and the effective template is
+// the embedded one.
+func TestSetTemplateBlankRestoresBuiltin(t *testing.T) {
+	a := openTemp(t)
+	if err := a.SetTemplate("hostname = \"custom\"\n"); err != nil {
+		t.Fatalf("SetTemplate() error: %v", err)
+	}
+	if err := a.SetTemplate("  \n\t\n"); err != nil {
+		t.Fatalf("SetTemplate() with a blank value: %v", err)
+	}
+	if got, err := a.TemplateTOML(); err != nil || got != builtin.DefaultTemplate() {
+		t.Fatalf("template after a blank save = %q, %v; want the embedded one", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(a.dataDir, templateName)); !os.IsNotExist(err) {
+		t.Fatalf("blank save left the file behind: %v", err)
+	}
+}
+
 func TestDialGuard(t *testing.T) {
 	guard := dialGuard(nil)
 	for _, address := range []string{

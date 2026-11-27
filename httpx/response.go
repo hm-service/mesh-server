@@ -33,9 +33,19 @@ func WriteErrorDetail(w http.ResponseWriter, status int, code, message string) {
 	WriteJSON(w, status, map[string]string{"code": code, "message": message})
 }
 
-// DecodeJSON reads one JSON value from the request body.
-func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	return json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes)).Decode(dst)
+// DecodeJSON reads one JSON value from the request body and rejects every field
+// the destination does not declare. The rule lives here once instead of in a
+// per-field check inside each handler: a body that cannot be decoded, or that
+// carries a field the contract does not declare, is answered as 400
+// invalid_request, and the handler returns immediately.
+func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request")
+		return false
+	}
+	return true
 }
 
 // ReadBody buffers the raw body, which is what a device signs. A body over the

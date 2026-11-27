@@ -6,11 +6,8 @@
 # Class is text (a message in a response) or error (the text of a Go error).
 
 # api: rejected admin requests.
-api.text.auto_update_per_device = autoUpdate can only be set per device: a new device follows the published package, set it with PUT /api/admin/devices/<id> after creation
 api.text.formal_node_credential = this device is a formal node (its configuration has network_secret), it does not use credentials, so rotating them is meaningless
 api.text.credential_channel_unconfigured = the credential channel (ET_CLI) is not configured, so the credentials cannot be revoked on the seeds; revoke them on the seeds by hand
-api.text.invalid_request_body = the request body is invalid
-api.text.app_version_not_input = appVersion is read from version.json inside the package and is no longer a request field
 api.text.app_notes_requires_url = appNotes must be given together with appUrl
 api.text.auto_update_requires_url = autoUpdate must be given together with appUrl
 api.text.signature_requires_url = appSignature must be given together with appUrl

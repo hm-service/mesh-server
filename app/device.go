@@ -42,6 +42,12 @@ var (
 	ErrTokenInvalid = errors.New("registration token is not usable")
 	// ErrInvalidInput reports a name or configuration that cannot be stored.
 	ErrInvalidInput = errors.New("invalid device input")
+	// ErrIdentityChanged reports a request whose authenticated identity no longer
+	// holds the slot: a rebind landed in between.
+	ErrIdentityChanged = db.ErrIdentityChanged
+	// ErrPubkeyMismatch reports a request that proved it owns the slot but
+	// presented another key.
+	ErrPubkeyMismatch = errors.New("device slot is bound to another pubkey")
 )
 
 // ListDevices returns every device in creation order.
@@ -250,36 +256,6 @@ func (a *App) IssueToken(publicID string) (string, error) {
 	return token, nil
 }
 
-// errTokenChanged 表示核验用的令牌已经不是这一张了：被轮换、被别处消费或过期。
-var errTokenChanged = errors.New("registration token changed")
-
-// ConsumeTokenIfCurrent 兑现一次「用注册令牌证明归属」：核对与清空在同一笔事务里
-// 完成，中间没有别的请求能插进来。报告 false 表示令牌已经不是这张，调用方不能
-// 按它放行任何内容——尤其是不能用它换回配置。
-func (a *App) ConsumeTokenIfCurrent(publicID, token string) (bool, error) {
-	if token == "" {
-		return false, nil
-	}
-	now := a.now().Unix()
-	consumed := false
-	_, err := a.database.Update(publicID, func(d *db.Device) error {
-		if d.Token != token || d.TokenExpiresAt <= now {
-			return errTokenChanged
-		}
-		d.Token = ""
-		d.TokenExpiresAt = 0
-		consumed = true
-		return nil
-	})
-	if errors.Is(err, errTokenChanged) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return consumed, nil
-}
-
 // DeleteDevice removes the slot and remembers its device_id so later signed
 // requests are answered with code "revoked" (contract/client.md). The tombstone
 // only lives in memory, exactly as before.
@@ -376,15 +352,63 @@ func (a *App) BindDevice(ctx context.Context, token, deviceID, hostname, pubkey,
 	return device, nil
 }
 
-// Touch records a successful device request.
-func (a *App) Touch(publicID, ip string) error {
-	return a.database.Touch(publicID, a.now().Unix(), ip)
+// DeviceAuth is one signed device request that authentication accepted: the slot
+// the signature was checked against and the identity that signed it. The API
+// layer produces it; every entry point below re-checks the binding under the
+// device lock before it reads or writes anything.
+type DeviceAuth struct {
+	PublicID string
+	DeviceID string
 }
 
-// RecordHeartbeat stores the config hash and app version a device reported
-// together with its platform.
-func (a *App) RecordHeartbeat(publicID, configHash, appVersion, platform string) error {
-	return a.database.RecordHeartbeat(publicID, configHash, appVersion, platform, a.now().Unix())
+// BoundRegistration is one register request for a slot that is already bound,
+// after the API layer established what proof it carries: a signature it verified
+// (Signed), or the registration token to spend here.
+type BoundRegistration struct {
+	DeviceID string
+	Pubkey   string
+	Token    string
+	Signed   bool
+	IP       string
+}
+
+// AcceptRegistration answers an already bound slot's register request: it
+// re-checks the binding, spends the token when that was the proof, and records
+// the request — in one conditional write, returning the row it wrote. That row
+// is the configuration the caller answers with.
+//
+// 令牌是一次性的：这一支靠它证明了归属就当场清掉，否则它在剩余的有效期（≤10
+// 分钟）内还能反复取回配置，而正式节点的配置里有 network_secret。核对与清空在
+// 同一次写入里完成，令牌在这期间被轮换或消费时不再放行配置。
+//
+// 换绑发生在认证与这里之间时什么都不写：旧身份不再持有这个槽位，调用方也不能
+// 再用认证时读到的快照回答。
+func (a *App) AcceptRegistration(publicID string, in BoundRegistration) (db.Device, error) {
+	unlock := a.locks.lock(publicID)
+	defer unlock()
+	now := a.now()
+	return a.database.Update(publicID, func(d *db.Device) error {
+		if d.DeviceID != in.DeviceID {
+			return ErrIdentityChanged
+		}
+		// 令牌先验、公钥后判：反过来的话，任何知道 device_id 的调用方都能用一次
+		// 必然失败的注册（假令牌 + 猜的公钥）从 409 探出这个槽位是否已绑定。
+		if !in.Signed && (d.Token != in.Token || d.TokenExpiresAt <= now.Unix()) {
+			return ErrTokenInvalid
+		}
+		if d.Pubkey != in.Pubkey {
+			return ErrPubkeyMismatch
+		}
+		if !in.Signed {
+			d.Token = ""
+			d.TokenExpiresAt = 0
+		}
+		d.LastSeenAt = now.Unix()
+		if in.IP != "" {
+			d.LastIP = in.IP
+		}
+		return nil
+	})
 }
 
 // DeviceStatus is derived from last_seen_at; an unregistered slot is pending.

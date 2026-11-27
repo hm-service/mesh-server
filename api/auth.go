@@ -33,8 +33,7 @@ type authResponse struct {
 func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req authRequest
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	ok := req.Token != "" && s.tokenHash.Matches(req.Token)

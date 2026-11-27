@@ -90,7 +90,6 @@ export interface ReleasePublish {
   launcherVersion?: string;
   launcherUrl?: string;
   launcherSignature?: string;
-  defaultToml?: string;
 }
 
 /** TemplatePayload 是默认模板原文（占位符还在）。占位符怎么变成表单、默认值
@@ -99,9 +98,9 @@ export interface TemplatePayload {
   template: string;
 }
 
-/** ReleasesPayload 是管理端看到的全部平台发布状态，外加默认模板。 */
+/** ReleasesPayload 是管理端看到的全部平台发布状态。默认模板不是发布工件，
+ * 它有独立的读写路由（api.template / api.saveTemplate）。 */
 export interface ReleasesPayload {
-  defaultToml: string;
   releases: ReleaseView[];
 }
 
@@ -265,6 +264,10 @@ export const api = {
   },
   template(): Promise<TemplatePayload> {
     return jsonRequest<TemplatePayload>("GET", "/api/admin/template");
+  },
+  /** 保存默认模板；响应是保存之后生效的那一份（空白值回落到内置模板）。 */
+  saveTemplate(template: string): Promise<TemplatePayload> {
+    return jsonRequest<TemplatePayload>("PUT", "/api/admin/template", { template });
   },
   getReleases(): Promise<ReleasesPayload> {
     return releasesRequest("/api/admin/releases", { method: "GET" });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -397,33 +398,28 @@ func TestRebindRevokesTheOldCredentials(t *testing.T) {
 	}
 }
 
-// TestConsumeTokenIsAtomic pins that proving a slot with a registration token is
-// a single step: the token is cleared only if it is still the one that was
-// checked, so a rotated or already spent token cannot also hand out the
-// configuration.
-func TestConsumeTokenIsAtomic(t *testing.T) {
-	a := openCredentialTemp(t)
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+// TestCLIOutputBudgetIsPerStream pins the documented budget: every output stream
+// has its own limit, so a full stderr does not truncate stdout. The stand-in
+// writes stderr first, which a shared budget would turn into a truncated answer.
+func TestCLIOutputBudgetIsPerStream(t *testing.T) {
+	self, err := os.Executable()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("locate test binary: %v", err)
 	}
-	consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, token)
-	if err != nil || !consumed {
-		t.Fatalf("ConsumeTokenIfCurrent() = %v, %v; want consumed", consumed, err)
+	issuer := &credentialIssuer{cliPath: self, rpcAddr: "127.0.0.1:15889"}
+	ctx := t.Context()
+	t.Setenv(fakecli.StderrBytesEnv, strconv.Itoa(credentialCLIOutputLimit))
+	t.Setenv(fakecli.StdoutBytesEnv, strconv.Itoa(credentialCLIOutputLimit))
+	if _, err := issuer.run(ctx, "credential", "revoke", "probe"); err != nil {
+		t.Fatalf("run() with both streams at their own limit = %v, want success", err)
 	}
-	// 同一个令牌只能兑现一次。
-	if consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, token); err != nil || consumed {
-		t.Fatalf("second ConsumeTokenIfCurrent() = %v, %v; want refused", consumed, err)
+	// 一条流多一个字节就是截断：剪短的 stdout 解析不出答案。
+	t.Setenv(fakecli.StdoutBytesEnv, strconv.Itoa(credentialCLIOutputLimit+1))
+	_, err = issuer.run(ctx, "credential", "revoke", "probe")
+	if err == nil {
+		t.Fatal("run() with an over-budget stdout returned nil")
 	}
-	// 轮换之后，旧令牌同样兑现不了。
-	rotated, err := a.IssueToken(device.PublicID)
-	if err != nil {
-		t.Fatalf("IssueToken() error: %v", err)
-	}
-	if consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, token); err != nil || consumed {
-		t.Fatalf("ConsumeTokenIfCurrent() with a rotated token = %v, %v; want refused", consumed, err)
-	}
-	if consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, rotated); err != nil || !consumed {
-		t.Fatalf("ConsumeTokenIfCurrent() with the current token = %v, %v; want consumed", consumed, err)
+	if !strings.Contains(err.Error(), "输出超过") {
+		t.Fatalf("error = %q, want the output budget named", err)
 	}
 }

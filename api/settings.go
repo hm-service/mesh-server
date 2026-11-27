@@ -29,22 +29,21 @@ type releaseView struct {
 	LauncherSignature string `json:"launcherSignature"`
 }
 
-// releasesResponse is the admin view of the release table plus the template.
+// releasesResponse is the admin view of the release table. 默认模板不是发布工件，
+// 它有独立的路由与载荷（GET/PUT /api/admin/template）。
 type releasesResponse struct {
-	DefaultTOML string        `json:"defaultToml"`
-	Releases    []releaseView `json:"releases"`
+	Releases []releaseView `json:"releases"`
 }
 
 // releaseInput updates one platform through a JSON body. Each slot is published
 // on its own: a client package is addressed by appUrl, a launcher by its
 // version and URL together.
 //
-// AppVersion only exists to reject it: the published version is the one the
-// package's version.json declares, read while the digest is computed. Silently
-// ignoring the field would let a caller believe the label it sent was stored.
+// 发布的版本号不是这里的字段：它来自包内 version.json（发布时读出）。请求里出现
+// 未声明的字段（含 appVersion、defaultToml）由 httpx.DecodeJSON 统一拒绝为
+// 400 invalid_request，不需要在这里再逐个点名。
 type releaseInput struct {
 	Platform          *string `json:"platform"`
-	AppVersion        *string `json:"appVersion"`
 	AppURL            *string `json:"appUrl"`
 	AppSignature      *string `json:"appSignature"`
 	AppNotes          *string `json:"appNotes"`
@@ -52,7 +51,6 @@ type releaseInput struct {
 	LauncherVersion   *string `json:"launcherVersion"`
 	LauncherURL       *string `json:"launcherUrl"`
 	LauncherSignature *string `json:"launcherSignature"`
-	DefaultTOML       *string `json:"defaultToml"`
 }
 
 func toView(r db.Release) releaseView {
@@ -72,15 +70,11 @@ func toView(r db.Release) releaseView {
 }
 
 func (s *Server) releasesSnapshot() (releasesResponse, error) {
-	toml, err := s.app.DefaultTOMLFile()
-	if err != nil {
-		return releasesResponse{}, err
-	}
 	list, err := s.app.Releases()
 	if err != nil {
 		return releasesResponse{}, err
 	}
-	out := releasesResponse{DefaultTOML: toml, Releases: make([]releaseView, 0, len(list))}
+	out := releasesResponse{Releases: make([]releaseView, 0, len(list))}
 	for _, r := range list {
 		out.Releases = append(out.Releases, toView(r))
 	}
@@ -102,15 +96,10 @@ func (s *Server) handleListReleases(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePublishRelease publishes the client package slot and/or the launcher
-// slot of one platform and may carry a new default template.
+// slot of one platform. 模板不在这里：它由 PUT /api/admin/template 单独保存。
 func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	var req releaseInput
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_request", text.Get(text.APIInvalidRequestBody))
-		return
-	}
-	if req.AppVersion != nil {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAppVersionNotInput))
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	platform := ""
@@ -143,7 +132,7 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIPlatformRequired))
 		return
 	}
-	publish := app.PublishInput{Platform: platform, DefaultTOML: req.DefaultTOML}
+	publish := app.PublishInput{Platform: platform}
 	if client {
 		notes := ""
 		if req.AppNotes != nil {
@@ -164,8 +153,8 @@ func (s *Server) handlePublishRelease(w http.ResponseWriter, r *http.Request) {
 	if launcher {
 		publish.Launcher = &db.LauncherSlot{Version: *req.LauncherVersion, URL: *req.LauncherURL, Signature: *req.LauncherSignature}
 	}
-	// One call for both slots and the template: a rejected request has written
-	// nothing, so the admin never sees a 400 for a half-applied publish.
+	// One call for both slots: a rejected request has written nothing, so the
+	// admin never sees a 400 for a half-applied publish.
 	if err := s.app.Publish(publish); err != nil {
 		s.writeReleaseError(w, "publish release", err)
 		return

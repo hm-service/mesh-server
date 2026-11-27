@@ -30,6 +30,10 @@ const FailGenerateEnv = "MESH_TEST_CLI_GENERATE_FAIL"
 // first, so a test can prove the failure output stays inside its budget.
 const StderrBytesEnv = "MESH_TEST_CLI_STDERR_BYTES"
 
+// StdoutBytesEnv makes a revocation write that many bytes to stdout before
+// answering, so a test can prove each stream keeps its own budget.
+const StdoutBytesEnv = "MESH_TEST_CLI_STDOUT_BYTES"
+
 // HoldPipeEnv makes a successful generation leave a child holding stdout and
 // stderr for that many milliseconds. The parent answers and exits at once, so
 // only the inherited pipes keep the caller's Wait open.
@@ -84,6 +88,14 @@ func handle(args []string) {
 		// 真实的 easytier-cli 对种子不认识的 id 打印这一行并以 0 退出，签发通道
 		// 只看退出码。种子重启过、凭据早已过期、上一次撤销已经生效都走这一支，
 		// 所以 stand-in 也这样回答：撤销是幂等的。
+		//
+		// 测试要量两条输出流的预算时，先写 stderr 再写 stdout：共用一份预算的实现
+		// 会把后者挤成截断，各自有界的实现两条都放得下。
+		if raw := os.Getenv(StdoutBytesEnv); raw != "" {
+			noisyStderr()
+			writeBytes(os.Stdout, raw)
+			os.Exit(0)
+		}
 		fmt.Println("Credential not found")
 	default:
 		fmt.Fprintf(os.Stderr, "fakecli: unexpected args %v\n", args)
@@ -103,10 +115,11 @@ func valueOf(args []string, name string) string {
 
 // noisyStderr writes the requested number of bytes to stderr before failing.
 func noisyStderr() {
-	raw := os.Getenv(StderrBytesEnv)
-	if raw == "" {
-		return
-	}
+	writeBytes(os.Stderr, os.Getenv(StderrBytesEnv))
+}
+
+// writeBytes writes exactly n bytes of filler to w.
+func writeBytes(w *os.File, raw string) {
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
 		return
@@ -114,7 +127,7 @@ func noisyStderr() {
 	chunk := bytes.Repeat([]byte("x"), 4096)
 	for written := 0; written < n; {
 		size := min(len(chunk), n-written)
-		if _, err := os.Stderr.Write(chunk[:size]); err != nil {
+		if _, err := w.Write(chunk[:size]); err != nil {
 			return
 		}
 		written += size

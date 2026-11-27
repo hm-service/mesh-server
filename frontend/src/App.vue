@@ -268,7 +268,6 @@ onBeforeUnmount(() => {
         />
         <ConfigView
           v-else-if="page === 'config'"
-          @saved="onSaved"
           @toast="showToast"
           @unauthorized="endSession"
         />

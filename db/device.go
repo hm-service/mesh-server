@@ -12,6 +12,9 @@ var (
 	ErrNotFound = errors.New("device not found")
 	// ErrLimit reports that the device slots are exhausted.
 	ErrLimit = errors.New("device limit reached")
+	// ErrIdentityChanged reports a slot that no longer holds the identity a
+	// request was authenticated as: a rebind happened in between.
+	ErrIdentityChanged = errors.New("device identity changed")
 )
 
 // Device is one row of the device table. The field names follow the wire
@@ -220,46 +223,64 @@ func (d *DB) Delete(publicID string) (Device, error) {
 	return device, nil
 }
 
-// Touch records a successful device request.
-func (d *DB) Touch(publicID string, now int64, ip string) error {
-	var (
-		res sql.Result
-		err error
-	)
-	if ip == "" {
-		res, err = d.conn.Exec("UPDATE device SET last_seen_at = ? WHERE public_id = ?", now, publicID)
-	} else {
-		res, err = d.conn.Exec("UPDATE device SET last_seen_at = ?, last_ip = ? WHERE public_id = ?", now, ip, publicID)
-	}
-	if err != nil {
-		return fmt.Errorf("touch device: %w", err)
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("touch device: %w", err)
-	}
-	if affected == 0 {
-		return ErrNotFound
-	}
-	return nil
+// Observation is what one authenticated request observed about its own device.
+type Observation struct {
+	ConfigHash string
+	AppVersion string
+	Platform   string
+	IP         string
 }
 
-// RecordHeartbeat stores the configuration hash and app version a device
-// reported together with its last_seen_at.
-func (d *DB) RecordHeartbeat(publicID, configHash, appVersion, platform string, now int64) error {
-	res, err := d.conn.Exec("UPDATE device SET last_config_hash = ?, last_app_version = ?, last_platform = ?, last_seen_at = ? WHERE public_id = ?",
-		configHash, appVersion, platform, now, publicID)
+// Observe folds one authenticated request into the device row in a single
+// conditional write and returns the row that write produced: the snapshot the
+// caller decides its answer from. The condition carries deviceID, so a slot
+// rebound since authentication is left untouched and reports
+// ErrIdentityChanged; a deleted one reports ErrNotFound. An empty IP leaves the
+// stored one alone.
+func (d *DB) Observe(publicID, deviceID string, o Observation, now int64) (Device, error) {
+	tx, err := d.conn.Begin()
 	if err != nil {
-		return fmt.Errorf("record heartbeat: %w", err)
+		return Device{}, fmt.Errorf("begin observe device: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("UPDATE device SET last_seen_at = ?, last_ip = COALESCE(NULLIF(?, ''), last_ip), "+
+		"last_config_hash = ?, last_app_version = ?, last_platform = ? WHERE public_id = ? AND device_id = ?",
+		now, o.IP, o.ConfigHash, o.AppVersion, o.Platform, publicID, deviceID)
+	if err != nil {
+		return Device{}, fmt.Errorf("observe device: %w", err)
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("record heartbeat: %w", err)
+		return Device{}, fmt.Errorf("observe device: %w", err)
 	}
 	if affected == 0 {
+		return Device{}, observeMiss(tx, publicID, deviceID)
+	}
+	device, err := scanDevice(tx.QueryRow("SELECT "+deviceColumns+" FROM device WHERE public_id = ?", publicID))
+	if err != nil {
+		return Device{}, fmt.Errorf("observe device: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Device{}, fmt.Errorf("commit observe device: %w", err)
+	}
+	return device, nil
+}
+
+// observeMiss explains a conditional write that matched no row: the slot is
+// gone, or it now belongs to another identity.
+func observeMiss(tx *sql.Tx, publicID, deviceID string) error {
+	var current string
+	err := tx.QueryRow("SELECT device_id FROM device WHERE public_id = ?", publicID).Scan(&current)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("observe device: %w", err)
+	}
+	if current != deviceID {
+		return ErrIdentityChanged
+	}
+	return ErrNotFound
 }
 
 // PurgeExpiredTokens clears registration tokens whose validity has ended; the

@@ -5,11 +5,8 @@ package text
 // 类 text 是响应里的 message，类 error 是 Go error 的文案；名字去掉包名前缀，
 // 因为 id 的第一段已经说明了包。
 const (
-	APIAutoUpdatePerDevice           = "api.text.auto_update_per_device"
 	APIFormalNodeCredential          = "api.text.formal_node_credential"
 	APICredentialChannelUnconfigured = "api.text.credential_channel_unconfigured"
-	APIInvalidRequestBody            = "api.text.invalid_request_body"
-	APIAppVersionNotInput            = "api.text.app_version_not_input"
 	APIAppNotesRequiresURL           = "api.text.app_notes_requires_url"
 	APIAutoUpdateRequiresURL         = "api.text.auto_update_requires_url"
 	APISignatureRequiresURL          = "api.text.signature_requires_url"

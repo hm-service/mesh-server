@@ -157,17 +157,31 @@ func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, templateResponse{Template: toml})
 }
 
+// saveTemplateRequest is PUT /api/admin/template. 模板不是发布工件：它有自己的
+// 路由，保存与发布因此各自只有一个存储、一个结果。
+type saveTemplateRequest struct {
+	Template string `json:"template"`
+}
+
+// handleSaveTemplate stores the default configuration template. 响应与 GET 同义：
+// 保存之后生效的那一份（空白值删除文件，回落到内置模板），所以这里直接复用读取
+// 的那条路径，控制台拿到的永远是接下来新建设备用到的内容。
+func (s *Server) handleSaveTemplate(w http.ResponseWriter, r *http.Request) {
+	var req saveTemplateRequest
+	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	if err := s.app.SetTemplate(req.Template); err != nil {
+		s.logger.Error("save default template", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	s.handleTemplate(w, r)
+}
+
 type deviceInput struct {
 	Name       string `json:"name"`
 	ConfigTOML string `json:"configToml"`
-}
-
-// createDeviceRequest is POST /api/admin/devices. AutoUpdate 只用来拒绝它：新设备
-// 一律跟随发布包（contract/admin-api.md），而静默丢掉会让调用方以为自己设上了。
-// 与发布接口对 appVersion 的处理一致。
-type createDeviceRequest struct {
-	deviceInput
-	AutoUpdate optionalBool `json:"autoUpdate"`
 }
 
 // deviceUpdate is PUT /api/admin/devices/{id}: the fields every update rewrites
@@ -206,13 +220,10 @@ type createDeviceResponse struct {
 }
 
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
-	var req createDeviceRequest
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
-		return
-	}
-	if req.AutoUpdate.Set {
-		httpx.WriteErrorDetail(w, http.StatusBadRequest, "invalid_argument", text.Get(text.APIAutoUpdatePerDevice))
+	// 新设备一律跟随发布包（contract/admin-api.md）；autoUpdate 不是这个请求声明的
+	// 字段，出现它由统一的严格解码拒绝，不在这里单独检查。
+	var req deviceInput
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	device, token, err := s.app.CreateDevice(req.Name, req.ConfigTOML)
@@ -271,8 +282,7 @@ func (s *Server) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req deviceUpdate
-	if err := httpx.DecodeJSON(w, r, &req); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
+	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
 	updated, err := s.app.UpdateDevice(id, req.Name, req.ConfigTOML, app.AutoUpdateChoice{Set: req.AutoUpdate.Set, Value: req.AutoUpdate.Value})

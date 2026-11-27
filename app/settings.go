@@ -88,18 +88,24 @@ func (a *App) TemplateTOML() (string, error) {
 	return string(raw), nil
 }
 
-// DefaultTOMLFile is the raw default template. A missing file reads as an empty
-// string: the admin page must not display the embedded fallback as if it were
-// the stored value.
-func (a *App) DefaultTOMLFile() (string, error) {
-	raw, err := os.ReadFile(a.templatePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+// SetTemplate stores the default configuration template: non-blank content is
+// written to DATA_DIR/peer.default.toml atomically (0600, tmp+rename), blank
+// content deletes it and falls back to the embedded template. 空白等于「没有自
+// 定义模板」：文件缺失本来就是 TemplateTOML 的回退条件，这样两条路径只有一种
+// 表示（contract/admin-api.md）。
+func (a *App) SetTemplate(toml string) error {
+	if isBlank(toml) {
+		if err := os.Remove(a.templatePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
 	}
+	staged, err := stageFile(a.templatePath(), []byte(toml))
 	if err != nil {
-		return "", err
+		return err
 	}
-	return string(raw), nil
+	defer staged.Abort()
+	return staged.Commit()
 }
 
 // Releases returns every published platform.
@@ -128,21 +134,19 @@ type ClientPackage struct {
 	AutoUpdate bool
 }
 
-// PublishInput is one admin publish request: zero or more slots of one platform
-// plus an optional new default template.
+// PublishInput is one admin publish request: zero or more slots of one platform.
+// 默认模板不在这里：它有自己的路由与存储（SetTemplate），发布与它没有共同的
+// 提交点，也不需要。
 type PublishInput struct {
-	Platform    string
-	Client      *ClientPackage
-	Launcher    *db.LauncherSlot
-	DefaultTOML *string
+	Platform string
+	Client   *ClientPackage
+	Launcher *db.LauncherSlot
 }
 
 // Publish stores one admin publish request. Every slot is validated and
-// downloaded first, so a rejected request has written nothing. The template goes
-// next: 空白 DefaultTOML 删掉自定义模板（回退内置），非空白则先 staged rename
-// 落地，最后才提交槽位事务。剩下的窗口是「模板已换新而槽位事务失败」：模板只是
-// 一份默认配置，重发一次即可。A request that publishes both slots of a platform
-// therefore never leaves one of them behind on failure.
+// downloaded first, so a rejected request has written nothing; both slots then
+// land in one SQLite transaction, so a request that publishes both of them never
+// leaves one behind on failure.
 func (a *App) Publish(in PublishInput) error {
 	var (
 		client   *db.ClientSlot
@@ -168,36 +172,7 @@ func (a *App) Publish(in PublishInput) error {
 		}
 		launcher = &prepared
 	}
-	if in.DefaultTOML != nil {
-		if isBlank(*in.DefaultTOML) {
-			// 空白等于「没有自定义模板」：删掉文件，回退到内置模板
-			// （contract/admin-api.md）。文件缺失本来就是 TemplateTOML 的回退条件，
-			// 这样两条路径只有一种表示。
-			if err := os.Remove(a.templatePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-		} else {
-			staged, err := stageFile(a.templatePath(), []byte(*in.DefaultTOML))
-			if err != nil {
-				return err
-			}
-			defer staged.Abort()
-			// 模板先落地再提交槽位：rename 失败时一个槽位都还没写，请求返回失败
-			// 不会留下已生效的那一半。反过来先提交槽位再 rename，rename 一失败
-			// 就是「返回 500 但槽位已生效」。两处存储没有共同的提交点，剩下的
-			// 窗口是槽位事务失败而模板已经换新：模板只是一份默认配置，重发一次
-			// 即可。
-			if err := staged.Commit(); err != nil {
-				return err
-			}
-		}
-	}
-	if client != nil || launcher != nil {
-		if err := a.database.PublishSlots(in.Platform, client, launcher); err != nil {
-			return err
-		}
-	}
-	return nil
+	return a.database.PublishSlots(in.Platform, client, launcher)
 }
 
 // prepareClientSlot validates one client package, computes the digest of the

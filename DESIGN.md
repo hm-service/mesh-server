@@ -42,7 +42,7 @@ HTTP 契约以 [`../docs/`](../docs/) 为准；本文件只描述服务端这一
 | POST | `/api/auth` | 无 |
 | POST | `/api/v1/register` | token 或设备签名（在请求体里） |
 | POST | `/api/v1/heartbeat` | 设备签名（在请求体里） |
-| GET | `/api/admin/template` | Bearer |
+| GET/PUT | `/api/admin/template` | Bearer |
 | GET/POST | `/api/admin/devices` | Bearer |
 | GET/PUT/DELETE | `/api/admin/devices/{id}` | Bearer |
 | POST | `/api/admin/devices/{id}/token` | Bearer |
@@ -56,6 +56,8 @@ HTTP 契约以 [`../docs/`](../docs/) 为准；本文件只描述服务端这一
 | DELETE | `/api/admin/releases/{platform...}`（`?slot=launcher` 只清启动器槽位） | Bearer |
 
 请求与响应的字段、状态码、错误码见 [`../docs/contract/admin-api.md`](../docs/contract/admin-api.md)；本文不重复。
+
+设备协议按层切开：`api` 只做解码、认证（签名、时间窗、nonce）、错误映射与响应编码；`app` 提供完整的注册与心跳入口，在设备锁内复核当前绑定、把这次请求的观测值合并成一次条件写入，再按写出来的那一行规划响应与凭据步骤。同一心跳的观测值、配置与更新下发、凭据决定因此属于同一个绑定：换绑、删除与另一次心跳只能排在它之前或之后，看不到「观测已写、响应来自旧绑定」的中间态。默认模板与发布槽位也按存储切开——模板只有 `/api/admin/template` 一个读写入口，发布请求只带工件。
 
 ## 4. 数据
 
@@ -133,9 +135,11 @@ CREATE INDEX credential_device ON credential (device_public_id);
 
 `credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 9 节的 `ET_CLI`）。
 
-表结构只在 `db/db.go` 的 `schema` 里声明一次，全部是 `CREATE TABLE IF NOT EXISTS`：新建文件按它建表，已有文件则逐表比对 `PRAGMA table_info` 出来的列名集合，缺列或多列都直接报错并列出差异，控制面不会自动改库。旧库的结构修正由运维手工完成，部署前必须核对线上 schema 与代码一致。
+表结构只在 `db/db.go` 的 `schema` 里声明一次，全部是 `CREATE TABLE IF NOT EXISTS`：新建文件按它建表，已有文件则把列、命名索引与隐式唯一约束规范成一组条目，与内存参考库的同一组条目做一次差异比较，不同就报错并点名差异位置，控制面不会自动改库。声明之外的普通（非唯一）索引放行——它只影响查询；显式 UNIQUE 索引按结构差异处理，因为它改变表接受的数据集合。旧库的结构修正由运维手工完成，部署前必须核对线上 schema 与代码一致。
 
 `config_hash` 只在创建设备或改写配置时由 `core.Hash`（即 `sha256(toml)` 前 16 位）算出并落库，启动不做任何数据修补。摘要算法若变化，存量行需要手工重算，否则设备会一直 `stale`，每轮心跳都被重发配置。
+
+管理端改配置是一次单语句事务写（`db.Update` 读改写同一行），心跳的「写观测值 + 取快照」也在同一个事务里完成：两者并发只会出现「这次心跳带的是旧配置、下一轮收敛」，不会拼出观测值与配置正文不同源的响应。管理端写入因此不进设备锁。
 
 ## 5. 默认模板
 

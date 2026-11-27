@@ -26,9 +26,9 @@ type credentialIssuer struct {
 // credentialCLITimeout 是单次 cli 调用的上限。签发要等种子生成密钥，留够余量。
 const credentialCLITimeout = 15 * time.Second
 
-// credentialCLIOutputLimit 是单次 cli 每条输出流的上限：答案只有几百字节，
-// 超出就是二进制不对，没有理由把它整个读进内存，也没有理由只限 stdout——
-// stderr 会跟着错误信息进日志。
+// credentialCLIOutputLimit 是单次 cli 每条输出流各自的上限：答案只有几百字节，
+// 超出就是二进制不对，没有理由把它整个读进内存，也没有理由只限 stdout——stderr
+// 会跟着错误信息进日志。两条流各留一份，一次调用的内存上限因此是它的两倍。
 const credentialCLIOutputLimit = 64 << 10
 
 // credentialCLIPipeWait 是主进程结束（或被杀）之后等待管道关闭的上限。继承了
@@ -97,8 +97,9 @@ func (c *credentialIssuer) revoke(ctx context.Context, id string) error {
 }
 
 // run 执行一次 cli 调用并返回 stdout。错误里带 stderr，但不带参数，
-// 免得命令行上的密钥被写进日志。两条输出流共用一份预算，截断状态随错误一起
-// 报出来；进程与管道都有时限，失败不会把一次签发拖成没有上限的等待。
+// 免得命令行上的密钥被写进日志。两条输出流各自有界（各 credentialCLIOutputLimit
+// 字节），截断状态随错误一起报出来；进程与管道都有时限，失败不会把一次签发拖成
+// 没有上限的等待。
 func (c *credentialIssuer) run(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, credentialCLITimeout)
 	defer cancel()
@@ -174,10 +175,6 @@ type IssuedCredential struct {
 
 // CredentialNone 是客户端上报「本地没有凭据」的值（contract/device-api.md）。
 const CredentialNone = "none"
-
-// ErrIdentityChanged 表示这次请求认证时的身份已经不再持有这个槽位：换绑发生在
-// 请求处理期间。此时什么都不能写，尤其不能把新凭据交给旧身份。
-var ErrIdentityChanged = errors.New("device identity changed")
 
 // IssueCredential 给设备签发一张凭据，记下 id 与到期时间，返回这一次的完整
 // 结果。响应只能用返回值里的 id：回头再查一次库在并发签发时会把一张凭据的
@@ -342,40 +339,24 @@ func (a *App) confirmLocked(ctx context.Context, publicID, credentialID string) 
 	return a.revokeExceptLocked(ctx, publicID, credentialID)
 }
 
-// CredentialStep 是心跳对一台设备凭据做的全部决定与动作：确认切换、按需签发。
-// 整段在同一把设备锁里完成，「读设备 → 决定 → 让种子动手 → 写本地」不会被删除、
-// 换绑或另一次心跳插进来。
+// credentialStepLocked 是心跳对一台设备凭据做的全部决定与动作：确认切换、按需
+// 签发。调用方必须持有该设备的锁，device 就是锁内读到的当前行——绑定已在入口处
+// 复核，这里不再重复判断身份。
 //
-// auth 是这次请求认证出来的设备快照。设备行里的 device_id 就是身份：锁内再读
-// 一次，身份变了（换绑发生在请求处理期间）就什么都不做——否则会把一张新凭据
-// 交给已经被换掉的旧身份。
-//
-// 上报的 credentialId 是设备 core 里正在用的那张，签发条件按它分档：
+// reportedID 是设备 core 里正在用的那张，签发条件按它分档：
 //
 //   - 与最新签发的一致：切换已经完成，只有进入续期窗口才续签。
 //   - 报着旧 id：core 还没重启完，或者管理端刚签发了一张而设备还不知道。冷却外
 //     补一张（管理端那条通道靠这一步落到设备上），冷却内不签。
 //   - none：客户端声明本地没有凭据，冷却外签一张。
+//   - 空串：正式节点（或还不认识这个字段的旧客户端），既不确认也不签发。
 //
 // 冷却复用 CredentialNoneCooldown：报 none 与报旧 id 都可能每轮心跳都命中，
 // 没有它就会一直签。
-func (a *App) CredentialStep(ctx context.Context, auth db.Device, reportedID string) (*IssuedCredential, error) {
+func (a *App) credentialStepLocked(ctx context.Context, device db.Device, reportedID string) (*IssuedCredential, error) {
 	if a.credential == nil {
 		return nil, nil
 	}
-	unlock := a.locks.lock(auth.PublicID)
-	defer unlock()
-	device, ok, err := a.DeviceByID(auth.PublicID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, ErrNotFound
-	}
-	if device.DeviceID != auth.DeviceID {
-		return nil, ErrIdentityChanged
-	}
-	// 空串是正式节点（或还不认识这个字段的旧客户端）：既不确认也不签发。
 	if reportedID == "" {
 		return nil, nil
 	}

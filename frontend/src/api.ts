@@ -18,8 +18,10 @@ export interface DeviceSummary {
   position: number;
   createdAt: number;
   lastSeenAt: number;
-  /** identity 由配置里有没有 network_secret 派生：正式节点不用凭据。 */
-  identity: NodeIdentity;
+  /** identity 由配置里有没有 network_secret 派生：正式节点不用凭据。配置解析失败时为空串。 */
+  identity: NodeIdentity | "";
+  /** configError 是配置解析失败的原因；非空时 identity 为空串、ipv4 为空、dhcp 为 false。 */
+  configError?: string;
   /** ipv4 是配置里写的固定 mesh 地址（可能带前缀长度）；空表示没写。 */
   ipv4: string;
   /** dhcp = true 时 core 忽略 ipv4，地址由网络分配。 */

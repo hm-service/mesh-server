@@ -157,8 +157,8 @@ func TestOpenRejectsDatabaseMissingAColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect device columns: %v", err)
 	}
-	for _, name := range columns {
-		if name == "last_platform" {
+	for _, column := range columns {
+		if column.Name == "last_platform" {
 			t.Fatal("Open() added last_platform to a database that lacked it")
 		}
 	}

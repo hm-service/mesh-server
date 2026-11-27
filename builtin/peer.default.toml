@@ -44,6 +44,11 @@ network_name = "test-net"
 # 等价于启动参数 --encryption-algorithm。
 encryption_algorithm = "chacha20"
 
+# 虚拟网卡名固定为 mesh0，与已在跑的设备一致：名字是适配器身份的一部分
+# （Windows 上 GUID 由名字派生），每次起 core 换名字会留下残留设备，
+# 按接口名建的防火墙规则也会一组组堆积。空着则由上游按平台起名（et_1 / tun0）。
+dev_name = "mesh0"
+
 # 三级种子（ali / tencent / ali-zyf），每级都写 udp 与 tcp 两条连接目标：core 对每条
 # 各自重连，udp 延迟低、能打洞，tcp 在 udp 被屏蔽或打不通时兜底。用域名而不是 IP，
 # 种子换地址时不必逐台设备改配置。

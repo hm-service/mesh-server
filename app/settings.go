@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -235,6 +236,12 @@ func (a *App) prepareClientSlot(platform string, pkg ClientPackage) (db.ClientSl
 		return db.ClientSlot{}, invalid(text.Format(text.AppPackageManifestMismatch,
 			manifestName, manifest.Slot, manifest.Platform, signing.SlotClient, platform))
 	}
+	// 内层签名：外层签的是「这些字节来自发布方」，清单签的是「这个文件集合来自
+	// 发布方」。启动器装之前验的就是这一份，控制面不验就等于把必然被拒的包推到
+	// 每台设备上。用的是同一把公钥、另一段签名原文（MESH4）。
+	if !signing.VerifyManifest(a.releaseKey, manifest.Slot, manifest.Platform, manifest.Version, manifest.Files, manifest.Signature) {
+		return db.ClientSlot{}, invalid(text.Format(text.AppPackageManifestUnsigned, manifestName))
+	}
 	version := manifest.Version
 	// 验签放在摘要算完之后：签名覆盖的是服务端刚下载到的那些字节的摘要，
 	// 而不是管理员在表单里填的那个。包在传输中被换掉时，这里对不上。
@@ -445,18 +452,23 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 // packageManifest is the version.json a client package carries at its root. The
-// fields are exactly the ones signing.ValidateManifest judges; this type only
-// carries them from the archive to that rule.
+// fields are exactly the ones signing.ValidateManifest judges, plus the signature
+// the client launcher verifies before installing; this type only carries them
+// from the archive to those rules.
 type packageManifest struct {
-	Version  string            `json:"version"`
-	Slot     string            `json:"slot"`
-	Platform string            `json:"platform"`
-	Files    map[string]string `json:"files"`
+	Version   string            `json:"version"`
+	Slot      string            `json:"slot"`
+	Platform  string            `json:"platform"`
+	Files     map[string]string `json:"files"`
+	Signature string            `json:"signature"`
 }
 
 // readPackageManifest returns the version.json manifest of a tar.zst client
-// package. A package without one, or with one that cannot be parsed, is
-// rejected here; whether the manifest is legal is signing.ValidateManifest's
+// package after checking that the archive and that manifest describe the same
+// file set: every listed file present with the listed digest, no member the
+// manifest does not list, no name carried twice. A package without a manifest,
+// with one that cannot be parsed, or with a mismatched file set is rejected
+// here; whether the manifest's fields are legal is signing.ValidateManifest's
 // question, so this function does not judge any field.
 func readPackageManifest(r io.Reader) (packageManifest, error) {
 	// 预算在解码器上：窗口与内存上限决定一个构造过的包能要多少内存，与它最后
@@ -473,10 +485,19 @@ func readPackageManifest(r io.Reader) (packageManifest, error) {
 	tr := tar.NewReader(zr)
 	entries := 0
 	var unpacked int64
+	digests := make(map[string]string)
+	var manifest packageManifest
+	found := false
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return packageManifest{}, errors.New(text.Format(text.AppManifestMissing, manifestName))
+			if !found {
+				return packageManifest{}, errors.New(text.Format(text.AppManifestMissing, manifestName))
+			}
+			if err := checkPackageFiles(manifest.Files, digests); err != nil {
+				return packageManifest{}, err
+			}
+			return manifest, nil
 		}
 		if err != nil {
 			return packageManifest{}, fmt.Errorf("%s：%w", text.Get(text.AppPackageReadFailed), err)
@@ -492,20 +513,69 @@ func readPackageManifest(r io.Reader) (packageManifest, error) {
 				return packageManifest{}, errors.New(text.Format(text.AppPackageTooLarge, maxUnpackedBytes))
 			}
 		}
-		if path.Clean(hdr.Name) != manifestName {
+		name := path.Clean(hdr.Name)
+		// 只认已规范化的普通文件名：带 ./ 或 .. 的条目在解包端会落到别的路径上，
+		// 清单里的名字代表不了它。
+		if hdr.Name != name {
+			return packageManifest{}, errors.New(text.Format(text.AppPackageFileUnexpected, hdr.Name))
+		}
+		if name == manifestName {
+			if found {
+				return packageManifest{}, errors.New(text.Format(text.AppPackageFileDuplicate, manifestName))
+			}
+			raw, err := io.ReadAll(io.LimitReader(tr, maxManifestBytes+1))
+			if err != nil {
+				return packageManifest{}, fmt.Errorf("%s：%w", text.Format(text.AppManifestReadFailed, manifestName), err)
+			}
+			if len(raw) > maxManifestBytes {
+				return packageManifest{}, errors.New(text.Format(text.AppManifestTooLarge, manifestName, maxManifestBytes))
+			}
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				return packageManifest{}, fmt.Errorf("%s：%w", text.Format(text.AppManifestParseFailed, manifestName), err)
+			}
+			found = true
 			continue
 		}
-		raw, err := io.ReadAll(io.LimitReader(tr, maxManifestBytes+1))
-		if err != nil {
-			return packageManifest{}, fmt.Errorf("%s：%w", text.Format(text.AppManifestReadFailed, manifestName), err)
+		// 每个成员都要算摘要：只读清单不读其余字节，证明不了归档就是清单描述的
+		// 那一份，也发现不了截断。
+		sum := sha256.New()
+		if _, err := io.Copy(sum, tr); err != nil {
+			return packageManifest{}, fmt.Errorf("%s：%w", text.Get(text.AppPackageReadFailed), err)
 		}
-		if len(raw) > maxManifestBytes {
-			return packageManifest{}, errors.New(text.Format(text.AppManifestTooLarge, manifestName, maxManifestBytes))
+		if _, duplicate := digests[name]; duplicate {
+			return packageManifest{}, errors.New(text.Format(text.AppPackageFileDuplicate, name))
 		}
-		var manifest packageManifest
-		if err := json.Unmarshal(raw, &manifest); err != nil {
-			return packageManifest{}, fmt.Errorf("%s：%w", text.Format(text.AppManifestParseFailed, manifestName), err)
-		}
-		return manifest, nil
+		digests[name] = hex.EncodeToString(sum.Sum(nil))
 	}
+}
+
+// checkPackageFiles proves that the archive and the manifest describe the same
+// file set: every listed name present with the listed digest, and no member the
+// manifest does not list. digests holds every non-manifest member of the archive.
+// Comparing the two sets here is what makes the publish refuse a package the
+// launcher would refuse to install.
+func checkPackageFiles(want, got map[string]string) error {
+	names := make([]string, 0, len(want)+len(got))
+	for name := range want {
+		names = append(names, name)
+	}
+	for name := range got {
+		if _, listed := want[name]; !listed {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		expected, listed := want[name]
+		actual, present := got[name]
+		switch {
+		case !present:
+			return errors.New(text.Format(text.AppPackageFileMissing, name))
+		case !listed:
+			return errors.New(text.Format(text.AppPackageFileUnexpected, name))
+		case !strings.EqualFold(expected, actual):
+			return errors.New(text.Format(text.AppPackageFileMismatch, name))
+		}
+	}
+	return nil
 }

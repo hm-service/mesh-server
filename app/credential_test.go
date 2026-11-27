@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,6 +312,55 @@ func TestFailedIssuanceLeavesNoIntentRow(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("rows after a failed issuance = %+v, want none", rows)
+	}
+}
+
+// TestCLIFailureOutputIsBounded pins the first half of F6: a CLI that floods
+// stderr must not be read without a bound, and the message must say the output
+// was cut instead of looking like a complete answer.
+func TestCLIFailureOutputIsBounded(t *testing.T) {
+	t.Setenv(fakecli.FailGenerateEnv, "1")
+	t.Setenv(fakecli.StderrBytesEnv, "1048576")
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.IssueCredential(context.Background(), device.PublicID)
+	if err == nil {
+		t.Fatal("IssueCredential() with a noisy failing seed returned nil")
+	}
+	if !strings.Contains(err.Error(), "输出已截断") {
+		t.Fatalf("error = %q, want it to report the truncation", err)
+	}
+	// 1 MiB 的 stderr 只留预算内的那一段，错误信息跟着一起受限。
+	if len(err.Error()) > credentialCLIOutputLimit+1024 {
+		t.Fatalf("error is %d bytes, want at most the %d-byte budget", len(err.Error()), credentialCLIOutputLimit)
+	}
+}
+
+// TestCLILeavesNoPipeToWaitFor pins the second half of F6: a child that inherited
+// the pipes keeps them open after the CLI exits. Waiting for the pipes must be
+// bounded by the pipe deadline instead of following that child's lifetime.
+func TestCLILeavesNoPipeToWaitFor(t *testing.T) {
+	t.Setenv(fakecli.HoldPipeEnv, "6000")
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = a.IssueCredential(context.Background(), device.PublicID)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("IssueCredential() returned nil while a child still held the pipes")
+	}
+	if !strings.Contains(err.Error(), "easytier-cli 失败") {
+		t.Fatalf("error = %q, want the CLI failure named", err)
+	}
+	// 孙进程要活 6 秒；没有管道时限时这里会等满它。
+	if elapsed > 4*time.Second {
+		t.Fatalf("issuance took %v, want it bounded by the pipe deadline", elapsed)
 	}
 }
 

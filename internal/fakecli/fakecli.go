@@ -4,9 +4,11 @@
 package fakecli
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,15 @@ const DelayEnv = "MESH_TEST_CLI_DELAY_MS"
 // FailGenerateEnv makes credential generation fail after its delay, the way a
 // seed that is reachable but refuses (or dies mid-answer) behaves.
 const FailGenerateEnv = "MESH_TEST_CLI_GENERATE_FAIL"
+
+// StderrBytesEnv makes a failing generation write that many bytes to stderr
+// first, so a test can prove the failure output stays inside its budget.
+const StderrBytesEnv = "MESH_TEST_CLI_STDERR_BYTES"
+
+// HoldPipeEnv makes a successful generation leave a child holding stdout and
+// stderr for that many milliseconds. The parent answers and exits at once, so
+// only the inherited pipes keep the caller's Wait open.
+const HoldPipeEnv = "MESH_TEST_CLI_HOLD_MS"
 
 // SecretSeparator splits the stand-in's secret from the credential id it was
 // generated for.
@@ -51,11 +62,16 @@ func Owner(secret string) string {
 }
 
 func handle(args []string) {
+	if len(args) >= 2 && args[0] == "hold-pipe" {
+		holdPipe(args[1])
+	}
 	joined := " " + strings.Join(args, " ") + " "
 	delay()
 	switch {
 	case strings.Contains(joined, " credential generate "):
+		holdPipes()
 		if os.Getenv(FailGenerateEnv) != "" {
+			noisyStderr()
 			fmt.Fprintln(os.Stderr, "fakecli: the seed refused to sign")
 			os.Exit(1)
 		}
@@ -83,6 +99,62 @@ func valueOf(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+// noisyStderr writes the requested number of bytes to stderr before failing.
+func noisyStderr() {
+	raw := os.Getenv(StderrBytesEnv)
+	if raw == "" {
+		return
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return
+	}
+	chunk := bytes.Repeat([]byte("x"), 4096)
+	for written := 0; written < n; {
+		size := min(len(chunk), n-written)
+		if _, err := os.Stderr.Write(chunk[:size]); err != nil {
+			return
+		}
+		written += size
+	}
+}
+
+// holdPipes starts a child that inherits this process's stdout and stderr and
+// sleeps there: the pipes stay open after this process exits.
+func holdPipes() {
+	raw := os.Getenv(HoldPipeEnv)
+	if raw == "" {
+		return
+	}
+	if _, err := strconv.Atoi(raw); err != nil {
+		return
+	}
+	child := exec.Command(os.Args[0], "-p", os.Args[2], "hold-pipe", raw)
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+	// 不 Wait：这个进程马上退出，孙进程由系统收养，睡完自己结束。
+	_ = child.Start()
+}
+
+// holdPipe is the child side: it keeps writing into the inherited pipe, so it
+// dies as soon as the caller force-closes its end (a write to a closed pipe
+// fails). A leaked holder would otherwise outlive the test and, on Windows,
+// keep the test binary locked.
+func holdPipe(raw string) {
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms <= 0 {
+		os.Exit(0)
+	}
+	deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stdout.Write([]byte(".")); err != nil {
+			os.Exit(0)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	os.Exit(0)
 }
 
 func delay() {

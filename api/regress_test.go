@@ -121,7 +121,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 	client := []byte("a whole mesh client binary")
-	file := releasePkg(t, "2026.11.24-3", client)
+	file := releasePkg(t, env, "2026.11.24-3", client)
 	release := putReleases(t, env, map[string]any{
 		"platform": testPlatform,
 		"appUrl":   fileServer(t, file),
@@ -154,7 +154,7 @@ func TestReleaseExposesFullDigest(t *testing.T) {
 // confirmed.
 func TestPublishRejectsBothSlotsTogether(t *testing.T) {
 	env := testenv.New(t)
-	file := releasePkg(t, "2026.11.25-1", []byte("a whole mesh client binary"))
+	file := releasePkg(t, env, "2026.11.25-1", []byte("a whole mesh client binary"))
 	// Both slots are signed: the launcher URL is the one that must fail, and a
 	// missing signature would fail first and hide that.
 	appURL := fileServer(t, file)

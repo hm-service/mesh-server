@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api, ApiError, type DeviceSummary, type GroupView, type ReleasesPayload } from "./api";
+import { Sequence } from "./sequence";
 import ConfigView from "./components/ConfigView.vue";
 import DevicesView from "./components/DevicesView.vue";
 import LoginView from "./components/LoginView.vue";
@@ -27,7 +28,10 @@ let toastTimer: number | undefined;
 // 会话代次：提交登录与结束会话各递增一次。请求记下发出时的代次，只有当前代次的
 // 响应才写界面，换会话前后在途的请求一律丢弃。轮询因此不串行：串行只防同一会话内的
 // 重叠，挡不住旧会话的响应落到新会话上。
-let session = 0;
+const session = new Sequence();
+// 设备列表的请求代次：同一会话里轮询、手工刷新与新建设备后的刷新可能重叠，后发的
+// 请求才是想要的答案。会话代次挡不住这种逆序，资源代次可以。
+const deviceRequests = new Sequence();
 
 const deviceCount = computed(() => devices.value.length);
 
@@ -51,7 +55,7 @@ function dismissToast() {
  * 事件不再送达），因此都不会误清新会话的凭证。
  */
 function endSession(): void {
-  session += 1;
+  session.next();
   api.logout();
   stopPolling();
   showNew.value = false;
@@ -70,7 +74,7 @@ function isUnauthorized(err: unknown): boolean {
  * 其余错误返回 false，由调用方决定怎么提示。
  */
 function handleReadError(err: unknown, gen: number): boolean {
-  if (gen !== session) return true;
+  if (session.stale(gen)) return true;
   if (!isUnauthorized(err)) return false;
   endSession();
   return true;
@@ -93,10 +97,15 @@ function stopPolling(): void {
   }
 }
 
-/** 取设备与分组。失败原样抛出，由调用方决定结束会话还是提示；旧代次的响应不落地。 */
+/**
+ * 取设备与分组。失败原样抛出，由调用方决定结束会话还是提示。
+ * 两张列表是同一个资源的两个视图，一起领号一起落地：会话换了、或这次之后又发了
+ * 一次列表请求，这份结果都丢弃，免得旧响应把新设备盖掉。
+ */
 async function loadDevices(gen: number): Promise<void> {
+  const request = deviceRequests.next();
   const [nextDevices, nextGroups] = await Promise.all([api.listDevices(), api.listGroups()]);
-  if (gen !== session) return;
+  if (session.stale(gen) || deviceRequests.stale(request)) return;
   devices.value = nextDevices;
   groups.value = nextGroups;
 }
@@ -104,7 +113,7 @@ async function loadDevices(gen: number): Promise<void> {
 async function loadReleases(gen: number): Promise<void> {
   try {
     const next = await api.getReleases();
-    if (gen === session) releases.value = next;
+    if (!session.stale(gen)) releases.value = next;
   } catch (err) {
     handleReadError(err, gen);
   }
@@ -113,7 +122,7 @@ async function loadReleases(gen: number): Promise<void> {
 /** 登录成功的唯一路径：设备列表真的取到了才算进来，之后才开轮询。 */
 async function enterConsole(gen: number): Promise<void> {
   await loadDevices(gen);
-  if (gen !== session) return;
+  if (session.stale(gen)) return;
   authed.value = true;
   page.value = "devices";
   startPolling(gen);
@@ -122,8 +131,7 @@ async function enterConsole(gen: number): Promise<void> {
 
 async function login(token: string): Promise<void> {
   // 新会话从提交登录开始算：此前在途的请求（含首屏初始化）都属旧代次。
-  session += 1;
-  const gen = session;
+  const gen = session.next();
   loginError.value = "";
   loginBusy.value = true;
   try {
@@ -148,7 +156,7 @@ function loginFailureText(err: unknown): string {
 }
 
 async function refreshDevices(): Promise<void> {
-  const gen = session;
+  const gen = session.current();
   try {
     await loadDevices(gen);
   } catch (err) {
@@ -158,7 +166,7 @@ async function refreshDevices(): Promise<void> {
 }
 
 function onCreated(): void {
-  const gen = session;
+  const gen = session.current();
   void loadDevices(gen).catch((err) => {
     // 新建设备已经成功，列表下一轮轮询也会刷新；这里只保证 401 能结束会话。
     handleReadError(err, gen);
@@ -180,7 +188,7 @@ function onEscape(event: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onEscape);
-  const gen = session;
+  const gen = session.current();
   try {
     await enterConsole(gen);
   } catch (err) {

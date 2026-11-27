@@ -25,6 +25,7 @@ const (
 	AppPackageTooLarge           = "app.text.package_too_large"
 	AppPackageTooManyEntries     = "app.text.package_too_many_entries"
 	AppPackageManifestMismatch   = "app.text.package_manifest_mismatch"
+	AppPackageManifestUnsigned   = "app.text.package_manifest_unsigned"
 	AppLauncherFileUnreadable    = "app.text.launcher_file_unreadable"
 	AppSlotVersionRequired       = "app.text.slot_version_required"
 	AppSlotVersionInvalid        = "app.text.slot_version_invalid"
@@ -38,6 +39,8 @@ const (
 	AppCredentialParseFailed = "app.error.credential_parse_failed"
 	AppCredentialIncomplete  = "app.error.credential_incomplete"
 	AppCLIFailed             = "app.error.cli_failed"
+	AppCLIFailedTruncated    = "app.error.cli_failed_truncated"
+	AppCLIOutputTooLarge     = "app.error.cli_output_too_large"
 	AppRedirectLimit         = "app.error.redirect_limit"
 	AppDialAddressInvalid    = "app.error.dial_address_invalid"
 	AppDialAddressBlocked    = "app.error.dial_address_blocked"
@@ -48,6 +51,10 @@ const (
 	AppManifestReadFailed    = "app.error.manifest_read_failed"
 	AppManifestTooLarge      = "app.error.manifest_too_large"
 	AppManifestParseFailed   = "app.error.manifest_parse_failed"
+	AppPackageFileMissing    = "app.error.package_file_missing"
+	AppPackageFileUnexpected = "app.error.package_file_unexpected"
+	AppPackageFileMismatch   = "app.error.package_file_mismatch"
+	AppPackageFileDuplicate  = "app.error.package_file_duplicate"
 
 	HTTPXAddressInvalid = "httpx.error.address_invalid"
 )

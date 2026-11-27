@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,22 @@ func TestSigningStringShape(t *testing.T) {
 
 func TestCheckTimestamp(t *testing.T) {
 	now := time.Unix(1_732_400_000, 0)
+	// 窗口两端与越界一秒：区间是闭区间，边界值必须落在里面。
+	edge := []struct {
+		at   time.Time
+		want bool
+	}{
+		{now.Add(ClockSkew), true},
+		{now.Add(ClockSkew + time.Second), false},
+		{now.Add(-ClockSkew), true},
+		{now.Add(-ClockSkew - time.Second), false},
+	}
+	for _, tc := range edge {
+		raw := strconv.FormatInt(tc.at.Unix(), 10)
+		if _, err := CheckTimestamp(raw, now); (err == nil) != tc.want {
+			t.Fatalf("CheckTimestamp(%s) error = %v, want ok=%v", raw, err, tc.want)
+		}
+	}
 	cases := []struct {
 		raw  string
 		want bool
@@ -39,6 +56,10 @@ func TestCheckTimestamp(t *testing.T) {
 		{"1732399699", false},
 		{"", false},
 		{"nope", false},
+		// 表示范围的极端边界：用区间比较直接排除，不依赖 Duration 差值的饱和行为。
+		{"9223372036854775807", false},
+		{"-9223372036854775808", false},
+		{"99999999999999999999", false},
 	}
 	for _, tc := range cases {
 		if _, err := CheckTimestamp(tc.raw, now); (err == nil) != tc.want {

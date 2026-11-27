@@ -49,7 +49,8 @@ type heartbeatRequest struct {
 	Platform   string `json:"platform"`
 	ConfigHash string `json:"configHash"`
 	AppVersion string `json:"appVersion"`
-	// CredentialID 是客户端正在用的凭据；不参与签名，也不影响鉴权。
+	// CredentialID 是客户端正在用的凭据：不参与签名，只决定签发与确认的时机；
+	// 它与其余字段一样受合法域约束（core.DeviceRequestFields）。
 	CredentialID string `json:"credentialId"`
 	// AppUpdateKnown 是客户端内存里那份 appUpdate 的 sha256（不是版本号：同一
 	// 版本号重新发布时内容会变）。命中时只回精简形状，省掉每轮重复的 notes。
@@ -60,14 +61,27 @@ type heartbeatRequest struct {
 // deviceAuth verifies a signed request and returns the device. On failure it
 // has already written a 401 response and never reveals which check failed.
 func (s *Server) deviceAuth(w http.ResponseWriter, r *http.Request, creds heartbeatRequest) (db.Device, bool) {
+	// 值域先于一切：签名原文按 \n 拼接，一个带换行的字段就能把同一段文本拆成
+	// 另一组字段。形状不对与签名错误走同一条 401，响应不说明是哪一步失败的。
+	fields := core.DeviceRequestFields{
+		DeviceID:       creds.DeviceID,
+		Timestamp:      creds.Timestamp,
+		Nonce:          creds.Nonce,
+		Platform:       creds.Platform,
+		ConfigHash:     creds.ConfigHash,
+		AppVersion:     creds.AppVersion,
+		Signature:      creds.Signature,
+		CredentialID:   creds.CredentialID,
+		AppUpdateKnown: creds.AppUpdateKnown,
+	}
+	if err := fields.Validate(); err != nil {
+		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
+		return db.Device{}, false
+	}
 	deviceID := creds.DeviceID
 	timestamp := creds.Timestamp
 	nonce := creds.Nonce
 	signature := creds.Signature
-	if deviceID == "" || timestamp == "" || nonce == "" || signature == "" {
-		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
-		return db.Device{}, false
-	}
 	device, found, err := s.app.DeviceByDeviceID(deviceID)
 	if err != nil {
 		s.logger.Error("load device", "device_id", deviceID, "error", err)
@@ -122,7 +136,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	req.DeviceID = strings.TrimSpace(req.DeviceID)
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.Pubkey = strings.TrimSpace(req.Pubkey)
-	if req.DeviceID == "" || len(req.DeviceID) > 128 || len(req.Hostname) > 255 {
+	// 与心跳同一份值域：注册请求里的签名三件套要么全空（只出示令牌），要么
+	// 全部在合法域内。hostname 不参与签名，只受长度限制。
+	fields := core.DeviceRequestFields{
+		DeviceID:  req.DeviceID,
+		Timestamp: req.Timestamp,
+		Nonce:     req.Nonce,
+		Platform:  req.Platform,
+		Signature: req.Signature,
+	}
+	if err := fields.Validate(); err != nil || len(req.Hostname) > 255 {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}

@@ -43,3 +43,41 @@ func TestNonceExpiresAfterItsWindow(t *testing.T) {
 		t.Fatal("the nonce was still remembered after its window")
 	}
 }
+
+// TestNonceCacheRejectsWhenFull pins the saturation policy: a full cache refuses
+// a new nonce instead of evicting one that is still inside its window — evicting
+// would let a used signature in again. Capacity comes back once the window has
+// passed and the sweep drops the expired entries.
+func TestNonceCacheRejectsWhenFull(t *testing.T) {
+	base := time.Unix(1_732_400_000, 0)
+	// 直接构造满载的小缓存：容量在测试里不该只有一条 8192 次循环的路。
+	cache := &NonceCache{ttl: ClockSkew, max: 2, seen: make(map[string]time.Time)}
+	if !cache.Claim("a", base, base) || !cache.Claim("b", base, base) {
+		t.Fatal("the cache rejected a claim below its capacity")
+	}
+	if cache.Claim("c", base, base) {
+		t.Fatal("a claim over the capacity was accepted")
+	}
+	if cache.Claim("a", base, base) {
+		t.Fatal("a nonce already inside its window was accepted again")
+	}
+	late := base.Add(2*ClockSkew + time.Second)
+	if !cache.Claim("c", late, late) {
+		t.Fatal("the capacity did not come back after the window")
+	}
+}
+
+// TestNonceCacheCapacityIsBounded keeps the default capacity honest: the shared
+// map must not grow past NonceCacheEntries.
+func TestNonceCacheCapacityIsBounded(t *testing.T) {
+	base := time.Unix(1_732_400_000, 0)
+	cache := NewNonceCache(ClockSkew)
+	for i := range NonceCacheEntries {
+		if !cache.Claim(strconv.Itoa(i), base, base) {
+			t.Fatalf("claim %d was rejected below the capacity", i)
+		}
+	}
+	if cache.Claim("one-too-many", base, base) {
+		t.Fatal("the cache accepted more than NonceCacheEntries")
+	}
+}

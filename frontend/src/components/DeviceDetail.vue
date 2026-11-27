@@ -89,8 +89,11 @@ const coolingMinutes = computed(() => {
 });
 
 const formal = computed(() => device.value?.identity === "formal");
+// 解析失败时身份未知：既不能断言它是正式节点，也不能给它签凭据。
+const identityUnknown = computed(() => device.value?.identity === "");
 
 const rotateHint = computed(() => {
+  if (identityUnknown.value) return "配置无法解析，无法判断这台设备是不是正式节点；先修正配置再签发凭据。";
   if (formal.value) return "正式节点用 network_secret 认证，不使用凭据，轮换没有意义。";
   if (cooling.value) {
     return `${relTime(device.value?.credential?.issuedAt ?? 0, nowSec.value)}刚签发，约 ${coolingMinutes.value} 分钟后才能再签；冷却内再签只会让等待重新计时。`;
@@ -98,10 +101,11 @@ const rotateHint = computed(() => {
   return "签发后约 5 分钟冷却结束，设备在下一次心跳拿到新凭据并重启 core；旧凭据在设备确认后失效。";
 });
 
-const rotateDisabled = computed(() => formal.value || cooling.value);
+const rotateDisabled = computed(() => identityUnknown.value || formal.value || cooling.value);
 
 const credentialText = computed(() => {
   if (!device.value) return "—";
+  if (identityUnknown.value) return "未知（配置无法解析）";
   if (formal.value) return "不使用凭据（正式节点）";
   const credential = device.value.credential;
   if (!credential) return "尚未签发";
@@ -319,6 +323,8 @@ async function remove() {
           <div class="v mono">{{ device.pubkey || "—" }}</div>
         </div>
       </div>
+
+      <div v-if="device.configError" class="callout">配置无法解析：{{ device.configError }}</div>
 
       <section class="section">
         <div class="section-head"><span class="section-title">操作</span></div>

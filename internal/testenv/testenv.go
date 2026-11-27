@@ -197,6 +197,14 @@ func (e *Env) Sign(slot, platform, version, sha256 string) string {
 		[]byte(signing.String(slot, platform, version, sha256))))
 }
 
+// SignManifest returns the MESH4 signature (hex) over one manifest's file set,
+// exactly as signpkg -manifest writes it into version.json before packaging.
+func (e *Env) SignManifest(slot, platform, version string, files map[string]string) string {
+	e.T.Helper()
+	return hex.EncodeToString(ed25519.Sign(e.releasePrivate,
+		[]byte(signing.ManifestString(slot, platform, version, signing.FilesDigest(files)))))
+}
+
 // Do sends a JSON request with the bearer credential.
 func (e *Env) Do(method, path string, body any) (*http.Response, []byte) {
 	e.T.Helper()

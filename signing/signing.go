@@ -242,3 +242,15 @@ func Verify(public ed25519.PublicKey, slot, platform, version, sha256, signature
 	}
 	return ed25519.Verify(public, []byte(String(slot, platform, version, sha256)), raw)
 }
+
+// VerifyManifest reports whether signatureHex is a valid signature by public over
+// ManifestString for the same manifest. It answers "did the release key sign this
+// file set", not "can this be installed": ValidateManifest answers the second
+// question, and the publish path asks both.
+func VerifyManifest(public ed25519.PublicKey, slot, platform, version string, files map[string]string, signatureHex string) bool {
+	raw, err := hex.DecodeString(signatureHex)
+	if err != nil || len(raw) != ed25519.SignatureSize || len(public) != ed25519.PublicKeySize {
+		return false
+	}
+	return ed25519.Verify(public, []byte(ManifestString(slot, platform, version, FilesDigest(files))), raw)
+}

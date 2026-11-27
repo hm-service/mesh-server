@@ -221,6 +221,42 @@ func TestVerifyRejectsMalformedSignatures(t *testing.T) {
 	}
 }
 
+// TestVerifyManifestBindsTheFileSet is the inner half of the publish check: the
+// control plane verifies the same signature the launcher verifies before it
+// touches bin/. The package signature covers the bytes; this one covers the set
+// of files and their digests.
+func TestVerifyManifestBindsTheFileSet(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	files := clientFiles()
+	signature := hex.EncodeToString(ed25519.Sign(private,
+		[]byte(ManifestString("client", "windows/amd64", "2026.11.27-115", FilesDigest(files)))))
+	if !VerifyManifest(public, "client", "windows/amd64", "2026.11.27-115", files, signature) {
+		t.Fatal("a fresh manifest signature did not verify")
+	}
+
+	other := map[string]string{"mesh-client.exe": goodDigest, "easytier-core.exe": strings.Repeat("cd", 32)}
+	if VerifyManifest(public, "client", "windows/amd64", "2026.11.27-115", other, signature) {
+		t.Fatal("the signature verified a different file set")
+	}
+	if VerifyManifest(public, "launcher", "windows/amd64", "2026.11.27-115", files, signature) {
+		t.Fatal("the signature verified under another slot")
+	}
+	if VerifyManifest(public, "client", "windows/amd64", "2026.11.27-116", files, signature) {
+		t.Fatal("the signature verified under another version")
+	}
+	for _, bad := range []string{"", "00", strings.Repeat("zz", 64)} {
+		if VerifyManifest(public, "client", "windows/amd64", "2026.11.27-115", files, bad) {
+			t.Fatalf("signature %q was accepted", bad)
+		}
+	}
+	if VerifyManifest(nil, "client", "windows/amd64", "2026.11.27-115", files, signature) {
+		t.Fatal("a nil key was accepted")
+	}
+}
+
 func TestValidShape(t *testing.T) {
 	if !ValidShape(strings.Repeat("ab", ed25519.SignatureSize)) {
 		t.Fatal("a 128-hex signature was rejected")

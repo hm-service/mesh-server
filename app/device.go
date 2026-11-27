@@ -127,16 +127,17 @@ func (a *App) DeviceByDeviceID(deviceID string) (db.Device, bool, error) {
 	return device, err == nil, err
 }
 
-// ValidToken reports whether s has the shape every registration token has.
-// The shape is part of the contract: admins copy tokens around, and a token
-// that is one character off should fail at the door.
+// ValidToken reports whether s has the shape every registration token has: 64
+// characters of 0-9a-f, i.e. 32 bytes of lowercase hex. The shape is part of the
+// contract: admins copy tokens around, and a token that is one character off
+// should fail at the door.
 func ValidToken(s string) bool {
 	if len(s) != TokenLength {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'z') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

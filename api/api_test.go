@@ -51,6 +51,8 @@ type deviceSummary struct {
 	Identity       string `json:"identity"`
 	IPv4           string `json:"ipv4"`
 	DHCP           bool   `json:"dhcp"`
+	// ConfigError 非空表示配置解析失败，此时 Identity 为空串。
+	ConfigError string `json:"configError"`
 	// AutoUpdate 是设备级覆盖：null 跟随发布包，true 自动，false 手动。
 	AutoUpdate *bool `json:"autoUpdate"`
 }
@@ -79,6 +81,7 @@ type deviceDetail struct {
 	Identity       string          `json:"identity"`
 	IPv4           string          `json:"ipv4"`
 	DHCP           bool            `json:"dhcp"`
+	ConfigError    string          `json:"configError"`
 	AutoUpdate     *bool           `json:"autoUpdate"`
 	Credential     *credentialView `json:"credential"`
 }
@@ -345,20 +348,23 @@ func tarZst(t *testing.T, entries map[string][]byte) []byte {
 
 // releasePkg packs the client beside the kernel it needs and the version.json
 // manifest that states the version the package was built as. The manifest is a
-// complete windows/amd64 client manifest: every case that rejects a package
+// complete windows/amd64 client manifest signed with the environment's release
+// key, the way build/release.ps1 leaves it: every case that rejects a package
 // changes one field of it, so the publish path is never exercised with a shape
 // the release tool could not have produced.
-func releasePkg(t *testing.T, version string, client []byte) []byte {
+func releasePkg(t *testing.T, env *testenv.Env, version string, client []byte) []byte {
 	t.Helper()
 	core := []byte("core")
+	files := map[string]string{
+		"mesh-client.exe":   digestOf(client),
+		"easytier-core.exe": digestOf(core),
+	}
 	manifest, err := json.Marshal(map[string]any{
-		"version":  version,
-		"slot":     signing.SlotClient,
-		"platform": testPlatform,
-		"files": map[string]string{
-			"mesh-client.exe":   digestOf(client),
-			"easytier-core.exe": digestOf(core),
-		},
+		"version":   version,
+		"slot":      signing.SlotClient,
+		"platform":  testPlatform,
+		"files":     files,
+		"signature": env.SignManifest(signing.SlotClient, testPlatform, version, files),
 	})
 	if err != nil {
 		t.Fatalf("marshal version.json: %v", err)
@@ -587,6 +593,57 @@ func TestNonceReplayIsRejected(t *testing.T) {
 	}
 }
 
+// TestDeviceFieldDomainIsRejected pins F3 at the door: a field outside the
+// contract's domain gets the same 401 as a bad signature, even though the caller
+// signed exactly what it sent. A newline would otherwise let the \n-joined
+// signing text mean a different field list, and an unbounded field is an
+// unbounded cache key or stored observation.
+func TestDeviceFieldDomainIsRejected(t *testing.T) {
+	env := testenv.New(t)
+	var nonces int64
+	dev := registerDevice(t, env, "laptop", testTOML)
+	now := env.Clock.Now().Unix()
+
+	cases := []struct {
+		name       string
+		nonce      string
+		configHash string
+		appVersion string
+	}{
+		{"nonce with a newline", "ab\nMESH2", dev.configHash, ""},
+		{"nonce over the length limit", strings.Repeat("a", 65), dev.configHash, ""},
+		{"config hash over the length limit", newNonce(&nonces), strings.Repeat("0", 65), ""},
+		{"app version with a newline", newNonce(&nonces), dev.configHash, "1\n2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := signedHeartbeatBody(t, dev.deviceID, dev.priv, testPlatform, now, tc.nonce, tc.configHash, tc.appVersion, "")
+			res, data := signed(t, env, "POST", "/api/v1/heartbeat", body, nil)
+			if res.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("heartbeat = %d, want 401: %s", res.StatusCode, data)
+			}
+		})
+	}
+
+	// 值域检查没有误伤合法请求。
+	body := heartbeatBody(t, dev, now, newNonce(&nonces), dev.configHash, "")
+	if res, data := signed(t, env, "POST", "/api/v1/heartbeat", body, nil); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("valid heartbeat = %d, want 204: %s", res.StatusCode, data)
+	}
+
+	// 注册入口用同一份值域：带换行的 deviceId 在查库之前就被拒绝。
+	pub, _ := newKeypair(t)
+	res, data := env.Do("POST", "/api/v1/register", map[string]string{
+		"token":    "",
+		"deviceId": "dev\nMESH2",
+		"hostname": "HOST",
+		"pubkey":   base64.StdEncoding.EncodeToString(pub),
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("register with a newline in deviceId = %d, want 400: %s", res.StatusCode, data)
+	}
+}
+
 // putReleases saves through the admin API and returns the response. Whatever
 // the caller left unsigned is signed here, the way the operator's offline key
 // would, so a test about slots does not have to know any digest.
@@ -715,7 +772,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 
 	// Publish a build so appVersion has a value to compare against.
-	build := releasePkg(t, "2026.11.24-4", []byte("client build one"))
+	build := releasePkg(t, env, "2026.11.24-4", []byte("client build one"))
 	release := publishExternal(t, env, testPlatform, "修复窄屏布局", build)
 	sum := sha256.Sum256(build)
 	wantSHA := hex.EncodeToString(sum[:])
@@ -802,7 +859,7 @@ func TestHeartbeatSemantics(t *testing.T) {
 	}
 
 	// Publishing another build flips appVersion and the update comes back.
-	next := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-1", []byte("client build two")))
+	next := publishExternal(t, env, testPlatform, "", releasePkg(t, env, "2026.11.25-1", []byte("client build two")))
 	res, data = heartbeat(t, env, dev, &nonces, newHash, release.AppVersion)
 	got = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || got.AppUpdate.URL != next.AppURL || got.ConfigHash != "" {
@@ -819,7 +876,7 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	pkg := releasePkg(t, "2026.11.26-18", []byte("client build one"))
+	pkg := releasePkg(t, env, "2026.11.26-18", []byte("client build one"))
 	sum := sha256.Sum256(pkg)
 	release := putReleases(t, env, map[string]any{
 		"platform":   testPlatform,
@@ -896,7 +953,7 @@ func TestReportedHashesShowInAdmin(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.24-4", []byte("client build one")))
+	release := publishExternal(t, env, testPlatform, "", releasePkg(t, env, "2026.11.24-4", []byte("client build one")))
 
 	summary := func() deviceSummary {
 		t.Helper()
@@ -1094,7 +1151,7 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 
 	const toml = `hostname = "saved-by-settings"`
-	externalPkg := releasePkg(t, "2026.11.24-4", []byte("external mesh client binary"))
+	externalPkg := releasePkg(t, env, "2026.11.24-4", []byte("external mesh client binary"))
 	rawURL := fileServer(t, externalPkg)
 	saved := putReleases(t, env, map[string]any{
 		"platform":    testPlatform,
@@ -1157,7 +1214,7 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
 
-	build := releasePkg(t, "2026.11.26-1", []byte("client build one"))
+	build := releasePkg(t, env, "2026.11.26-1", []byte("client build one"))
 	saved := putReleases(t, env, map[string]any{
 		"platform":   testPlatform,
 		"appUrl":     fileServer(t, build),
@@ -1203,7 +1260,7 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	// A new package starts manual unless the admin says otherwise.
 	next := putReleases(t, env, map[string]any{
 		"platform": testPlatform,
-		"appUrl":   fileServer(t, releasePkg(t, "2026.11.26-2", []byte("client build two"))),
+		"appUrl":   fileServer(t, releasePkg(t, env, "2026.11.26-2", []byte("client build two"))),
 	}).releaseOf(testPlatform)
 	if next.AutoUpdate || next.AppVersion != "2026.11.26-2" {
 		t.Fatalf("republished package = %+v, want it back to manual", next)
@@ -1255,7 +1312,7 @@ func TestDeviceAutoUpdateOverride(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 	putReleases(t, env, map[string]any{
 		"platform":   testPlatform,
-		"appUrl":     fileServer(t, releasePkg(t, "2026.11.26-1", []byte("client build one"))),
+		"appUrl":     fileServer(t, releasePkg(t, env, "2026.11.26-1", []byte("client build one"))),
 		"autoUpdate": true,
 	})
 
@@ -1294,7 +1351,7 @@ func TestDeviceAutoUpdateOverride(t *testing.T) {
 	// 包改成手动之后，强制自动仍然生效：覆盖与包的方向无关。
 	putReleases(t, env, map[string]any{
 		"platform": testPlatform,
-		"appUrl":   fileServer(t, releasePkg(t, "2026.11.26-2", []byte("client build two"))),
+		"appUrl":   fileServer(t, releasePkg(t, env, "2026.11.26-2", []byte("client build two"))),
 	})
 	if got := deviceAutoUpdate(t, env, dev, &nonces); got == nil || *got {
 		t.Fatalf("manual package with no override = %v, want false", got)
@@ -1346,7 +1403,7 @@ func listAutoUpdate(t *testing.T, env *testenv.Env, id string) *bool {
 func TestReleaseSlotsAreIndependent(t *testing.T) {
 	env := testenv.New(t)
 
-	client := publishExternal(t, env, testPlatform, "客户端更新", releasePkg(t, "2026.11.25-36", []byte("client build")))
+	client := publishExternal(t, env, testPlatform, "客户端更新", releasePkg(t, env, "2026.11.25-36", []byte("client build")))
 	if client.LauncherVersion != "" || client.LauncherURL != "" || client.LauncherSHA256 != "" {
 		t.Fatalf("publishing the client package also filled the launcher slot: %+v", client)
 	}
@@ -1369,7 +1426,7 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 	}
 
 	// A new client package leaves the launcher slot in place.
-	next := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.26-1", []byte("client build two")))
+	next := publishExternal(t, env, testPlatform, "", releasePkg(t, env, "2026.11.26-1", []byte("client build two")))
 	if next.AppVersion != "2026.11.26-1" || next.LauncherVersion != launcher.LauncherVersion ||
 		next.LauncherURL != launcher.LauncherURL || next.LauncherSHA256 != launcher.LauncherSHA256 {
 		t.Fatalf("client publish changed the launcher slot: %+v", next)
@@ -1412,7 +1469,7 @@ func TestReleaseSlotsKeepOnlyPublishedRows(t *testing.T) {
 	}
 
 	// The plain delete takes both slots of the platform.
-	publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-36", []byte("client build")))
+	publishExternal(t, env, testPlatform, "", releasePkg(t, env, "2026.11.25-36", []byte("client build")))
 	publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher"))
 	res, data := env.Do("DELETE", "/api/admin/releases/"+testPlatform, nil)
 	if res.StatusCode != http.StatusOK {
@@ -1436,7 +1493,7 @@ func TestReleaseSlotsKeepOnlyPublishedRows(t *testing.T) {
 // the row is written, so no device is ever offered a package it will reject.
 func TestPublishRequiresASignatureForTheBytesItDownloaded(t *testing.T) {
 	env := testenv.New(t)
-	file := releasePkg(t, "2026.11.27-1", []byte("client build"))
+	file := releasePkg(t, env, "2026.11.27-1", []byte("client build"))
 	rawURL := fileServer(t, file)
 	zero := strings.Repeat("0", 64)
 
@@ -1479,6 +1536,84 @@ func TestPublishRequiresASignatureForTheBytesItDownloaded(t *testing.T) {
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("a rejected publish stored a slot: found %v, %v", found, err)
+	}
+}
+
+// TestPublishRequiresTheManifestSignature pins the inner signature check. The
+// launcher refuses to install a package whose version.json is unsigned or signed
+// for another file set, so the publish refuses it too instead of pushing a
+// package every device will reject.
+func TestPublishRequiresTheManifestSignature(t *testing.T) {
+	env := testenv.New(t)
+	client := []byte("client build")
+	kernel := []byte("core")
+	files := map[string]string{
+		"mesh-client.exe":   digestOf(client),
+		"easytier-core.exe": digestOf(kernel),
+	}
+	packageOf := func(version, signedVersion, signature string) []byte {
+		if signature == "" {
+			signature = env.SignManifest(signing.SlotClient, testPlatform, signedVersion, files)
+		}
+		manifest, err := json.Marshal(map[string]any{
+			"version":   version,
+			"slot":      signing.SlotClient,
+			"platform":  testPlatform,
+			"files":     files,
+			"signature": signature,
+		})
+		if err != nil {
+			t.Fatalf("marshal version.json: %v", err)
+		}
+		return tarZst(t, map[string][]byte{
+			"mesh-client.exe":   client,
+			"easytier-core.exe": kernel,
+			"version.json":      manifest,
+		})
+	}
+	unsigned, err := json.Marshal(map[string]any{
+		"version":  "2026.11.28-1",
+		"slot":     signing.SlotClient,
+		"platform": testPlatform,
+		"files":    files,
+	})
+	if err != nil {
+		t.Fatalf("marshal version.json: %v", err)
+	}
+	noSignature := tarZst(t, map[string][]byte{
+		"mesh-client.exe":   client,
+		"easytier-core.exe": kernel,
+		"version.json":      unsigned,
+	})
+
+	cases := []struct {
+		name string
+		pkg  []byte
+	}{
+		{"no signature", noSignature},
+		{"signature over another version", packageOf("2026.11.28-1", "2026.11.28-0", "")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 外层包签名是有效的：这一轮要拦的是内层清单签名。
+			res, data := env.Do("PUT", "/api/admin/releases", map[string]string{
+				"platform":     testPlatform,
+				"appUrl":       fileServer(t, tc.pkg),
+				"appSignature": env.Sign(signing.SlotClient, testPlatform, "2026.11.28-1", digestOf(tc.pkg)),
+			})
+			if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "缺少有效的发布签名") {
+				t.Fatalf("publish = %d: %s, want 400 naming the manifest signature", res.StatusCode, data)
+			}
+		})
+	}
+	if _, found, err := env.App.Release(testPlatform); err != nil || found {
+		t.Fatalf("a rejected publish stored a slot: found %v, %v", found, err)
+	}
+
+	// 正确签名的那一份照样发布成功。
+	good := releasePkg(t, env, "2026.11.28-2", client)
+	if got := publishExternal(t, env, testPlatform, "", good); got.AppVersion != "2026.11.28-2" {
+		t.Fatalf("publish = %+v, want the version from the signed manifest", got)
 	}
 }
 
@@ -1610,7 +1745,7 @@ func TestHeartbeatCarriesLauncher(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.25-36", []byte("client build")))
+	release := publishExternal(t, env, testPlatform, "", releasePkg(t, env, "2026.11.25-36", []byte("client build")))
 	launcher := publishLauncher(t, env, testPlatform, "2026.11.25-36", []byte("launcher one"))
 	wantLauncher := launcherInfo{Version: "2026.11.25-36", URL: launcher.LauncherURL, SHA256: launcher.LauncherSHA256, Signature: launcher.LauncherSignature}
 
@@ -1730,7 +1865,7 @@ func TestReleaseRejectsIncompletePublish(t *testing.T) {
 func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 	env := testenv.New(t)
 
-	good := releasePkg(t, "2026.11.26-11", []byte("client build"))
+	good := releasePkg(t, env, "2026.11.26-11", []byte("client build"))
 	saved := putReleases(t, env, map[string]any{
 		"platform": testPlatform,
 		"appUrl":   fileServer(t, good),
@@ -1815,7 +1950,7 @@ func TestHeartbeatOnlyUpgrades(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
-	release := publishExternal(t, env, testPlatform, "", releasePkg(t, "2026.11.26-11", []byte("client build")))
+	release := publishExternal(t, env, testPlatform, "", releasePkg(t, env, "2026.11.26-11", []byte("client build")))
 
 	detail := func() deviceDetail {
 		t.Helper()

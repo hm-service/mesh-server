@@ -30,10 +30,13 @@ type deviceSummary struct {
 	Position       int64  `json:"position"`
 	CreatedAt      int64  `json:"createdAt"`
 	LastSeenAt     int64  `json:"lastSeenAt"`
-	// Identity、IPv4、DHCP 是从 configToml 派生的展示字段（app.ConfigFactsOf）。
-	Identity string `json:"identity"`
-	IPv4     string `json:"ipv4"`
-	DHCP     bool   `json:"dhcp"`
+	// Identity、IPv4、DHCP、ConfigError 是从 configToml 派生的展示字段
+	// （app.ConfigFactsOf）。ConfigError 非空表示配置解析失败，此时 Identity 为空
+	// 串、地址为空：解析失败与「凭据节点」是两件事。
+	Identity    string `json:"identity"`
+	IPv4        string `json:"ipv4"`
+	DHCP        bool   `json:"dhcp"`
+	ConfigError string `json:"configError,omitempty"`
 	// AutoUpdate 是设备级自动更新覆盖：null 跟随发布包，true 强制自动，false
 	// 强制手动（contract/admin-api.md「设备级自动更新」）。
 	AutoUpdate *bool `json:"autoUpdate"`
@@ -51,8 +54,8 @@ func releaseFor(releases []db.Release, platform string) db.Release {
 }
 
 func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
-	facts := app.ConfigFactsOf(d.ConfigTOML)
-	return deviceSummary{
+	facts, factsErr := app.ConfigFactsOf(d.ConfigTOML)
+	summary := deviceSummary{
 		ID:             d.PublicID,
 		Name:           d.Name,
 		Hostname:       d.Hostname,
@@ -74,6 +77,12 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 		DHCP:           facts.DHCP,
 		AutoUpdate:     d.AutoUpdate,
 	}
+	if factsErr != nil {
+		// 一台设备的坏配置只影响它自己那一行：其余设备照常列出，控制台把这一
+		// 行标成配置错误。
+		summary.ConfigError = factsErr.Error()
+	}
+	return summary
 }
 
 // deviceDetail is the full device record GET /api/admin/devices/{id} returns: the
@@ -219,10 +228,11 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
+	facts, _ := app.ConfigFactsOf(device.ConfigTOML)
 	httpx.WriteJSON(w, http.StatusOK, createDeviceResponse{
 		ID:    device.PublicID,
 		Token: token,
-		IPv4:  app.ConfigFactsOf(device.ConfigTOML).IPv4,
+		IPv4:  facts.IPv4,
 	})
 }
 

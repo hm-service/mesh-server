@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -127,10 +128,15 @@ func createSchema(conn *sql.DB) error {
 	return nil
 }
 
-// verifySchema compares every table declared in schema with the columns the
-// database file actually has. A difference is fatal and is not repaired here:
-// deciding what an older file's data means is an operator's job, and repairing
-// it silently would hide a deployment that has not been migrated.
+// verifySchema compares every table declared in schema with the structure the
+// database file actually has: columns (name, type, nullability, default, primary
+// key) and indexes (name, uniqueness, partiality, columns). A difference is fatal
+// and is not repaired here: deciding what an older file's data means is an
+// operator's job, and repairing it silently would hide a deployment that has not
+// been migrated.
+//
+// The reference is the same DDL, applied to an in-memory file: SQLite parses it,
+// so there is no second hand-written list of columns in Go to keep in sync.
 func (d *DB) verifySchema() error {
 	reference, err := schemaReference()
 	if err != nil {
@@ -142,28 +148,83 @@ func (d *DB) verifySchema() error {
 		return fmt.Errorf("verify schema: %w", err)
 	}
 	for _, table := range tables {
-		want, err := tableColumns(reference, table)
-		if err != nil {
-			return fmt.Errorf("verify schema: %w", err)
+		if err := compareTable(reference, d.conn, table); err != nil {
+			return fmt.Errorf("database schema does not match db/db.go: %w", err)
 		}
-		got, err := tableColumns(d.conn, table)
-		if err != nil {
-			return fmt.Errorf("verify schema: %w", err)
-		}
-		missing, unexpected := columnDifference(want, got)
-		if len(missing) == 0 && len(unexpected) == 0 {
-			continue
-		}
-		var diff []string
-		if len(missing) > 0 {
-			diff = append(diff, "missing "+strings.Join(missing, ", "))
-		}
-		if len(unexpected) > 0 {
-			diff = append(diff, "unexpected "+strings.Join(unexpected, ", "))
-		}
-		return fmt.Errorf("database schema does not match db/db.go: table %s: %s", table, strings.Join(diff, "; "))
 	}
 	return nil
+}
+
+// compareTable checks one declared table against the stored one.
+func compareTable(want, got *sql.DB, table string) error {
+	wantColumns, err := tableColumns(want, table)
+	if err != nil {
+		return err
+	}
+	gotColumns, err := tableColumns(got, table)
+	if err != nil {
+		return err
+	}
+	if len(gotColumns) == 0 {
+		return fmt.Errorf("table %s is missing", table)
+	}
+	if err := compareColumns(table, wantColumns, gotColumns); err != nil {
+		return err
+	}
+	wantIndexes, err := tableIndexes(want, table)
+	if err != nil {
+		return err
+	}
+	gotIndexes, err := tableIndexes(got, table)
+	if err != nil {
+		return err
+	}
+	return compareIndexes(table, wantIndexes, gotIndexes)
+}
+
+// compareColumns compares the two column lists by name and, for each name, by
+// every attribute that decides what the column may hold.
+func compareColumns(table string, want, got []columnShape) error {
+	byName := make(map[string]columnShape, len(got))
+	for _, column := range got {
+		byName[column.Name] = column
+	}
+	wanted := make(map[string]struct{}, len(want))
+	for _, column := range want {
+		wanted[column.Name] = struct{}{}
+		actual, ok := byName[column.Name]
+		if !ok {
+			return fmt.Errorf("table %s has no column %s", table, column.Name)
+		}
+		if diff := columnDifference(column, actual); diff != "" {
+			return fmt.Errorf("table %s column %s: %s", table, column.Name, diff)
+		}
+	}
+	for _, column := range got {
+		if _, ok := wanted[column.Name]; !ok {
+			return fmt.Errorf("table %s has unexpected column %s", table, column.Name)
+		}
+	}
+	return nil
+}
+
+// columnDifference describes how one column departs from the declaration; an
+// empty string means it matches.
+func columnDifference(want, got columnShape) string {
+	var diff []string
+	if want.Type != got.Type {
+		diff = append(diff, fmt.Sprintf("type %s, want %s", got.Type, want.Type))
+	}
+	if want.NotNull != got.NotNull {
+		diff = append(diff, fmt.Sprintf("not null %t, want %t", got.NotNull, want.NotNull))
+	}
+	if want.Default != got.Default {
+		diff = append(diff, fmt.Sprintf("default %q, want %q", got.Default, want.Default))
+	}
+	if want.PK != got.PK {
+		diff = append(diff, fmt.Sprintf("primary key %d, want %d", got.PK, want.PK))
+	}
+	return strings.Join(diff, "; ")
 }
 
 // schemaReference builds the declared schema in an in-memory database and
@@ -200,15 +261,27 @@ func schemaTables(conn *sql.DB) ([]string, error) {
 	return tables, rows.Err()
 }
 
-// tableColumns returns the column names of table in declaration order. A
-// missing table yields no columns; callers compare it like any other mismatch.
-func tableColumns(conn *sql.DB, table string) ([]string, error) {
+// columnShape is one column as SQLite declares it. The type is upper-cased and
+// the default expression is lower-cased and trimmed, so a hand migration that
+// wrote the same thing in another case or with parentheses around the literal
+// compares equal.
+type columnShape struct {
+	Name    string
+	Type    string
+	NotNull bool
+	Default string
+	PK      int
+}
+
+// tableColumns returns the columns of table in declaration order. A missing
+// table yields no columns; callers compare that like any other mismatch.
+func tableColumns(conn *sql.DB, table string) ([]columnShape, error) {
 	rows, err := conn.Query("PRAGMA table_info(" + table + ")")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var names []string
+	var columns []columnShape
 	for rows.Next() {
 		var (
 			cid, notNull, pk int
@@ -218,33 +291,201 @@ func tableColumns(conn *sql.DB, table string) ([]string, error) {
 		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
 			return nil, err
 		}
-		names = append(names, name)
+		columns = append(columns, columnShape{
+			Name:    name,
+			Type:    strings.ToUpper(strings.TrimSpace(ctype)),
+			NotNull: notNull != 0,
+			Default: defaultValue(dflt),
+			PK:      pk,
+		})
 	}
-	return names, rows.Err()
+	return columns, rows.Err()
 }
 
-// columnDifference returns the columns in want but not in got, then the columns
-// in got but not in want.
-func columnDifference(want, got []string) (missing, unexpected []string) {
-	wantSet := make(map[string]struct{}, len(want))
-	for _, name := range want {
-		wantSet[name] = struct{}{}
+// defaultValue normalises what PRAGMA table_info reports for a default: SQLite
+// keeps the literal as written, so DEFAULT 0, DEFAULT(0) and default 'x' style
+// differences must not read as a schema mismatch.
+func defaultValue(raw any) string {
+	if raw == nil {
+		return ""
 	}
-	gotSet := make(map[string]struct{}, len(got))
-	for _, name := range got {
-		gotSet[name] = struct{}{}
+	value := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+	for len(value) >= 2 && value[0] == '(' && value[len(value)-1] == ')' {
+		value = strings.TrimSpace(value[1 : len(value)-1])
 	}
-	for _, name := range want {
-		if _, ok := gotSet[name]; !ok {
-			missing = append(missing, name)
+	return value
+}
+
+// indexShape is one index as SQLite declares it. Origin tells a named
+// CREATE INDEX ("c") from the implicit index behind a UNIQUE constraint ("u");
+// the latter gets a generated name, so it is compared by shape instead of name.
+type indexShape struct {
+	Name    string
+	Unique  bool
+	Partial bool
+	Columns []string
+	Origin  string
+}
+
+// tableIndexes returns every index of table except the rowid primary key. The
+// index list is read to completion before the columns are looked up: this
+// package opens the database with a single connection, so a nested query while
+// a result set is still open would wait for a connection that cannot come.
+func tableIndexes(conn *sql.DB, table string) ([]indexShape, error) {
+	listed, err := indexList(conn, table)
+	if err != nil {
+		return nil, err
+	}
+	indexes := make([]indexShape, 0, len(listed))
+	for _, index := range listed {
+		columns, err := indexColumns(conn, index.Name)
+		if err != nil {
+			return nil, err
+		}
+		index.Columns = columns
+		indexes = append(indexes, index)
+	}
+	return indexes, nil
+}
+
+// indexList reads PRAGMA index_list into memory, without its columns.
+func indexList(conn *sql.DB, table string) ([]indexShape, error) {
+	rows, err := conn.Query("PRAGMA index_list(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var indexes []indexShape
+	for rows.Next() {
+		var (
+			seq, unique, partial int
+			name, origin         string
+		)
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return nil, err
+		}
+		if origin == "pk" {
+			continue
+		}
+		indexes = append(indexes, indexShape{
+			Name:    name,
+			Unique:  unique != 0,
+			Partial: partial != 0,
+			Origin:  origin,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return indexes, nil
+}
+
+// indexColumns returns the indexed columns in index order. An expression index
+// (which this schema never declares) reports NULL for its column name.
+func indexColumns(conn *sql.DB, name string) ([]string, error) {
+	rows, err := conn.Query("PRAGMA index_info(" + name + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var (
+			seqno, cid int
+			column     sql.NullString
+		)
+		if err := rows.Scan(&seqno, &cid, &column); err != nil {
+			return nil, err
+		}
+		value := "<expression>"
+		if column.Valid {
+			value = column.String
+		}
+		columns = append(columns, value)
+	}
+	return columns, rows.Err()
+}
+
+// compareIndexes checks the indexes the declaration names, and the implicit
+// UNIQUE indexes as a multiset of shapes: their generated names depend on the
+// declaration order, which is not part of the contract.
+//
+// An extra named index is ignored: it changes no behaviour the code depends on,
+// and an operator may have added one for a query. An extra UNIQUE constraint is
+// not ignored, because it changes what the table accepts.
+func compareIndexes(table string, want, got []indexShape) error {
+	wantNamed, wantUnique := splitIndexes(want)
+	gotNamed, gotUnique := splitIndexes(got)
+	for name, wantIndex := range wantNamed {
+		gotIndex, ok := gotNamed[name]
+		if !ok {
+			return fmt.Errorf("table %s has no index %s", table, name)
+		}
+		if diff := indexDifference(wantIndex, gotIndex); diff != "" {
+			return fmt.Errorf("table %s index %s: %s", table, name, diff)
 		}
 	}
-	for _, name := range got {
-		if _, ok := wantSet[name]; !ok {
-			unexpected = append(unexpected, name)
+	for _, key := range sortedCountKeys(wantUnique, gotUnique) {
+		switch {
+		case wantUnique[key] > gotUnique[key]:
+			return fmt.Errorf("table %s is missing a unique constraint: %s", table, key)
+		case gotUnique[key] > wantUnique[key]:
+			return fmt.Errorf("table %s has an unexpected unique constraint: %s", table, key)
 		}
 	}
-	return missing, unexpected
+	return nil
+}
+
+// splitIndexes separates the named indexes into a map and the implicit UNIQUE
+// indexes into a count per shape.
+func splitIndexes(indexes []indexShape) (map[string]indexShape, map[string]int) {
+	named := make(map[string]indexShape)
+	unique := make(map[string]int)
+	for _, index := range indexes {
+		if index.Origin == "u" {
+			unique[uniqueKey(index)]++
+			continue
+		}
+		named[index.Name] = index
+	}
+	return named, unique
+}
+
+// uniqueKey is the shape of an implicit UNIQUE index, without its generated name.
+func uniqueKey(index indexShape) string {
+	return fmt.Sprintf("unique %t, partial %t, columns %s", index.Unique, index.Partial, strings.Join(index.Columns, ","))
+}
+
+// sortedCountKeys returns every key of both counts in a stable order, so the
+// reported mismatch does not change between runs.
+func sortedCountKeys(a, b map[string]int) []string {
+	keys := make([]string, 0, len(a)+len(b))
+	for key := range a {
+		keys = append(keys, key)
+	}
+	for key := range b {
+		if _, ok := a[key]; !ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// indexDifference describes how one named index departs from the declaration.
+func indexDifference(want, got indexShape) string {
+	var diff []string
+	if want.Unique != got.Unique {
+		diff = append(diff, fmt.Sprintf("unique %t, want %t", got.Unique, want.Unique))
+	}
+	if want.Partial != got.Partial {
+		diff = append(diff, fmt.Sprintf("partial %t, want %t", got.Partial, want.Partial))
+	}
+	if strings.Join(want.Columns, ",") != strings.Join(got.Columns, ",") {
+		diff = append(diff, fmt.Sprintf("columns %s, want %s",
+			strings.Join(got.Columns, ","), strings.Join(want.Columns, ",")))
+	}
+	return strings.Join(diff, "; ")
 }
 
 // Probe proves that the file is readable and writable by writing to and

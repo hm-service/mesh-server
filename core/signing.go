@@ -31,17 +31,18 @@ func SigningString(method, path, deviceID, timestamp, nonce, platformID, configH
 
 // CheckTimestamp rejects timestamps outside the allowed window and returns the
 // signed moment, which is what the nonce cache must remember the nonce until.
+//
+// The window is compared as two instants rather than as the absolute value of a
+// Duration: a timestamp centuries away is exactly the case Duration.Sub
+// saturates on, and an interval comparison answers it without relying on that
+// saturation.
 func CheckTimestamp(raw string, now time.Time) (time.Time, error) {
 	ts, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%w: not an integer", ErrTimestamp)
 	}
 	signedAt := time.Unix(ts, 0)
-	skew := now.Sub(signedAt)
-	if skew < 0 {
-		skew = -skew
-	}
-	if skew > ClockSkew {
+	if signedAt.Before(now.Add(-ClockSkew)) || signedAt.After(now.Add(ClockSkew)) {
 		return time.Time{}, fmt.Errorf("%w: outside %s", ErrTimestamp, ClockSkew)
 	}
 	return signedAt, nil

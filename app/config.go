@@ -18,7 +18,7 @@ const (
 // ConfigFacts 是一份设备配置里控制台要显示的事实。它是派生值，不落库：
 // 配置改了，事实跟着变。
 type ConfigFacts struct {
-	// Identity 是 IdentityFormal 或 IdentityCredential。
+	// Identity 是 IdentityFormal 或 IdentityCredential；为空表示配置解析失败。
 	Identity string
 	// IPv4 是配置里写的固定 mesh 地址（可能带前缀长度）；空表示没写。
 	IPv4 string
@@ -40,35 +40,26 @@ type configFile struct {
 	} `toml:"network_identity"`
 }
 
-// identityOf 是节点身份的唯一判据：只在 [network_identity] 里看 network_secret。
-// 解析不了就返回错误，不拿「没有 secret」的普通节点语义承接解析失败——那会把
-// 一台正式节点当成凭据节点，签给它的凭据它永远不会用。
-func identityOf(configTOML string) (string, error) {
+// ConfigFactsOf 是配置的唯一解析入口：一次 decode 同时得出身份与展示字段。
+//
+// 身份只在 [network_identity] 里看 network_secret。解析失败时返回错误与零值
+// 事实（Identity 为空），不拿「没有 secret」的普通节点语义承接它——那会把一台
+// 正式节点当成凭据节点，签给它的凭据它永远不会用。控制台与签发通道因此共用
+// 同一个判据：显示的是错误，签发的也是拒绝。
+func ConfigFactsOf(configTOML string) (ConfigFacts, error) {
 	var file configFile
 	if _, err := toml.Decode(configTOML, &file); err != nil {
-		return "", err
+		return ConfigFacts{}, err
+	}
+	facts := ConfigFacts{
+		Identity: IdentityCredential,
+		IPv4:     firstIPv4(file.IPv4),
+		DHCP:     file.DHCP != nil && *file.DHCP,
 	}
 	if file.NetworkIdentity != nil && strings.TrimSpace(file.NetworkIdentity.NetworkSecret) != "" {
-		return IdentityFormal, nil
+		facts.Identity = IdentityFormal
 	}
-	return IdentityCredential, nil
-}
-
-// ConfigFactsOf derives what the console shows from a device configuration.
-// 解析不了时按凭据节点、无固定地址处理：控制台只拿它显示，用不着为一份坏配置
-// 把整个设备列表变成错误。凭据签发那条路走 identityOf，它不会吞掉解析错误。
-func ConfigFactsOf(configTOML string) ConfigFacts {
-	facts := ConfigFacts{Identity: IdentityCredential}
-	var file configFile
-	if _, err := toml.Decode(configTOML, &file); err != nil {
-		return facts
-	}
-	if identity, err := identityOf(configTOML); err == nil {
-		facts.Identity = identity
-	}
-	facts.IPv4 = firstIPv4(file.IPv4)
-	facts.DHCP = file.DHCP != nil && *file.DHCP
-	return facts
+	return facts, nil
 }
 
 // firstIPv4 取第一个非空地址：easytier 允许把 ipv4 写成数组。

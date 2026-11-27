@@ -27,6 +27,7 @@ app.text.package_manifest_invalid = the manifest in {0} is invalid: {1}
 app.text.package_too_large = the unpacked package exceeds {0} bytes
 app.text.package_too_many_entries = the package has too many entries (limit {0})
 app.text.package_manifest_mismatch = the slot/platform in {0} is {1}/{2}, but this publish is {3}/{4}
+app.text.package_manifest_unsigned = the manifest in {0} has no valid release signature
 app.text.launcher_file_unreadable = cannot read the file launcherUrl points to: {0}
 app.text.slot_version_required = {0}_version must not be empty
 app.text.slot_version_invalid = {0}_version must be a YYYY.MM.DD-N version, but it is "{1}"
@@ -41,6 +42,8 @@ app.text.release_signature_malformed = the {0} slot's release signature is not 1
 app.error.credential_parse_failed = failed to parse the credential response
 app.error.credential_incomplete = the credential response has no secret or expiry
 app.error.cli_failed = easytier-cli failed: {0}
+app.error.cli_failed_truncated = easytier-cli failed (output truncated): {0}
+app.error.cli_output_too_large = easytier-cli output exceeds {0} bytes
 app.error.redirect_limit = more than {0} redirects
 app.error.dial_address_invalid = unrecognized dial address "{0}"
 app.error.dial_address_blocked = refusing to dial non-public address {0}
@@ -51,6 +54,10 @@ app.error.package_read_failed = failed to read the update package
 app.error.manifest_read_failed = failed to read {0}
 app.error.manifest_too_large = {0} exceeds {1} bytes
 app.error.manifest_parse_failed = failed to parse {0}
+app.error.package_file_missing = the package does not carry {0}, which the manifest lists
+app.error.package_file_unexpected = the package carries {0}, which the manifest does not list
+app.error.package_file_mismatch = {0} does not match the digest in the manifest
+app.error.package_file_duplicate = the package carries {0} more than once
 
 # httpx: input parsing.
 httpx.error.address_invalid = invalid address or prefix "{0}"

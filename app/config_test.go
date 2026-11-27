@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestConfigFactsOf pins how the console classifies a device: the identity
 // comes from network_secret under [network_identity] only (the top level is no
@@ -43,17 +46,41 @@ func TestConfigFactsOf(t *testing.T) {
 			toml: "dhcp = true\nipv4 = \"10.126.126.3/24\"\n",
 			want: ConfigFacts{Identity: IdentityCredential, IPv4: "10.126.126.3/24", DHCP: true},
 		},
-		{
-			name: "unparsable config falls back to credential",
-			toml: "[[peer]\nuri = \"udp://seed:11010\"\n",
-			want: credential,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ConfigFactsOf(tc.toml); got != tc.want {
+			got, err := ConfigFactsOf(tc.toml)
+			if err != nil {
+				t.Fatalf("ConfigFactsOf() error: %v", err)
+			}
+			if got != tc.want {
 				t.Fatalf("ConfigFactsOf() = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConfigFactsOfKeepsTheParseError pins F7: a configuration that cannot be
+// parsed is not a credential node. The console shows the error on that device
+// instead of inventing an identity, and issuance uses the same answer.
+func TestConfigFactsOfKeepsTheParseError(t *testing.T) {
+	const broken = "[[peer]\nuri = \"udp://seed:11010\"\n"
+	facts, err := ConfigFactsOf(broken)
+	if err == nil {
+		t.Fatal("ConfigFactsOf() accepted an unparsable configuration")
+	}
+	if facts != (ConfigFacts{}) {
+		t.Fatalf("ConfigFactsOf() = %+v, want the zero facts", facts)
+	}
+
+	// 签发路径拿的是同一个答案：坏配置既不算正式节点，也不算凭据节点。
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("broken", broken)
+	if err != nil {
+		t.Fatalf("CreateDevice() error: %v", err)
+	}
+	_, err = a.IssueCredential(t.Context(), device.PublicID)
+	if err == nil || !strings.Contains(err.Error(), "读不出来") {
+		t.Fatalf("IssueCredential() on an unparsable config = %v, want the parse failure", err)
 	}
 }

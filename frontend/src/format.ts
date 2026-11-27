@@ -40,7 +40,9 @@ function stripPrefix(addr: string): string {
   return slash === -1 ? addr : addr.slice(0, slash);
 }
 
-export function identityText(identity: NodeIdentity): string {
+/** identityText 区分三种状态：正式节点、凭据节点，以及配置解析不了（空串）。 */
+export function identityText(identity: NodeIdentity | ""): string {
+  if (identity === "") return "配置无法解析";
   return identity === "formal" ? "正式节点" : "凭据节点";
 }
 

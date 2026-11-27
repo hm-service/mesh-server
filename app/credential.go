@@ -26,24 +26,37 @@ type credentialIssuer struct {
 // credentialCLITimeout 是单次 cli 调用的上限。签发要等种子生成密钥，留够余量。
 const credentialCLITimeout = 15 * time.Second
 
-// credentialCLIOutputLimit 是单次 cli 输出的上限：答案只有几百字节，超出就是
-// 二进制不对，没有理由把它整个读进内存。
+// credentialCLIOutputLimit 是单次 cli 每条输出流的上限：答案只有几百字节，
+// 超出就是二进制不对，没有理由把它整个读进内存，也没有理由只限 stdout——
+// stderr 会跟着错误信息进日志。
 const credentialCLIOutputLimit = 64 << 10
 
-// boundedBuffer 只留前 limit 字节，其余丢弃；返回值仍报完整长度，子进程不会
-// 因为短写而报错。
+// credentialCLIPipeWait 是主进程结束（或被杀）之后等待管道关闭的上限。继承了
+// 这两条管道的子进程可以让 Wait 一直不返回；没有这个上限，单次签发的总时限就
+// 只约束了进程本身，不约束管道与清理。
+const credentialCLIPipeWait = 2 * time.Second
+
+// boundedBuffer 只留前 limit 字节，其余丢弃并记下截断；返回值仍报完整长度，
+// 子进程不会因为短写而报错。截断必须让调用方看见：一份被剪短的输出与一段真
+// 的短回答是两件事。
 type boundedBuffer struct {
-	buf   bytes.Buffer
-	limit int
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - b.buf.Len(); room > 0 {
-		if len(p) > room {
-			b.buf.Write(p[:room])
-		} else {
-			b.buf.Write(p)
+	room := b.limit - b.buf.Len()
+	switch {
+	case room <= 0:
+		if len(p) > 0 {
+			b.truncated = true
 		}
+	case len(p) > room:
+		b.buf.Write(p[:room])
+		b.truncated = true
+	default:
+		b.buf.Write(p)
 	}
 	return len(p), nil
 }
@@ -84,21 +97,32 @@ func (c *credentialIssuer) revoke(ctx context.Context, id string) error {
 }
 
 // run 执行一次 cli 调用并返回 stdout。错误里带 stderr，但不带参数，
-// 免得命令行上的密钥被写进日志。
+// 免得命令行上的密钥被写进日志。两条输出流共用一份预算，截断状态随错误一起
+// 报出来；进程与管道都有时限，失败不会把一次签发拖成没有上限的等待。
 func (c *credentialIssuer) run(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, credentialCLITimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.cliPath, append([]string{"-p", c.rpcAddr}, args...)...)
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
 	stdout := &boundedBuffer{limit: credentialCLIOutputLimit}
+	stderr := &boundedBuffer{limit: credentialCLIOutputLimit}
 	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	// 主进程退出或被杀之后，管道可能还被它拉起的子进程持有：WaitDelay 到点就
+	// 关掉管道，Wait 不会跟着那个子进程的寿命走。
+	cmd.WaitDelay = credentialCLIPipeWait
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+		msg := strings.TrimSpace(string(stderr.Bytes()))
 		if msg == "" {
 			msg = err.Error()
 		}
+		if stderr.truncated {
+			return nil, errors.New(text.Format(text.AppCLIFailedTruncated, msg))
+		}
 		return nil, errors.New(text.Format(text.AppCLIFailed, msg))
+	}
+	if stdout.truncated {
+		// 剪短的 stdout 解析不出答案，也不是「答案不完整」：说清楚它超了预算。
+		return nil, errors.New(text.Format(text.AppCLIOutputTooLarge, credentialCLIOutputLimit))
 	}
 	return stdout.Bytes(), nil
 }
@@ -181,12 +205,13 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 // 谁都不知道的凭据。
 func (a *App) issueLocked(ctx context.Context, device db.Device) (IssuedCredential, error) {
 	// 正式节点用 network_secret 认证，凭据对它没有意义。配置读不出来时按错误停下：
-	// 当成凭据节点会签出一张它用不上的凭据，还把它记成凭据身份。
-	identity, err := identityOf(device.ConfigTOML)
+	// 当成凭据节点会签出一张它用不上的凭据，还把它记成凭据身份。判据与控制台
+	// 显示共用 ConfigFactsOf。
+	facts, err := ConfigFactsOf(device.ConfigTOML)
 	if err != nil {
-		return IssuedCredential{}, fmt.Errorf("%s: %w", text.AppConfigUnreadable, err)
+		return IssuedCredential{}, fmt.Errorf("%s: %w", text.Get(text.AppConfigUnreadable), err)
 	}
-	if identity == IdentityFormal {
+	if facts.Identity == IdentityFormal {
 		return IssuedCredential{}, ErrFormalNode
 	}
 	id, err := newCredentialID()

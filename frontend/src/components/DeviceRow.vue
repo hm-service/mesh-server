@@ -37,6 +37,7 @@ const seen = computed(() =>
       <div class="name-line">
         <span class="nm">{{ device.name }}</span>
         <span v-if="device.identity === 'formal'" class="tag">正式</span>
+        <span v-else-if="device.identity === ''" class="tag">配置错误</span>
       </div>
       <span class="sub">{{ device.hostname || device.deviceId || "未注册" }}</span>
     </div>

@@ -3,6 +3,9 @@ package app
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -66,6 +69,10 @@ func TestValidTokenRequiresSixtyFourLowercaseHex(t *testing.T) {
 	if !ValidToken(good) {
 		t.Fatalf("%q was rejected", good)
 	}
+	// 字符集边界：9 与 f 是合法域的两端，仍属十六进制。
+	if edge := strings.Repeat("9", TokenLength/2) + strings.Repeat("f", TokenLength/2); !ValidToken(edge) {
+		t.Fatalf("%q was rejected", edge)
+	}
 	bad := []string{
 		"",
 		strings.Repeat("a", TokenLength-1),
@@ -73,6 +80,10 @@ func TestValidTokenRequiresSixtyFourLowercaseHex(t *testing.T) {
 		"etk_" + strings.Repeat("a", TokenLength-4),
 		strings.Repeat("A", TokenLength),
 		strings.Repeat("a", TokenLength-1) + "-",
+		// 注释与文档说的是十六进制：g 与 z 在 a-z 里但不在 0-9a-f 里。
+		strings.Repeat("a", TokenLength-1) + "g",
+		"g" + strings.Repeat("a", TokenLength-1),
+		strings.Repeat("a", TokenLength-1) + "z",
 	}
 	for _, token := range bad {
 		if ValidToken(token) {
@@ -179,6 +190,172 @@ func archive(t *testing.T, count int) []byte {
 		t.Fatalf("zstd close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// digest is the full sha256 a manifest lists for one file.
+func digest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// tarPackage packs entries in the order given. A map would do for most cases,
+// but the duplicate-name case needs the same member twice.
+type tarEntry struct {
+	name string
+	body []byte
+}
+
+func tarPackage(t *testing.T, entries ...tarEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	for _, entry := range entries {
+		hdr := &tar.Header{Name: entry.name, Mode: 0o644, Size: int64(len(entry.body))}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header %s: %v", entry.name, err)
+		}
+		if _, err := tw.Write(entry.body); err != nil {
+			t.Fatalf("tar body %s: %v", entry.name, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// manifestText is one version.json body. An empty signature leaves the field out,
+// the way a package built without -manifest is.
+func manifestText(t *testing.T, version string, files map[string]string, signature string) []byte {
+	t.Helper()
+	doc := map[string]any{
+		"version":  version,
+		"slot":     "client",
+		"platform": "windows/amd64",
+		"files":    files,
+	}
+	if signature != "" {
+		doc["signature"] = signature
+	}
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal version.json: %v", err)
+	}
+	return body
+}
+
+// TestReadPackageManifestVerifiesTheFileSet pins the publish preflight: the
+// archive and its manifest must describe the same file set. Reading only the
+// manifest would accept a package the launcher refuses to install, and that
+// failure would only show up on every device.
+func TestReadPackageManifestVerifiesTheFileSet(t *testing.T) {
+	client := []byte("client build")
+	kernel := []byte("core")
+	files := map[string]string{
+		"mesh-client.exe":   digest(client),
+		"easytier-core.exe": digest(kernel),
+	}
+	listed := tarEntry{"version.json", manifestText(t, "2026.11.28-1", files, strings.Repeat("ab", 64))}
+
+	// 正常包：清单与归档同一个集合，签名原样带出来。
+	good := tarPackage(t,
+		tarEntry{"mesh-client.exe", client},
+		tarEntry{"easytier-core.exe", kernel},
+		listed,
+	)
+	manifest, err := readPackageManifest(bytes.NewReader(good))
+	if err != nil {
+		t.Fatalf("a matching package was rejected: %v", err)
+	}
+	if manifest.Version != "2026.11.28-1" || manifest.Signature != strings.Repeat("ab", 64) {
+		t.Fatalf("manifest = %+v, want the version and signature from the package", manifest)
+	}
+
+	cases := []struct {
+		name string
+		pkg  []byte
+		want string
+	}{
+		{
+			name: "listed file missing",
+			pkg: tarPackage(t,
+				tarEntry{"mesh-client.exe", client},
+				listed,
+			),
+			want: "缺少清单列出的 easytier-core.exe",
+		},
+		{
+			name: "digest does not match",
+			pkg: tarPackage(t,
+				tarEntry{"mesh-client.exe", []byte("evil")},
+				tarEntry{"easytier-core.exe", kernel},
+				listed,
+			),
+			want: "mesh-client.exe 的摘要与清单不符",
+		},
+		{
+			name: "file the manifest does not list",
+			pkg: tarPackage(t,
+				tarEntry{"mesh-client.exe", client},
+				tarEntry{"easytier-core.exe", kernel},
+				tarEntry{"wintun.dll", []byte("dll")},
+				listed,
+			),
+			want: "多出清单外的文件 wintun.dll",
+		},
+		{
+			name: "unnormalised member name",
+			pkg: tarPackage(t,
+				tarEntry{"./mesh-client.exe", client},
+				tarEntry{"easytier-core.exe", kernel},
+				listed,
+			),
+			want: "多出清单外的文件 ./mesh-client.exe",
+		},
+		{
+			name: "member carried twice",
+			pkg: tarPackage(t,
+				tarEntry{"mesh-client.exe", client},
+				tarEntry{"mesh-client.exe", client},
+				tarEntry{"easytier-core.exe", kernel},
+				listed,
+			),
+			want: "包内 mesh-client.exe 出现多次",
+		},
+		{
+			name: "manifest carried twice",
+			pkg: tarPackage(t,
+				tarEntry{"mesh-client.exe", client},
+				tarEntry{"easytier-core.exe", kernel},
+				listed,
+				listed,
+			),
+			want: "包内 version.json 出现多次",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := readPackageManifest(bytes.NewReader(tc.pkg))
+			if err == nil {
+				t.Fatalf("%s: accepted", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+
+	// 截断的归档同样在这里失败：扫到结尾才能证明归档完整。
+	if _, err := readPackageManifest(bytes.NewReader(good[:len(good)/2])); err == nil {
+		t.Fatal("a truncated package was accepted")
+	}
 }
 
 // TestPackageWorkIsBounded pins the budgets a package without a manifest cannot

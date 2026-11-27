@@ -229,8 +229,8 @@ func TestOpenRejectsLegacyDatabaseWithoutDroppingItsRemnants(t *testing.T) {
 		t.Fatalf("inspect device columns: %v", err)
 	}
 	found := false
-	for _, name := range columns {
-		if name == "legacy_id" {
+	for _, column := range columns {
+		if column.Name == "legacy_id" {
 			found = true
 		}
 	}

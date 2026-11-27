@@ -7,7 +7,10 @@ package signing
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
+	"sort"
+	"strings"
 )
 
 // PublicKeyHex is the Ed25519 public key of the offline release key. The client
@@ -42,6 +45,37 @@ var key = func() ed25519.PublicKey {
 // them says whether the bytes behind the URL are ours.
 func String(slot, platform, version, sha256 string) string {
 	return "MESH3\n" + slot + "\n" + platform + "\n" + version + "\n" + sha256
+}
+
+// ManifestString is the exact text a manifest signature covers. MESH4 rather
+// than MESH3: a manifest signature must never verify as a package signature,
+// and the two sign different things — one the bytes of a tar.zst, the other
+// the per-file digests inside it.
+func ManifestString(slot, platform, version, filesDigest string) string {
+	return "MESH4\n" + slot + "\n" + platform + "\n" + version + "\n" + filesDigest
+}
+
+// FilesDigest is the summary a manifest signature covers: one
+// "<name>\t<sha256>\n" line per file, sorted by name, then sha256 over the
+// concatenation.
+//
+// The client computes the same bytes (mesh_install::signing::files_digest). A
+// disagreement there is invisible until every device refuses to start, so the
+// shape is kept deliberately dull: no JSON re-encoding, no escapes, no floats.
+func FilesDigest(files map[string]string) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	hasher := sha256.New()
+	for _, name := range names {
+		hasher.Write([]byte(name))
+		hasher.Write([]byte{'\t'})
+		hasher.Write([]byte(strings.ToLower(files[name])))
+		hasher.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 // DefaultPublicKey is the key compiled into this binary.

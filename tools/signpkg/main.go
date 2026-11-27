@@ -14,6 +14,14 @@
 //
 // creates a key pair, writes the private half in PKCS#8 PEM and prints the
 // public half, which belongs in signing.PublicKeyHex and in the client.
+//
+//	signpkg --key build/release.key --manifest dist/bin/version.json \
+//	        --slot client --platform windows/amd64
+//
+// signs the manifest in place: it checks that the file declares the slot and
+// platform given on the command line, signs its file set and writes the
+// signature back. This runs before the package is built, since the manifest
+// signs its own content and not the archive around it.
 package main
 
 import (
@@ -21,6 +29,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -40,6 +49,7 @@ func main() {
 		platform = flag.String("platform", "", "GOOS/GOARCH, such as windows/amd64")
 		version  = flag.String("version", "", "version label the package declares")
 		sum      = flag.String("sha256", "", "full sha256 of the package, 64 hex characters")
+		manifest = flag.String("manifest", "", "sign this version.json in place instead of a package")
 	)
 	flag.Parse()
 	if *keyPath == "" {
@@ -47,6 +57,13 @@ func main() {
 	}
 	if *newKey {
 		createKey(*keyPath, *force)
+		return
+	}
+	if *manifest != "" {
+		if *slot == "" || *platform == "" {
+			fail("-manifest needs -slot and -platform")
+		}
+		signManifest(*manifest, *keyPath, *slot, *platform)
 		return
 	}
 	if *slot != signing.SlotClient && *slot != signing.SlotLauncher {
@@ -65,6 +82,49 @@ func main() {
 	private := readKey(*keyPath)
 	message := signing.String(*slot, *platform, *version, digest)
 	fmt.Println(hex.EncodeToString(ed25519.Sign(private, []byte(message))))
+}
+
+// signManifest signs the manifest at path and rewrites it with the signature.
+//
+// The slot and platform are checked against the file rather than taken from the
+// flags alone: a manifest signed for the wrong slot verifies fine and then gets
+// refused by a launcher on the other side, which reads as "the install root is
+// corrupt" instead of "the build script passed the wrong argument".
+func signManifest(path, keyPath, slot, platform string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fail(err.Error())
+	}
+	var doc struct {
+		Version   string            `json:"version"`
+		Slot      string            `json:"slot"`
+		Platform  string            `json:"platform"`
+		Files     map[string]string `json:"files"`
+		Signature string            `json:"signature"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		fail(path + ": " + err.Error())
+	}
+	if doc.Slot != slot || doc.Platform != platform {
+		fail(fmt.Sprintf(
+			"%s declares slot %q on %q, but -slot %q -platform %q was given",
+			path, doc.Slot, doc.Platform, slot, platform,
+		))
+	}
+	if doc.Version == "" || doc.Files == nil {
+		fail(path + ": version and files are required")
+	}
+	private := readKey(keyPath)
+	message := signing.ManifestString(doc.Slot, doc.Platform, doc.Version, signing.FilesDigest(doc.Files))
+	doc.Signature = hex.EncodeToString(ed25519.Sign(private, []byte(message)))
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		fail(err.Error())
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		fail(err.Error())
+	}
+	fmt.Fprintln(os.Stderr, path+" 已签名："+doc.Slot+" "+platform+" "+doc.Version)
 }
 
 // createKey writes a fresh PKCS#8 PEM private key and prints the public half.
@@ -105,7 +165,7 @@ func createKey(path string, force bool) {
 		fail(err.Error())
 	}
 	fmt.Println(hex.EncodeToString(public))
-	fmt.Fprintln(os.Stderr, "写入 "+path+"；这个公钥要同时改 server/signing/signing.go 与 client/crates/remote/src/signing.rs")
+	fmt.Fprintln(os.Stderr, "写入 "+path+"；这个公钥要同时改 server/signing/signing.go 与 client/crates/install/src/signing.rs")
 }
 
 // readKey loads the Ed25519 private key at path.

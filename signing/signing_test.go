@@ -18,6 +18,38 @@ func TestStringPinsTheFormat(t *testing.T) {
 	}
 }
 
+const manifestDigest = "413197c7129625e41d736404c8f37d3d277e269a5632db7b9165727b3f5c96a5"
+
+func TestManifestStringPinsTheFormat(t *testing.T) {
+	got := ManifestString("client", "windows/amd64", "2026.11.27-110", manifestDigest)
+	want := "MESH4\nclient\nwindows/amd64\n2026.11.27-110\n" + manifestDigest
+	if got != want {
+		t.Fatalf("ManifestString = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "MESH3") {
+		t.Fatal("a manifest signature must not share the package prefix")
+	}
+}
+
+// TestFilesDigestMatchesTheClient pins the exact bytes the Rust side hashes
+// (mesh_install::signing::files_digest). If the two ever disagree, every device
+// refuses to start at once and the failure reads as a corrupt install root
+// rather than as a format mismatch.
+func TestFilesDigestMatchesTheClient(t *testing.T) {
+	files := map[string]string{
+		"wintun.dll":      "cd",
+		"mesh-client.exe": "ab",
+	}
+	if got := FilesDigest(files); got != manifestDigest {
+		t.Fatalf("FilesDigest = %s, want %s", got, manifestDigest)
+	}
+	// 摘要大小写归一，与客户端一致。
+	files["wintun.dll"] = "CD"
+	if got := FilesDigest(files); got != manifestDigest {
+		t.Fatalf("uppercase digest changed the summary: %s", got)
+	}
+}
+
 // newKey returns a key pair and a signature over the canonical fields.
 func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey, string) {
 	t.Helper()

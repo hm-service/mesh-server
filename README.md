@@ -43,7 +43,7 @@ go run ./tools/signpkg -key ../build/release.key -slot client \
     -platform windows/amd64 -version 2026.11.27-103 -sha256 <64 位摘要>
 ```
 
-`-newkey` 打印的公钥要同时写进 `signing.PublicKeyHex` 与客户端 `crates/remote/src/signing.rs`；两处不一致时客户端会拒装而非报错。私钥不进仓库、不随镜像分发。`build/publish.ps1` 会自动签名并提交 `appSignature`。
+`-newkey` 打印的公钥要同时写进 `signing.PublicKeyHex` 与客户端 `crates/install/src/signing.rs`；两处不一致时客户端与启动器会拒装而非报错。私钥不进仓库、不随镜像分发。`build/publish.ps1` 会自动签包并提交 `appSignature`；清单签名由 `build/app.ps1` 在打包前完成，不经过控制面。
 
 ## 控制台
 

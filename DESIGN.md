@@ -160,8 +160,9 @@ CREATE INDEX credential_device ON credential (device_public_id);
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
 | `RELEASE_FETCH_ALLOW` | 否 | 空（只允许公网） | 逗号分隔的 IP 或 CIDR；发布下载允许连接这些内网地址 |
-| `ET_CLI` | 否 | 空 | `easytier-cli` 路径；为空表示这台控制面不签发也不撤销凭据，两条凭据路由与「删除还有凭据记录的设备」都返回 409 `credential_channel_unconfigured` |
-| `ET_RPC_ADDR` | `ET_CLI` 非空时必填 | — | 种子 management RPC 的地址（宿主上的转发口）；`ET_CLI` 非空而它为空时拒绝启动 |
+| `ET_CLI` | 否 | 空 | `easytier-cli` 路径；为空表示这台控制面不签发也不撤销凭据，两条凭据路由与「删除还有凭据记录的设备」都返回 409 `credential_channel_unconfigured`。非空时必须给出 `ET_RPC_ADDR` 或 `ET_RPC_SOCKET` |
+| `ET_RPC_ADDR` | 与 `ET_RPC_SOCKET` 二选一 | — | 种子 management RPC 的 `ip:port`；与 `ET_RPC_SOCKET` 同时给出时拒绝启动 |
+| `ET_RPC_SOCKET` | 与 `ET_RPC_ADDR` 二选一 | — | 宿主挂进来的 unix socket 路径。控制面启动时把它桥成 `127.0.0.1` 的临时端口，因为 `easytier-cli -p` 只接受 `ip:port`；路径不存在或不是 socket 时拒绝启动 |
 | `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |
 | `MAX_API_CONCURRENCY` | 否 | 128 | 管理面与设备面各自的上限 |
 | `MAX_STATIC_CONCURRENCY` | 否 | 64 | 静态资源并发上限 |

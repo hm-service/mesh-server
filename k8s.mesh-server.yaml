@@ -15,7 +15,7 @@ data:
     MAX_API_CONCURRENCY: "128"
     MAX_STATIC_CONCURRENCY: "64"
     # 发布下载默认只允许公网地址；包目录在 mesh 上的 10.126.126.1，单独放行。
-    RELEASE_FETCH_ALLOW: "10.126.126.1/32"
+    RELEASE_FETCH_ALLOW: "10.8.0.0/24,10.126.126.1/32"
     # 签发凭据：easytier-cli 只认 ip:port，所以控制面把宿主挂进来的 unix socket
     # 在进程内桥出一个回环端口。socket 由宿主上的 mesh-rpc.socket 创建，mesh 上的
     # 其它节点没有地址可连，同机也要有该文件的读权限。

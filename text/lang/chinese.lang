@@ -30,6 +30,7 @@ app.text.slot_url_too_long = {0}_url 最长 {1} 字符
 app.text.slot_url_invalid = {0}_url 必须是 http(s) 地址
 app.text.release_signature_missing = {0} 槽位缺少发布签名
 app.text.release_signature_invalid = {0} 槽位的发布签名与下载到的包不符
+app.text.release_signature_malformed = {0} 槽位的发布签名不是 128 位十六进制
 
 # app：错误文案。
 app.error.credential_parse_failed = 解析签发结果失败

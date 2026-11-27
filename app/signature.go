@@ -14,7 +14,7 @@ func checkReleaseSignatureShape(slot, signature string) error {
 		return invalid(text.Format(text.AppReleaseSignatureMissing, slot))
 	}
 	if !signing.ValidShape(signature) {
-		return invalid(text.Format(text.AppReleaseSignatureInvalid, slot))
+		return invalid(text.Format(text.AppReleaseSignatureMalformed, slot))
 	}
 	return nil
 }

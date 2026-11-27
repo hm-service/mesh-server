@@ -31,6 +31,7 @@ app.text.slot_url_too_long = {0}_url is at most {1} characters
 app.text.slot_url_invalid = {0}_url must be an http(s) URL
 app.text.release_signature_missing = the {0} slot has no release signature
 app.text.release_signature_invalid = the {0} slot's release signature does not match the downloaded package
+app.text.release_signature_malformed = the {0} slot's release signature is not 128 hex characters
 
 # app: error text.
 app.error.credential_parse_failed = failed to parse the credential response

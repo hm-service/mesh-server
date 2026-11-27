@@ -2,7 +2,7 @@
 
 本文只写控制面的**状态空间**：有哪些状态、谁能进入、允许的迁移、跨状态必须成立的不变量。线格式与字段不在这里重复，见 [契约/device-api.md](../../docs/contract/device-api.md)（设备面 HTTP、请求签名、校验顺序、凭据签发）、[契约/admin-api.md](../../docs/contract/admin-api.md)（管理面、设备级覆盖）与 [契约/updates.md](../../docs/contract/updates.md)（槽位、版本比较、下发条件）。
 
-不覆盖：设备面注册与心跳入口的内部写法、默认模板接口。
+本文覆盖六个模型：设备生命周期、凭据生命周期、发布流程、请求验签判定顺序、设备面入口的内部推进、默认模板的存取。不覆盖：线格式与字段（见上述契约），以及管理面板前端的呈现。
 
 ## 1. 设备生命周期
 
@@ -181,3 +181,83 @@ flowchart TD
 6. `revoked` 只是内存墓碑的投影，不持久化；客户端不能把它当成必然出现的终态。
 
 依据：`server/api/device_api.go` 的 `deviceAuth`、`writeUnauthorizedDevice`、`registerSignatureValid`、`handleHeartbeat`；`server/core/signing.go` 的 `SigningString`、`CheckTimestamp`、`VerifySignature`、`ClockSkew`；`server/core/device.go` 的 `DeviceRequestFields.Validate`；`server/core/nonce.go` 的 `NonceCache` 与 `Claim`、`NonceCacheEntries`；`server/app/heartbeat.go` 的 `Heartbeat`；`server/app/device.go` 的 `AcceptRegistration`；`server/db/device.go` 的 `Observe`。
+## 5. 设备面入口的内部推进
+
+认证通过之后，注册与心跳各走一个 `app` 入口，结构相同：取设备锁 → 一次条件写 → 以写出的那一行为快照 → 规划响应 → 凭据步骤。`api` 只解码、认证、映射错误与编码，不写设备、不切快照。
+
+```mermaid
+flowchart TD
+  A["api：解码 + deviceAuth（值域、设备存在、时间窗、验签、nonce）"] --> B{"哪个入口"}
+  B -- 心跳 --> C["app.Heartbeat：取设备锁"]
+  B -- 已绑定槽位的注册 --> D["app.AcceptRegistration：取设备锁"]
+  C --> E["db.Observe：带 device_id 的条件写，一条 UPDATE 同时写最近在线与观测字段"]
+  D --> F["DB.Update：同一次写入里复核绑定、核销令牌、比对公钥、刷新最近在线"]
+  E --> G{"条件写失败？"}
+  F --> G
+  G -- 是 --> H["换绑或删除插进来了：ErrIdentityChanged 或 ErrNotFound"]
+  G -- 否 --> I["写出的那一行就是快照"]
+  I --> J["按快照规划响应：配置、appUpdate、launcher"]
+  J --> K["凭据步骤：确认切换或按需签发，判据取同一行快照"]
+  K --> L["编码：四项全空 204，否则 200"]
+  H --> M["401：墓碑命中回 revoked，否则 unauthorized"]
+```
+
+| 入口 | 条件写 | 冲突时的回答 |
+| --- | --- | --- |
+| 心跳 `app.Heartbeat` | `db.Observe`：`WHERE public_id = ? AND device_id = ?`，一条 `UPDATE` 同时写最近在线与三个观测字段 | 影响 0 行 → `observeMiss`：行还在但身份变了是 `ErrIdentityChanged`，行没了是 `ErrNotFound`，两者都回 401 |
+| 已绑定槽位的注册 `app.AcceptRegistration` | `DB.Update`：锁内复核 `device_id`、核销令牌、比对公钥、刷新最近在线 | 绑定变了 → `ErrIdentityChanged` → 401；令牌不对 → `ErrTokenInvalid` → 401；公钥不符 → `ErrPubkeyMismatch` → 409 |
+
+槽位尚未绑定时走第三条路径 `app.BindDevice`：按令牌找到槽位、取同一把设备锁、先撤销槽位名下的旧凭据、再一次 `DB.Update` 写入新身份并清空令牌，写出的那一行就是返回给客户端的配置。撤销失败则不换绑，令牌保留以便重试。
+
+心跳的响应四项只由快照决定：配置（上报 hash 与快照里的 `config_hash` 不同才带）、`appUpdate`（签名非空且版本可证明更旧）、`launcher`（摘要与签名都在就每轮都带）、凭据（凭据步骤的结果）。凭据步骤失败只记日志、不下发，心跳照常回答。
+
+不变量：
+
+1. 认证只读：设备行的写入只发生在入口的设备锁内。
+2. 每次心跳只写一次设备行：最近在线与观测字段在同一条 `UPDATE` 里。
+3. 响应、更新与凭据决定都来自同一次写入产生的那一行，不存在「观察到 A、回答用 B」。
+4. 换绑与删除要么整体落在请求之前或之后；落在中间时这次请求什么都不写，回 401。
+5. 令牌在核验的同一次写入里清空：令牌在这期间被轮换或消费，这次请求就不放行配置。
+6. 凭据步骤失败不阻塞心跳：只记日志，下一轮再试。
+7. `api` 层不写设备、不切快照；它只解码、认证、映射错误与编码。
+
+依据：`server/app/heartbeat.go` 的 `Heartbeat`、`HeartbeatObservation`、`HeartbeatResult`、`launcherOffer`；`server/app/device.go` 的 `AcceptRegistration`、`BoundRegistration`、`BindDevice`、`DeviceAuth`、`ErrIdentityChanged`、`ErrPubkeyMismatch`；`server/db/device.go` 的 `Observe`、`observeMiss`；`server/api/device_api.go` 的 `handleHeartbeat`、`handleRegister`、`writeUnauthorizedDevice`；`server/app/locks.go` 的 `keyedLock`。
+
+## 6. 默认模板的存取
+
+模板不是发布工件：它有独立的路由与存储，保存与发布没有共同提交点。唯一事实来源是 `DATA_DIR/peer.default.toml`，内置模板只是回退。
+
+```mermaid
+flowchart TD
+  A["GET /api/admin/template"] --> B["app.TemplateTOML：读 DATA_DIR/peer.default.toml"]
+  B --> C{"文件状态"}
+  C -- 不存在 --> D["内置模板"]
+  C -- 全为空白 --> D
+  C -- 读取出错 --> E["500：不回退，避免把并非存储的内容显示成模板"]
+  C -- 有内容 --> F["文件原文"]
+  G["PUT /api/admin/template"] --> H{"内容全为空白？"}
+  H -- 是 --> I["删掉文件（不存在也算成功）"]
+  I --> D
+  H -- 否 --> J["stageFile：临时文件 + rename，权限 0600"]
+  J --> F
+  D --> K["控制台拿到的永远是接下来新建设备用到的那一份"]
+  F --> K
+```
+
+| 模板状态 | 判定 | 新建或改写设备拿到的 |
+| --- | --- | --- |
+| 内置 | 文件不存在，或内容全为空白 | 编进二进制的内置模板 |
+| 自定义 | 文件存在且非空白 | 文件原文，占位符原样保留 |
+| 读取失败 | 文件存在但读不出来（权限、IO） | 不提供：请求回 500，不回退 |
+
+不变量：
+
+1. 文件是唯一事实来源；内置模板只在文件缺失或全为空白时使用。
+2. 空白等于「没有自定义模板」：删文件与「文件缺失」是同一件事，不存在「空模板」这种状态。
+3. 读取失败不回退：宁可 500，也不让控制台显示一份并非存储的内容——否则一次保存就会覆盖原文件。
+4. 保存是原子的：临时文件加改名，权限 `0600`；失败不改动现有文件。
+5. 模板只在新建或改写设备配置时被复制一次；改模板不影响已建成的设备。
+6. 模板不是发布工件：发布路由不接收、不保存也不返回它。
+7. 占位符由控制台填充，控制面只存原文，不解释、不替换。
+
+依据：`server/app/settings.go` 的 `TemplateTOML`、`SetTemplate`；`server/app/app.go` 的 `templatePath`；`server/app/atomic.go` 的 `stageFile`；`server/api/devices.go` 的 `handleTemplate`、`handleSaveTemplate`、`templateResponse`、`saveTemplateRequest`；`server/builtin/builtin.go` 的 `DefaultTemplate`；`server/api/api.go` 的 `GET` 与 `PUT /api/admin/template` 路由。

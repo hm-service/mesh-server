@@ -181,7 +181,7 @@ ET 自己的 `credential_file` 里存了每张凭据的私钥，它是全网凭�
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |
 | 输入 | JSON 请求体 1MiB 上限，发布的更新包 200MB 上限，设备数 200 上限，`platform` 的 GOOS/GOARCH 白名单 |
 | 响应头 | `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options`、严格 `Content-Security-Policy` |
-| 并发 | `/api/auth`、管理面 `/api/admin/*`、设备面 `/api/v1/*`、静态资源、`/readyz` 各自独立信号量（管理面与设备面互不挤占）；Argon2id 并发上限 4 |
+| 并发 | `/api/auth`、管理面 `/api/admin/*`、注册 `/api/v1/register`、心跳 `/api/v1/heartbeat`、静态资源、`/readyz` 各自独立信号量（注册与心跳也互不挤占：注册不带身份、能占着槽等满请求体超时，共用一道闸时几条静默注册就能让全网心跳 503）；Argon2id 并发上限 4 |
 | 超时 | 连接读请求头 10 秒、读整个请求 15 秒、空闲 60 秒；发布包下载 60 秒 |
 
 ## 9. 环境变量与 Secrets
@@ -200,7 +200,8 @@ ET 自己的 `credential_file` 里存了每张凭据的私钥，它是全网凭�
 | `ET_RPC_ADDR` | 与 `ET_RPC_SOCKET` 二选一 | — | 种子 management RPC 的 `ip:port`；与 `ET_RPC_SOCKET` 同时给出时拒绝启动 |
 | `ET_RPC_SOCKET` | 与 `ET_RPC_ADDR` 二选一 | — | 宿主挂进来的 unix socket 路径。控制面启动时把它桥成 `127.0.0.1` 的临时端口，因为 `easytier-cli -p` 只接受 `ip:port`；路径不存在或不是 socket 时拒绝启动 |
 | `MAX_AUTH_CONCURRENCY` | 否 | 32 | `/api/auth` 并发上限 |
-| `MAX_API_CONCURRENCY` | 否 | 128 | 管理面与设备面各自的上限 |
+| `MAX_API_CONCURRENCY` | 否 | 128 | 管理面与注册各自的上限 |
+| `MAX_HEARTBEAT_CONCURRENCY` | 否 | 255 | 心跳并发上限。比别的闸宽：全网每台设备每 30 秒一次，不能与注册抢槽 |
 | `MAX_STATIC_CONCURRENCY` | 否 | 64 | 静态资源并发上限 |
 | `AUTH_TOKEN` | 是 | — | 管理台唯一凭证，`^[A-Za-z0-9_]{16,128}$`；启动时哈希，明文读完即从环境表移除 |
 | `SESSION_SIGNING_KEY` | 否 | 随机 | Bearer 的 HMAC 密钥，`^[A-Za-z0-9_]{32,128}$`；轮换它等于吊销全部已发凭证 |

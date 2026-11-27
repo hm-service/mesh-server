@@ -35,10 +35,14 @@ type Options struct {
 	TrustedProxies []netip.Prefix
 	// Concurrency gates; zero means the documented default. The admin surface
 	// and the device surface each get their own APIConcurrency-sized gate, so a
-	// flood of device requests cannot starve the console.
-	MaxAuthConcurrency   int
-	MaxAPIConcurrency    int
-	MaxStaticConcurrency int
+	// flood of device requests cannot starve the console. Heartbeats get a third,
+	// much wider gate of their own: registration is unauthenticated and can hold
+	// its slot for the whole body-read timeout, while every configured device
+	// needs a heartbeat every 30 seconds.
+	MaxAuthConcurrency      int
+	MaxAPIConcurrency       int
+	MaxHeartbeatConcurrency int
+	MaxStaticConcurrency    int
 	// Sleep is how a login waits out the minimum round trip; tests replace it
 	// to keep the test suite fast. Nil sleeps for real.
 	Sleep func(time.Duration)
@@ -47,21 +51,22 @@ type Options struct {
 // Server holds the HTTP state: the token hash, the signing key and the nonce
 // replay cache.
 type Server struct {
-	app         *app.App
-	logger      *slog.Logger
-	static      fs.FS
-	index       []byte
-	readyzToken string
-	proxies     []netip.Prefix
-	authGate    *httpx.Gate
-	apiGate     *httpx.Gate
-	deviceGate  *httpx.Gate
-	staticGate  *httpx.Gate
-	readyzGate  *httpx.Gate
-	tokenHash   *core.TokenHash
-	sessionKey  []byte
-	nonces      *core.NonceCache
-	sleep       func(time.Duration)
+	app           *app.App
+	logger        *slog.Logger
+	static        fs.FS
+	index         []byte
+	readyzToken   string
+	proxies       []netip.Prefix
+	authGate      *httpx.Gate
+	apiGate       *httpx.Gate
+	registerGate  *httpx.Gate
+	heartbeatGate *httpx.Gate
+	staticGate    *httpx.Gate
+	readyzGate    *httpx.Gate
+	tokenHash     *core.TokenHash
+	sessionKey    []byte
+	nonces        *core.NonceCache
+	sleep         func(time.Duration)
 }
 
 // New returns a Server with fresh session and nonce state.
@@ -72,20 +77,21 @@ func New(opts Options) *Server {
 	}
 	apiSlots := orDefault(opts.MaxAPIConcurrency, 128)
 	s := &Server{
-		app:         opts.App,
-		logger:      logger,
-		static:      opts.Static,
-		readyzToken: opts.ReadyzToken,
-		proxies:     opts.TrustedProxies,
-		authGate:    httpx.NewGate(orDefault(opts.MaxAuthConcurrency, 32)),
-		apiGate:     httpx.NewGate(apiSlots),
-		deviceGate:  httpx.NewGate(apiSlots),
-		staticGate:  httpx.NewGate(orDefault(opts.MaxStaticConcurrency, 64)),
-		readyzGate:  httpx.NewGate(4),
-		tokenHash:   opts.TokenHash,
-		sessionKey:  opts.SessionKey,
-		nonces:      core.NewNonceCache(core.ClockSkew),
-		sleep:       opts.Sleep,
+		app:           opts.App,
+		logger:        logger,
+		static:        opts.Static,
+		readyzToken:   opts.ReadyzToken,
+		proxies:       opts.TrustedProxies,
+		authGate:      httpx.NewGate(orDefault(opts.MaxAuthConcurrency, 32)),
+		apiGate:       httpx.NewGate(apiSlots),
+		registerGate:  httpx.NewGate(apiSlots),
+		heartbeatGate: httpx.NewGate(orDefault(opts.MaxHeartbeatConcurrency, 255)),
+		staticGate:    httpx.NewGate(orDefault(opts.MaxStaticConcurrency, 64)),
+		readyzGate:    httpx.NewGate(4),
+		tokenHash:     opts.TokenHash,
+		sessionKey:    opts.SessionKey,
+		nonces:        core.NewNonceCache(core.ClockSkew),
+		sleep:         opts.Sleep,
 	}
 	if s.sleep == nil {
 		s.sleep = time.Sleep
@@ -202,8 +208,12 @@ func (s *Server) HandlerFor(surface Surface) http.Handler {
 	admin("DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
 	// Device-facing public API. It shares nothing with the admin surface: its own
 	// gate, no bearer, and the device key in the request body.
-	device("POST", "/api/v1/register", s.withGate(s.deviceGate, s.handleRegister))
-	device("POST", "/api/v1/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
+	//
+	// 注册与心跳各有一道闸：注册不需要身份、能占着闸等满整个请求体超时，而每台
+	// 已配置的设备每 30 秒都要发一次心跳。共用一道闸时，128 条不送 body 的注册就
+	// 能让全网心跳 503。
+	device("POST", "/api/v1/register", s.withGate(s.registerGate, s.handleRegister))
+	device("POST", "/api/v1/heartbeat", s.withGate(s.heartbeatGate, s.handleHeartbeat))
 	// Console pages and their assets.
 	admin("GET", "/admin", s.withGate(s.staticGate, s.handleIndex))
 	admin("GET", "/admin/{path...}", s.withGate(s.staticGate, s.handleAsset))

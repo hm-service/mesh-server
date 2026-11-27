@@ -44,6 +44,17 @@ const (
 	manifestName = "version.json"
 	// maxManifestBytes bounds version.json: it lists one digest per file.
 	maxManifestBytes = 64 << 10
+	// maxUnpackedBytes bounds what one package may declare after decompression.
+	// 客户端包解出来约 11 MiB；512 MiB 足够宽，也不至于让一个 200 MB 的压缩包
+	// 要求几个 GB 的解压输出。
+	maxUnpackedBytes = 512 << 20
+	// maxPackageEntries bounds the archive members. A client bin/ has six.
+	maxPackageEntries = 4096
+	// decoderMaxWindow / decoderMaxMemory bound the decompressor itself: the
+	// window decides how much match history it may allocate, independent of how
+	// many bytes it finally produces. 我们的包用 -19 打，窗口只有几 MB。
+	decoderMaxWindow = 32 << 20
+	decoderMaxMemory = 64 << 20
 )
 
 // ValidationError is a rejected admin input carrying the text the page shows.
@@ -448,12 +459,20 @@ type packageManifest struct {
 // rejected here; whether the manifest is legal is signing.ValidateManifest's
 // question, so this function does not judge any field.
 func readPackageManifest(r io.Reader) (packageManifest, error) {
-	zr, err := zstd.NewReader(r)
+	// 预算在解码器上：窗口与内存上限决定一个构造过的包能要多少内存，与它最后
+	// 解出多少字节无关；解压流的字节数与条目数在下面的 tar 循环里累计。
+	zr, err := zstd.NewReader(r,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxWindow(decoderMaxWindow),
+		zstd.WithDecoderMaxMemory(decoderMaxMemory),
+	)
 	if err != nil {
 		return packageManifest{}, fmt.Errorf("%s：%w", text.Get(text.AppDecompressFailed), err)
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
+	entries := 0
+	var unpacked int64
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -461,6 +480,17 @@ func readPackageManifest(r io.Reader) (packageManifest, error) {
 		}
 		if err != nil {
 			return packageManifest{}, fmt.Errorf("%s：%w", text.Get(text.AppPackageReadFailed), err)
+		}
+		// 清单缺失时这里会把整个包扫一遍，所以工作量必须在扫描时就有上限。
+		entries++
+		if entries > maxPackageEntries {
+			return packageManifest{}, errors.New(text.Format(text.AppPackageTooManyEntries, maxPackageEntries))
+		}
+		if hdr.Size > 0 {
+			unpacked += hdr.Size
+			if unpacked > maxUnpackedBytes {
+				return packageManifest{}, errors.New(text.Format(text.AppPackageTooLarge, maxUnpackedBytes))
+			}
 		}
 		if path.Clean(hdr.Name) != manifestName {
 			continue

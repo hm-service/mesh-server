@@ -1,14 +1,20 @@
 package app
 
 import (
+	"archive/tar"
+	"bytes"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
+
 	"mesh-server/db"
+	"mesh-server/text"
 )
 
 // TestStateJSONIsIgnored pins the removal of the JSON import: DATA_DIR/state.json
@@ -144,5 +150,51 @@ func TestDialGuard(t *testing.T) {
 	}
 	if err := allowed("tcp", "10.126.126.2:18080", nil); err == nil {
 		t.Fatal("guard allowed a host outside the configured prefix")
+	}
+}
+
+// archive packs count empty members into a tar.zst, with no manifest at all.
+func archive(t *testing.T, count int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	for i := 0; i < count; i++ {
+		body := []byte("x")
+		hdr := &tar.Header{Name: fmt.Sprintf("file-%d", i), Mode: 0o644, Size: int64(len(body))}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header %d: %v", i, err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatalf("tar body %d: %v", i, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestPackageWorkIsBounded pins the budgets a package without a manifest cannot
+// exceed: scanning the whole archive is the worst case, so the entry count and
+// the declared size both stop it.
+func TestPackageWorkIsBounded(t *testing.T) {
+	// 刚好到上限：不是「条目太多」，而是「没有 version.json」。
+	_, err := readPackageManifest(bytes.NewReader(archive(t, maxPackageEntries)))
+	want := text.Format(text.AppManifestMissing, manifestName)
+	if err == nil || err.Error() != want {
+		t.Fatalf("a package at the entry limit = %v, want %q", err, want)
+	}
+
+	_, err = readPackageManifest(bytes.NewReader(archive(t, maxPackageEntries+1)))
+	want = text.Format(text.AppPackageTooManyEntries, maxPackageEntries)
+	if err == nil || err.Error() != want {
+		t.Fatalf("a package over the entry limit = %v, want %q", err, want)
 	}
 }

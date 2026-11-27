@@ -240,6 +240,47 @@ func TestDeviceGateDoesNotStarveAdmin(t *testing.T) {
 	}
 }
 
+// TestRegisterGateDoesNotStarveHeartbeat pins that registration and heartbeats
+// have separate gates. Registering is unauthenticated and holds its slot until
+// the body-read deadline; a shared gate would let a handful of silent register
+// requests turn every device's heartbeat into 503 busy.
+func TestRegisterGateDoesNotStarveHeartbeat(t *testing.T) {
+	env := testenv.New(t, testenv.WithAPIConcurrency(1))
+
+	body, writer := io.Pipe()
+	defer writer.Close()
+	req, err := http.NewRequest(http.MethodPost, env.Server.URL+"/api/v1/register", body)
+	if err != nil {
+		t.Fatalf("build register request: %v", err)
+	}
+	req.ContentLength = 128
+	sent := make(chan struct{})
+	go func() {
+		defer close(sent)
+		res, err := env.Client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, res.Body)
+			res.Body.Close()
+		}
+	}()
+	// Give the handler time to take its slot and block in ReadBody.
+	time.Sleep(200 * time.Millisecond)
+
+	// 心跳内容不必合法：只要求它不是 503——400/401 都说明请求进了闸门后面，
+	// 没被那条卡住的注册挤掉。
+	res, data := env.Do("POST", "/api/v1/heartbeat", []byte("{}"))
+	if res.StatusCode == http.StatusServiceUnavailable {
+		t.Fatalf("heartbeat got 503 while a register held its slot: %s", data)
+	}
+
+	writer.Close()
+	select {
+	case <-sent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled register request did not end")
+	}
+}
+
 func TestProbes(t *testing.T) {
 	env := testenv.New(t, testenv.WithoutLogin(), testenv.WithReadyzToken("readyz_token_1234"))
 

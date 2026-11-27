@@ -22,6 +22,8 @@ const (
 	AppClientFileUnreadable      = "app.text.client_file_unreadable"
 	AppConfigUnreadable          = "app.text.config_unreadable"
 	AppPackageManifestInvalid    = "app.text.package_manifest_invalid"
+	AppPackageTooLarge           = "app.text.package_too_large"
+	AppPackageTooManyEntries     = "app.text.package_too_many_entries"
 	AppPackageManifestMismatch   = "app.text.package_manifest_mismatch"
 	AppLauncherFileUnreadable    = "app.text.launcher_file_unreadable"
 	AppSlotVersionRequired       = "app.text.slot_version_required"

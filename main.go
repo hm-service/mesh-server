@@ -142,16 +142,17 @@ func run() int {
 	}
 
 	apiServer := api.New(api.Options{
-		App:                  application,
-		Static:               frontendFS(),
-		Logger:               logger,
-		ReadyzToken:          conf.readyzToken,
-		TokenHash:            conf.tokenHash,
-		SessionKey:           conf.sessionKey,
-		TrustedProxies:       conf.trustedProxies,
-		MaxAuthConcurrency:   conf.maxAuth,
-		MaxAPIConcurrency:    conf.maxAPI,
-		MaxStaticConcurrency: conf.maxStatic,
+		App:                     application,
+		Static:                  frontendFS(),
+		Logger:                  logger,
+		ReadyzToken:             conf.readyzToken,
+		TokenHash:               conf.tokenHash,
+		SessionKey:              conf.sessionKey,
+		TrustedProxies:          conf.trustedProxies,
+		MaxAuthConcurrency:      conf.maxAuth,
+		MaxAPIConcurrency:       conf.maxAPI,
+		MaxHeartbeatConcurrency: conf.maxHeartbeat,
+		MaxStaticConcurrency:    conf.maxStatic,
 	})
 	// 主端口上永远只有设备面：管理路由一条都不注册，访问即 404。管理面只在
 	// 显式给了 ADMIN_PORT 时才存在，没给就是没有——不存在「都挂在同一个端口上」
@@ -275,6 +276,7 @@ type environment struct {
 	sessionKey     []byte
 	maxAuth        int
 	maxAPI         int
+	maxHeartbeat   int
 	maxStatic      int
 	// credentialCLI/credentialRPC 指向 easytier-cli 与种子的 management RPC；
 	// CLI 为空表示这台控制面不签发凭据。
@@ -367,6 +369,12 @@ func readEnvironment() (environment, error) {
 	if err != nil {
 		return environment{}, err
 	}
+	// 心跳的闸比别的都宽：注册是不带身份的、能占着槽等满请求体超时，而全网每台
+	// 设备每 30 秒都要发一次心跳，被注册挤掉就是整网停摆。
+	maxHeartbeat, err := positiveIntEnv("MAX_HEARTBEAT_CONCURRENCY", 255)
+	if err != nil {
+		return environment{}, err
+	}
 	maxStatic, err := positiveIntEnv("MAX_STATIC_CONCURRENCY", 64)
 	if err != nil {
 		return environment{}, err
@@ -387,6 +395,7 @@ func readEnvironment() (environment, error) {
 		sessionKey:       []byte(sessionKey),
 		maxAuth:          maxAuth,
 		maxAPI:           maxAPI,
+		maxHeartbeat:     maxHeartbeat,
 		maxStatic:        maxStatic,
 		credentialCLI:    credentialCLI,
 		credentialRPC:    credentialRPC,

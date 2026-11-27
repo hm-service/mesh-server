@@ -56,12 +56,16 @@ func ManifestString(slot, platform, version, filesDigest string) string {
 }
 
 // FilesDigest is the summary a manifest signature covers: one
-// "<name>\t<sha256>\n" line per file, sorted by name, then sha256 over the
+// "<name>::<sha256>\n" line per file, sorted by name, then sha256 over the
 // concatenation.
 //
 // The client computes the same bytes (mesh_install::signing::files_digest). A
 // disagreement there is invisible until every device refuses to start, so the
 // shape is kept deliberately dull: no JSON re-encoding, no escapes, no floats.
+//
+// "::" rather than a tab: the digest is always 64 hex characters, so stripping
+// it from the end of a line leaves the separator unambiguous either way; the
+// readable one wins because this text shows up in logs and diffs.
 func FilesDigest(files map[string]string) string {
 	names := make([]string, 0, len(files))
 	for name := range files {
@@ -71,7 +75,7 @@ func FilesDigest(files map[string]string) string {
 	hasher := sha256.New()
 	for _, name := range names {
 		hasher.Write([]byte(name))
-		hasher.Write([]byte{'\t'})
+		hasher.Write([]byte("::"))
 		hasher.Write([]byte(strings.ToLower(files[name])))
 		hasher.Write([]byte{'\n'})
 	}

@@ -18,7 +18,7 @@ func TestStringPinsTheFormat(t *testing.T) {
 	}
 }
 
-const manifestDigest = "413197c7129625e41d736404c8f37d3d277e269a5632db7b9165727b3f5c96a5"
+const manifestDigest = "442a109466d320336abdcbad56bdb6cf6fdbf262a50232c599000820f85f31c0"
 
 func TestManifestStringPinsTheFormat(t *testing.T) {
 	got := ManifestString("client", "windows/amd64", "2026.11.27-110", manifestDigest)

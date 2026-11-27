@@ -438,7 +438,7 @@ func ConfigState(d db.Device) string {
 // published one counts as current as well: the control plane only ever asks a
 // client to upgrade (NeedsUpdate).
 func AppState(d db.Device, r db.Release) string {
-	if NeedsUpdate(d.LastAppVersion, r.Version) {
+	if r.Client != nil && NeedsUpdate(d.LastAppVersion, r.Client.Version) {
 		return "stale"
 	}
 	return "current"

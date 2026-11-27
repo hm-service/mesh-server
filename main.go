@@ -119,8 +119,8 @@ func run() int {
 		logger.Warn("read releases", "error", err)
 	} else {
 		for _, release := range releases {
-			client := release.Signature == "" && release.Version != ""
-			launcher := release.LauncherSignature == "" && release.LauncherSHA256 != ""
+			client := release.Client != nil && release.Client.Signature == ""
+			launcher := release.Launcher != nil && (release.Launcher.SHA256 == "" || release.Launcher.Signature == "")
 			if client || launcher {
 				logger.Warn("release slot has no signature and is not offered",
 					"platform", release.Platform, "client", client, "launcher", launcher)

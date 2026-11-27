@@ -106,18 +106,18 @@ CREATE TABLE device_group (
 );
 
 CREATE TABLE release (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform         TEXT NOT NULL UNIQUE,        -- GOOS/GOARCH
-    version          TEXT NOT NULL DEFAULT '',    -- 客户端包版本号，取自包内 version.json
-    url              TEXT NOT NULL DEFAULT '',
-    sha256           TEXT NOT NULL DEFAULT '',    -- 客户端包完整摘要，客户端校验下载
-    notes            TEXT NOT NULL DEFAULT '',
-    auto_update      BOOLEAN NOT NULL DEFAULT 0,  -- 客户端包是否允许客户端自己装
-    launcher_version TEXT NOT NULL DEFAULT '',    -- 启动器版本号
-    launcher_url     TEXT NOT NULL DEFAULT '',
-    launcher_sha256  TEXT NOT NULL DEFAULT '',    -- 启动器完整摘要，客户端自己比对
-    launcher_signature TEXT NOT NULL DEFAULT ''   -- 启动器的发布签名
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform    TEXT NOT NULL,                    -- GOOS/GOARCH
+    slot        TEXT NOT NULL CHECK (slot IN ('client', 'launcher')),
+    version     TEXT NOT NULL DEFAULT '',         -- 客户端包取自 version.json；启动器由发布者填写
+    url         TEXT NOT NULL DEFAULT '',
+    sha256      TEXT NOT NULL DEFAULT '',         -- 下载字节的完整摘要，客户端校验下载
+    signature   TEXT NOT NULL DEFAULT '',         -- 发布签名
+    notes       TEXT NOT NULL DEFAULT '',         -- 只属于客户端包行
+    auto_update BOOLEAN NOT NULL DEFAULT 0,       -- 只属于客户端包行
+    CHECK (slot = 'client' OR (notes = '' AND auto_update = 0))
 );
+CREATE UNIQUE INDEX release_slot ON release (platform, slot);
 
 CREATE TABLE credential (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,7 +131,7 @@ CREATE INDEX credential_device ON credential (device_public_id);
 
 `device.auto_update` 是设备级的自动更新覆盖：`NULL` 跟随发布包（默认），`0` 强制手动确认，`1` 强制自动安装。生效值由 `app.EffectiveAutoUpdate` 算出，只出现在心跳的 `appUpdate.autoUpdate` 里——客户端看到的永远是一个布尔值，不知道覆盖发生在哪一层。
 
-`release` 一行一个平台，两个槽位（启动器、客户端包）的列各自独立写入：发布或清空一个槽位不改动另一个。`auto_update` 属于客户端包槽位：发布这个包时一起写，发布或清空启动器不改动它。两个槽位都没有内容时不留行，所以 `releases` 里出现的平台至少发布了一个工件。一次发布请求里的两个槽位在同一个事务里落库（`db.PublishSlots`），任一槽位校验或下载失败则两个都不写。
+`release` 一行是一个已发布的槽位：客户端包与启动器各占一行，按 `(platform, slot)` 唯一，发布即插入或覆盖这一行，清空即删除这一行。槽位是否发布因此只剩一个判据——行在不在——不再有「列全为空串」的第三态，也不再有需要有人维持的「至少一个槽位」不变量。`auto_update` 与 `notes` 只属于客户端包行，表上的 `CHECK` 让「启动器行带备注」插不进去，写入端因此不必记住这条规则。一次发布请求里的两个槽位在同一个事务里写两行（`db.PublishSlots`），任一槽位校验或下载失败则两行都不写。
 
 `credential` 一行是一张签发出去的凭据：`credential_id` 是种子上的标识，`device_public_id` 指向设备，**不存私钥**——私钥只在签发那一次的心跳响应里出现。设备上报的 id 与最新一行一致时，其余行连同种子上的凭据一起撤销；删除设备时先撤销全部凭据再删记录（签发通道未配置时见第 9 节的 `ET_CLI`）。
 
@@ -179,7 +179,7 @@ ET 自己的 `credential_file` 里存了每张凭据的私钥，它是全网凭�
 | 设备面 | Ed25519 请求签名（`MESH2` 八行原文）+ 300 秒时间窗 + nonce 重放缓存；普通节点在 mesh 里的身份是种子签发的凭据，控制面只留 `credential_id` 与到期时间 |
 | 注册令牌 | 形状固定：`64` 个小写十六进制字符（`32` 字节熵）。生成端自检、接受端在查库之前先判形状；一次性、`10` 分钟有效 |
 | 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
-| 发布包 | 客户端包：版本号取自包内 `version.json`（必须与 `YYYY.MM.DD-N` 一致），发布时连包一起校验；`app_sha256`（完整）用于下载后校验；启动器：只有 `launcher_sha256`（完整），由客户端自己比对 |
+| 发布包 | 客户端包：版本号取自包内 `version.json`（必须与 `YYYY.MM.DD-N` 一致），发布时连包一起校验；`app_sha256`（完整）用于下载后校验；启动器：只有完整摘要（`sha256`），由客户端自己比对 |
 | 发布签名 | 两个槽位各带一份 Ed25519 签名，原文是 `MESH3`、槽位、平台、版本、摘要五行。私钥离线，公钥编进两端二进制；控制面在下载并算完摘要之后验签，不过就 `400` 且不写槽位。这一环只让坏包在发布时失败，信任锚在客户端 |
 | 发布下载 | 服务端下载发布地址时拒绝回环、私网、链路本地、组播与未指定地址（`net.Dialer.Control` 逐个连接校验），最多 5 次重定向且每一跳重新校验，不走代理 |
 | 客户端地址 | 只有 `TRUSTED_PROXIES` 内的对端才能用 `X-Forwarded-For` / `X-Real-IP`，默认不信任任何来源 |

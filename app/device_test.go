@@ -425,14 +425,14 @@ func TestDerivedStates(t *testing.T) {
 	if got := AppState(device, settings); got != "current" {
 		t.Fatalf("app state of a newer device = %q, want current", got)
 	}
-	if got := AppState(device, dbRelease("")); got != "current" {
+	if got := AppState(device, db.Release{}); got != "current" {
 		t.Fatalf("app state without a release = %q, want current", got)
 	}
 	// 没有发布时，连平台都还没上报的设备也算 current：不存在可更新到的版本。
 	unknown := device
 	unknown.LastPlatform = ""
 	unknown.LastAppVersion = ""
-	if got := AppState(unknown, dbRelease("")); got != "current" {
+	if got := AppState(unknown, db.Release{}); got != "current" {
 		t.Fatalf("app state of a device without a platform and no release = %q, want current", got)
 	}
 	if got := AppState(unknown, dbRelease("2026.11.24-4")); got != "stale" {
@@ -444,7 +444,7 @@ func dbDevice(publicID, deviceID string, seenAt int64) db.Device {
 }
 
 func dbRelease(version string) db.Release {
-	return db.Release{Version: version}
+	return db.Release{Platform: "windows/amd64", Client: &db.ClientSlot{Version: version}}
 }
 
 // TestOpenLeavesStoredConfigHashAlone pins that startup no longer repairs data:

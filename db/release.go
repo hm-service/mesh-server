@@ -1,16 +1,21 @@
 package db
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 )
 
-// Release is what one platform publishes: the client package (Version, URL,
-// SHA256, Signature, Notes, AutoUpdate) and the launcher (LauncherVersion,
-// LauncherURL, LauncherSHA256, LauncherSignature). The two slots are written and
-// cleared independently, so a row exists as long as at least one of them is
-// published.
+// The two slot names of the release table. Each published artifact is one row,
+// so (platform, slot) identifies it and the table never has to say which
+// columns belong to which artifact.
+const (
+	slotClient   = "client"
+	slotLauncher = "launcher"
+)
+
+// Release is what one platform publishes: the client package slot and the
+// launcher slot. A slot is present exactly when its field is non-nil — a row
+// exists only while its slot is published — so "published" and "the row
+// exists" are the same fact.
 //
 // Signature is the Ed25519 signature over the slot's signing string (app
 // package). It is stored, not re-derived: the control plane cannot sign, and a
@@ -25,17 +30,9 @@ import (
 // build may install itself, not whether this device is unattended. It belongs to
 // the client package slot because one platform publishes one package at a time.
 type Release struct {
-	Platform          string
-	Version           string
-	URL               string
-	SHA256            string
-	Signature         string
-	Notes             string
-	AutoUpdate        bool
-	LauncherVersion   string
-	LauncherURL       string
-	LauncherSHA256    string
-	LauncherSignature string
+	Platform string
+	Client   *ClientSlot
+	Launcher *LauncherSlot
 }
 
 // ClientSlot is the client package slot of one platform: the version the
@@ -59,50 +56,103 @@ type LauncherSlot struct {
 	Signature string
 }
 
-const releaseColumns = "platform, version, url, sha256, signature, notes, auto_update, launcher_version, launcher_url, launcher_sha256, launcher_signature"
+// releaseColumns is one stored slot row. (platform, slot) identifies it.
+const releaseColumns = "platform, slot, version, url, sha256, signature, notes, auto_update"
 
-// scanRelease reads one row of releaseColumns.
-func scanRelease(row interface{ Scan(...any) error }) (Release, error) {
-	var r Release
-	err := row.Scan(&r.Platform, &r.Version, &r.URL, &r.SHA256, &r.Signature, &r.Notes,
-		&r.AutoUpdate, &r.LauncherVersion, &r.LauncherURL, &r.LauncherSHA256, &r.LauncherSignature)
+// slotRow is one row of releaseColumns before it becomes a slot of Release.
+type slotRow struct {
+	platform   string
+	slot       string
+	version    string
+	url        string
+	sha256     string
+	signature  string
+	notes      string
+	autoUpdate bool
+}
+
+func scanSlotRow(row interface{ Scan(...any) error }) (slotRow, error) {
+	var r slotRow
+	err := row.Scan(&r.platform, &r.slot, &r.version, &r.url, &r.sha256, &r.signature, &r.notes, &r.autoUpdate)
 	return r, err
 }
 
-// Release returns both slots published for platform.
-func (d *DB) Release(platform string) (Release, bool, error) {
-	r, err := scanRelease(d.conn.QueryRow("SELECT "+releaseColumns+" FROM release WHERE platform = ?", platform))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Release{}, false, nil
+// attach stores the row as the slot of release it names. Notes and the
+// auto-update switch belong to the client package only; a launcher row is held
+// to the empty values by the table's CHECK constraint, so they are not read.
+func (r slotRow) attach(release *Release) error {
+	release.Platform = r.platform
+	switch r.slot {
+	case slotClient:
+		release.Client = &ClientSlot{Version: r.version, URL: r.url, SHA256: r.sha256,
+			Signature: r.signature, Notes: r.notes, AutoUpdate: r.autoUpdate}
+	case slotLauncher:
+		release.Launcher = &LauncherSlot{Version: r.version, URL: r.url, SHA256: r.sha256,
+			Signature: r.signature}
+	default:
+		return fmt.Errorf("release row of %s has unknown slot %q", r.platform, r.slot)
 	}
+	return nil
+}
+
+// Release returns the slots published for platform; found is false when the
+// platform publishes nothing.
+func (d *DB) Release(platform string) (Release, bool, error) {
+	rows, err := d.conn.Query("SELECT "+releaseColumns+" FROM release WHERE platform = ? ORDER BY slot", platform)
 	if err != nil {
 		return Release{}, false, fmt.Errorf("get release: %w", err)
 	}
-	return r, true, nil
+	defer rows.Close()
+	var release Release
+	found := false
+	for rows.Next() {
+		row, err := scanSlotRow(rows)
+		if err != nil {
+			return Release{}, false, fmt.Errorf("scan release: %w", err)
+		}
+		if err := row.attach(&release); err != nil {
+			return Release{}, false, err
+		}
+		found = true
+	}
+	if err := rows.Err(); err != nil {
+		return Release{}, false, fmt.Errorf("read release: %w", err)
+	}
+	if !found {
+		return Release{}, false, nil
+	}
+	return release, true, nil
 }
 
 // Releases returns every published platform ordered by platform.
 func (d *DB) Releases() ([]Release, error) {
-	rows, err := d.conn.Query("SELECT " + releaseColumns + " FROM release ORDER BY platform")
+	rows, err := d.conn.Query("SELECT " + releaseColumns + " FROM release ORDER BY platform, slot")
 	if err != nil {
 		return nil, fmt.Errorf("list releases: %w", err)
 	}
 	defer rows.Close()
 	out := make([]Release, 0, 4)
 	for rows.Next() {
-		r, err := scanRelease(rows)
+		row, err := scanSlotRow(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan release: %w", err)
 		}
-		out = append(out, r)
+		// Rows of one platform arrive next to each other, so the aggregate is
+		// the last element whenever its platform is already open.
+		if len(out) == 0 || out[len(out)-1].Platform != row.platform {
+			out = append(out, Release{Platform: row.platform})
+		}
+		if err := row.attach(&out[len(out)-1]); err != nil {
+			return nil, err
+		}
 	}
 	return out, rows.Err()
 }
 
 // PublishSlots writes the given slots of platform in one transaction, so a
 // request that publishes both of them can never leave one behind: either both
-// slots are stored or neither is. A nil slot keeps what the row already had, and
-// the row is created when the platform is new.
+// rows are stored or neither is. A nil slot is left as it is; a published slot
+// creates its row or replaces the one it already had.
 func (d *DB) PublishSlots(platform string, client *ClientSlot, launcher *LauncherSlot) error {
 	if client == nil && launcher == nil {
 		return nil
@@ -112,18 +162,24 @@ func (d *DB) PublishSlots(platform string, client *ClientSlot, launcher *Launche
 		return fmt.Errorf("begin publish: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("INSERT INTO release (platform) VALUES (?) ON CONFLICT(platform) DO NOTHING", platform); err != nil {
-		return fmt.Errorf("create release row: %w", err)
-	}
 	if client != nil {
-		if _, err := tx.Exec("UPDATE release SET version = ?, url = ?, sha256 = ?, signature = ?, notes = ?, auto_update = ? WHERE platform = ?",
-			client.Version, client.URL, client.SHA256, client.Signature, client.Notes, client.AutoUpdate, platform); err != nil {
+		if _, err := tx.Exec("INSERT INTO release (platform, slot, version, url, sha256, signature, notes, auto_update) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(platform, slot) DO UPDATE SET "+
+			"version = excluded.version, url = excluded.url, sha256 = excluded.sha256, "+
+			"signature = excluded.signature, notes = excluded.notes, auto_update = excluded.auto_update",
+			platform, slotClient, client.Version, client.URL, client.SHA256, client.Signature,
+			client.Notes, client.AutoUpdate); err != nil {
 			return fmt.Errorf("publish client slot: %w", err)
 		}
 	}
 	if launcher != nil {
-		if _, err := tx.Exec("UPDATE release SET launcher_version = ?, launcher_url = ?, launcher_sha256 = ?, launcher_signature = ? WHERE platform = ?",
-			launcher.Version, launcher.URL, launcher.SHA256, launcher.Signature, platform); err != nil {
+		// notes and auto_update are not written: their defaults are the only
+		// values the CHECK constraint accepts on a launcher row.
+		if _, err := tx.Exec("INSERT INTO release (platform, slot, version, url, sha256, signature) "+
+			"VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(platform, slot) DO UPDATE SET "+
+			"version = excluded.version, url = excluded.url, sha256 = excluded.sha256, "+
+			"signature = excluded.signature",
+			platform, slotLauncher, launcher.Version, launcher.URL, launcher.SHA256, launcher.Signature); err != nil {
 			return fmt.Errorf("publish launcher slot: %w", err)
 		}
 	}
@@ -141,24 +197,11 @@ func (d *DB) DeleteRelease(platform string) error {
 	return nil
 }
 
-// ClearLauncher blanks only the launcher slot of platform, in one transaction:
-// a row whose client package is not published either is dropped, and a launcher
-// published concurrently is never deleted by the drop.
+// ClearLauncher removes the launcher slot of platform. The client package is a
+// different row and is not touched.
 func (d *DB) ClearLauncher(platform string) error {
-	tx, err := d.conn.Begin()
-	if err != nil {
-		return fmt.Errorf("begin clear launcher: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec("UPDATE release SET launcher_version = '', launcher_url = '', launcher_sha256 = '', "+
-		"launcher_signature = '' WHERE platform = ?", platform); err != nil {
+	if _, err := d.conn.Exec("DELETE FROM release WHERE platform = ? AND slot = ?", platform, slotLauncher); err != nil {
 		return fmt.Errorf("clear launcher: %w", err)
-	}
-	if _, err := tx.Exec("DELETE FROM release WHERE platform = ? AND version = ''", platform); err != nil {
-		return fmt.Errorf("clear launcher: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit clear launcher: %w", err)
 	}
 	return nil
 }

@@ -1153,7 +1153,8 @@ func TestReleaseRoundTrip(t *testing.T) {
 	if read.releaseOf(testPlatform) != got {
 		t.Fatalf("GET releases = %+v, want %+v", read, saved)
 	}
-	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Version != "2026.11.24-4" || stored.URL != rawURL {
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Client == nil ||
+		stored.Client.Version != "2026.11.24-4" || stored.Client.URL != rawURL {
 		t.Fatalf("stored release = %+v, found %v, %v", stored, found, err)
 	}
 
@@ -1163,6 +1164,52 @@ func TestReleaseRoundTrip(t *testing.T) {
 	}
 	if _, found, err := env.App.Release(testPlatform); err != nil || found {
 		t.Fatalf("release survived delete: found %v, %v", found, err)
+	}
+}
+
+// TestReleasePayloadKeepsOneShape pins the admin payload field by field: every
+// platform entry carries the same eleven keys whether both slots are published
+// or only one, so the console reads one shape and an unpublished slot is an
+// empty value rather than an absent field.
+func TestReleasePayloadKeepsOneShape(t *testing.T) {
+	env := testenv.New(t)
+	want := []string{
+		"appNotes", "appSha256", "appSignature", "appUrl", "appVersion", "autoUpdate",
+		"launcherSha256", "launcherSignature", "launcherUrl", "launcherVersion", "platform",
+	}
+	keysOf := func(t *testing.T) string {
+		t.Helper()
+		res, data := env.Do("GET", "/api/admin/releases", nil)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET releases = %d: %s", res.StatusCode, data)
+		}
+		var body struct {
+			Releases []map[string]json.RawMessage `json:"releases"`
+		}
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatalf("decode releases: %v", err)
+		}
+		if len(body.Releases) != 1 {
+			t.Fatalf("releases = %d entries, want 1: %s", len(body.Releases), data)
+		}
+		keys := make([]string, 0, len(body.Releases[0]))
+		for key := range body.Releases[0] {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return strings.Join(keys, ",")
+	}
+
+	// Only the client package: the launcher keys are present and empty.
+	publishExternal(t, env, testPlatform, "note", releasePkg(t, env, "2026.11.28-1", []byte("client build")))
+	if got := keysOf(t); got != strings.Join(want, ",") {
+		t.Fatalf("client-only payload keys = %s, want %s", got, strings.Join(want, ","))
+	}
+
+	// Both slots: the key set does not change when the second one appears.
+	publishLauncher(t, env, testPlatform, "2026.11.28-1", []byte("launcher"))
+	if got := keysOf(t); got != strings.Join(want, ",") {
+		t.Fatalf("two-slot payload keys = %s, want %s", got, strings.Join(want, ","))
 	}
 }
 
@@ -1188,7 +1235,7 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 		t.Fatalf("published release = %+v, want autoUpdate", saved)
 	}
 	// The switch is data, not a request-time decoration.
-	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || !stored.AutoUpdate {
+	if stored, found, err := env.App.Release(testPlatform); err != nil || !found || stored.Client == nil || !stored.Client.AutoUpdate {
 		t.Fatalf("stored release = %+v, found %v, %v; want autoUpdate", stored, found, err)
 	}
 
@@ -1232,7 +1279,7 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_argument") {
 		t.Fatalf("lone autoUpdate = %d: %s, want 400 invalid_argument", res.StatusCode, data)
 	}
-	if stored, _, err := env.App.Release(testPlatform); err != nil || stored.AutoUpdate {
+	if stored, _, err := env.App.Release(testPlatform); err != nil || stored.Client == nil || stored.Client.AutoUpdate {
 		t.Fatalf("rejected autoUpdate changed the row: %+v, %v", stored, err)
 	}
 }
@@ -1412,8 +1459,8 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 }
 
 // TestReleaseSlotsKeepOnlyPublishedRows pins the shape of the admin payload: a
-// platform is listed only while one of its slots has content, and the plain
-// delete takes both slots at once.
+// platform is listed only while at least one of its slot rows exists, and the
+// plain delete removes both rows at once.
 func TestReleaseSlotsKeepOnlyPublishedRows(t *testing.T) {
 	env := testenv.New(t)
 
@@ -1895,7 +1942,7 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 				t.Fatalf("publish = %d: %s, want 400 containing %q", res.StatusCode, data, tc.want)
 			}
 			stored, found, err := env.App.Release(testPlatform)
-			if err != nil || !found || stored.Version != "2026.11.26-11" {
+			if err != nil || !found || stored.Client == nil || stored.Client.Version != "2026.11.26-11" {
 				t.Fatalf("rejected package changed the row: %+v, found %v, %v", stored, found, err)
 			}
 		})
@@ -1994,11 +2041,11 @@ func TestTemplateSaveHasItsOwnOutcome(t *testing.T) {
 		t.Fatalf("peer.default.toml = %q, %v; want the saved template", raw, err)
 	}
 	stored, found, err := env.App.Release(testPlatform)
-	if err != nil || !found || stored.Version != "2026.11.26-2" {
+	if err != nil || !found || stored.Client == nil || stored.Client.Version != "2026.11.26-2" {
 		t.Fatalf("template save changed the release: %+v, found %v, %v", stored, found, err)
 	}
-	if stored.SHA256 != savedRelease.AppSHA256 {
-		t.Fatalf("release digest = %q, want %q", stored.SHA256, savedRelease.AppSHA256)
+	if stored.Client.SHA256 != savedRelease.AppSHA256 {
+		t.Fatalf("release digest = %q, want %q", stored.Client.SHA256, savedRelease.AppSHA256)
 	}
 
 	// 发布请求里带 defaultToml（或任何未声明字段）由统一的解码规则拒绝：模板

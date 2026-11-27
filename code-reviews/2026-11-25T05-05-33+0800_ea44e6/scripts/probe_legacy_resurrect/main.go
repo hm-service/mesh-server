@@ -76,7 +76,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("AFTER FIRST START  devices=%d release_version=%q\n", len(devices), rel.Version)
+	fmt.Printf("AFTER FIRST START  devices=%d release_version=%q\n", len(devices), clientVersion(rel))
 
 	// The admin revokes the device and deletes the published platform.
 	if _, err := a.DeleteDevice(context.Background(), "d_abc123"); err != nil && !errors.Is(err, app.ErrNotFound) {
@@ -87,7 +87,7 @@ func main() {
 	}
 	devices, _ = a.ListDevices()
 	rel, found, _ := a.Release("windows/amd64")
-	fmt.Printf("AFTER DELETE      devices=%d release_found=%v version=%q\n", len(devices), found, rel.Version)
+	fmt.Printf("AFTER DELETE      devices=%d release_found=%v version=%q\n", len(devices), found, clientVersion(rel))
 	if err := a.Close(); err != nil {
 		panic(err)
 	}
@@ -96,7 +96,7 @@ func main() {
 	a = open(dir)
 	devices, _ = a.ListDevices()
 	rel, found, _ = a.Release("windows/amd64")
-	fmt.Printf("AFTER RESTART     devices=%d release_found=%v version=%q\n", len(devices), found, rel.Version)
+	fmt.Printf("AFTER RESTART     devices=%d release_found=%v version=%q\n", len(devices), found, clientVersion(rel))
 	deviceResurrected := len(devices) == 1
 	releaseResurrected := found
 
@@ -116,7 +116,7 @@ func main() {
 		panic(err)
 	}
 	rel, _, _ = a.Release("windows/amd64")
-	fmt.Printf("LAUNCHER PUBLISHED version=%q launcher_version=%q launcher_url=%q\n", rel.Version, rel.LauncherVersion, rel.LauncherURL)
+	fmt.Printf("LAUNCHER PUBLISHED version=%q launcher_version=%q launcher_url=%q\n", clientVersion(rel), launcherVersion(rel), launcherURL(rel))
 	if err := a.Close(); err != nil {
 		panic(err)
 	}
@@ -124,8 +124,8 @@ func main() {
 	a = open(dir)
 	defer a.Close()
 	rel, _, _ = a.Release("windows/amd64")
-	fmt.Printf("AFTER RESTART     version=%q launcher_version=%q launcher_url=%q\n", rel.Version, rel.LauncherVersion, rel.LauncherURL)
-	launcherWiped := rel.LauncherVersion == "" && rel.Version != ""
+	fmt.Printf("AFTER RESTART     version=%q launcher_version=%q launcher_url=%q\n", clientVersion(rel), launcherVersion(rel), launcherURL(rel))
+	launcherWiped := launcherVersion(rel) == "" && clientVersion(rel) != ""
 
 	if deviceResurrected && releaseResurrected && launcherWiped {
 		fmt.Println("REPRODUCED: the deleted device and the deleted release came back, and the launcher-only release was overwritten")
@@ -133,6 +133,29 @@ func main() {
 	}
 	fmt.Printf("NOT FULLY REPRODUCED deviceResurrected=%v releaseResurrected=%v launcherWiped=%v\n",
 		deviceResurrected, releaseResurrected, launcherWiped)
+}
+
+// The release table stores one row per slot, so a probe that prints what a
+// platform publishes reads the slot it is asking about.
+func clientVersion(release db.Release) string {
+	if release.Client == nil {
+		return ""
+	}
+	return release.Client.Version
+}
+
+func launcherVersion(release db.Release) string {
+	if release.Launcher == nil {
+		return ""
+	}
+	return release.Launcher.Version
+}
+
+func launcherURL(release db.Release) string {
+	if release.Launcher == nil {
+		return ""
+	}
+	return release.Launcher.URL
 }
 
 func open(dir string) *app.App {

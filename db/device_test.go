@@ -178,8 +178,9 @@ func TestReleasePerPlatform(t *testing.T) {
 		t.Fatalf("PublishSlots() second error: %v", err)
 	}
 	got, found, err := d.Release("windows/amd64")
-	if err != nil || !found || got != (Release{Platform: "windows/amd64", Version: "v2", URL: "u2", SHA256: "s2"}) {
-		t.Fatalf("Release() = %+v, found %v, %v", got, found, err)
+	if err != nil || !found || got.Client == nil || got.Launcher != nil ||
+		*got.Client != second {
+		t.Fatalf("Release() = %+v, found %v, %v; want the second client slot", got, found, err)
 	}
 	if err := d.PublishSlots("linux/amd64", &ClientSlot{Version: "v9"}, nil); err != nil {
 		t.Fatalf("PublishSlots() linux error: %v", err)
@@ -197,35 +198,37 @@ func TestReleasePerPlatform(t *testing.T) {
 }
 
 // TestReleaseSlotsAreIndependent pins the storage contract behind the two
-// published artifacts: the client package and the launcher share a row but each
-// has its own write and clear path.
+// published artifacts: the client package and the launcher are separate rows,
+// so each has its own write and delete path and one never disturbs the other.
 func TestReleaseSlotsAreIndependent(t *testing.T) {
 	d := openTemp(t)
 	client := ClientSlot{Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1", AutoUpdate: true}
 	if err := d.PublishSlots("windows/amd64", &client, nil); err != nil {
 		t.Fatalf("PublishSlots() client error: %v", err)
 	}
-	if err := d.PublishSlots("windows/amd64", nil, &LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}); err != nil {
+	launcher := LauncherSlot{Version: "l1", URL: "lu1", SHA256: "ls1"}
+	if err := d.PublishSlots("windows/amd64", nil, &launcher); err != nil {
 		t.Fatalf("PublishSlots() launcher error: %v", err)
 	}
 	// Publishing the launcher leaves the package's switch where the admin put it.
-	want := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1", AutoUpdate: true,
-		LauncherVersion: "l1", LauncherURL: "lu1", LauncherSHA256: "ls1"}
 	got, found, err := d.Release("windows/amd64")
-	if err != nil || !found || got != want {
-		t.Fatalf("Release() = %+v, found %v, %v; want %+v", got, found, err, want)
+	if err != nil || !found || got.Client == nil || got.Launcher == nil {
+		t.Fatalf("Release() = %+v, found %v, %v; want both slots", got, found, err)
+	}
+	if *got.Client != client || *got.Launcher != launcher {
+		t.Fatalf("Release() = %+v, want %+v and %+v", got, client, launcher)
 	}
 
 	// Clearing the launcher leaves the client package alone.
 	if err := d.ClearLauncher("windows/amd64"); err != nil {
 		t.Fatalf("ClearLauncher() error: %v", err)
 	}
-	clientOnly := Release{Platform: "windows/amd64", Version: "v1", URL: "u1", SHA256: "s1", Notes: "n1", AutoUpdate: true}
-	if got, found, err = d.Release("windows/amd64"); err != nil || !found || got != clientOnly {
-		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want %+v", got, found, err, clientOnly)
+	got, found, err = d.Release("windows/amd64")
+	if err != nil || !found || got.Launcher != nil || got.Client == nil || *got.Client != client {
+		t.Fatalf("after ClearLauncher() = %+v, found %v, %v; want only the client slot", got, found, err)
 	}
 
-	// A launcher-only row disappears once its slot is cleared.
+	// A launcher-only platform disappears once its row is cleared.
 	if err := d.PublishSlots("linux/amd64", nil, &LauncherSlot{Version: "l9", URL: "lu9", SHA256: "ls9"}); err != nil {
 		t.Fatalf("PublishSlots() launcher-only error: %v", err)
 	}
@@ -233,12 +236,12 @@ func TestReleaseSlotsAreIndependent(t *testing.T) {
 		t.Fatalf("ClearLauncher() error: %v", err)
 	}
 	if _, found, err := d.Release("linux/amd64"); err != nil || found {
-		t.Fatalf("empty row left behind: found %v, %v", found, err)
+		t.Fatalf("launcher row left behind: found %v, %v", found, err)
 	}
 }
 
 // TestPublishSlotsIsAtomic pins that the two slots of one publish land together:
-// the writes share a transaction, so a row can never carry only the second slot.
+// the writes share a transaction, so the second row can never exist alone.
 func TestPublishSlotsIsAtomic(t *testing.T) {
 	d := openTemp(t)
 	if err := d.PublishSlots("windows/amd64",
@@ -247,10 +250,29 @@ func TestPublishSlotsIsAtomic(t *testing.T) {
 		t.Fatalf("PublishSlots() error: %v", err)
 	}
 	got, found, err := d.Release("windows/amd64")
-	if err != nil || !found {
-		t.Fatalf("Release() = found %v, %v", found, err)
+	if err != nil || !found || got.Client == nil || got.Launcher == nil {
+		t.Fatalf("Release() = %+v, found %v, %v; want both slots", got, found, err)
 	}
-	if got.Version != "v1" || got.LauncherVersion != "l1" || got.LauncherSHA256 != "ls1" {
+	if got.Client.Version != "v1" || got.Launcher.Version != "l1" || got.Launcher.SHA256 != "ls1" {
 		t.Fatalf("release = %+v, want both slots", got)
+	}
+}
+
+// TestLauncherRowCannotCarryClientFields pins the table CHECK: notes and the
+// auto-update switch belong to the client package row, so the database refuses
+// a launcher row that declares them instead of asking every writer to remember.
+func TestLauncherRowCannotCarryClientFields(t *testing.T) {
+	d := openTemp(t)
+	if _, err := d.conn.Exec("INSERT INTO release (platform, slot, version, notes, auto_update) " +
+		"VALUES ('windows/amd64', 'client', 'v1', 'n1', 1)"); err != nil {
+		t.Fatalf("a client row with notes and auto_update = %v, want it accepted", err)
+	}
+	for name, statement := range map[string]string{
+		"notes":       "INSERT INTO release (platform, slot, version, notes) VALUES ('linux/amd64', 'launcher', 'l1', 'n1')",
+		"auto_update": "INSERT INTO release (platform, slot, version, auto_update) VALUES ('linux/amd64', 'launcher', 'l1', 1)",
+	} {
+		if _, err := d.conn.Exec(statement); err == nil {
+			t.Fatalf("a launcher row with %s was accepted", name)
+		}
 	}
 }

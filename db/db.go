@@ -47,19 +47,20 @@ CREATE TABLE IF NOT EXISTS device_group (
 CREATE UNIQUE INDEX IF NOT EXISTS device_device_id ON device (device_id) WHERE device_id <> '';
 
 CREATE TABLE IF NOT EXISTS release (
-    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform           TEXT    NOT NULL UNIQUE,
-    version            TEXT    NOT NULL DEFAULT '',
-    url                TEXT    NOT NULL DEFAULT '',
-    sha256             TEXT    NOT NULL DEFAULT '',
-    signature          TEXT    NOT NULL DEFAULT '',
-    notes              TEXT    NOT NULL DEFAULT '',
-    auto_update        BOOLEAN NOT NULL DEFAULT 0,
-    launcher_version   TEXT    NOT NULL DEFAULT '',
-    launcher_url       TEXT    NOT NULL DEFAULT '',
-    launcher_sha256    TEXT    NOT NULL DEFAULT '',
-    launcher_signature TEXT    NOT NULL DEFAULT ''
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform    TEXT    NOT NULL,
+    slot        TEXT    NOT NULL CHECK (slot IN ('client', 'launcher')),
+    version     TEXT    NOT NULL DEFAULT '',
+    url         TEXT    NOT NULL DEFAULT '',
+    sha256      TEXT    NOT NULL DEFAULT '',
+    signature   TEXT    NOT NULL DEFAULT '',
+    -- 只对 client 槽位有意义；launcher 行必须留空。
+    notes       TEXT    NOT NULL DEFAULT '',
+    auto_update BOOLEAN NOT NULL DEFAULT 0,
+    CHECK (slot = 'client' OR (notes = '' AND auto_update = 0))
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS release_slot ON release (platform, slot);
 
 CREATE TABLE IF NOT EXISTS credential (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

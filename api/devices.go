@@ -42,8 +42,18 @@ type deviceSummary struct {
 	AutoUpdate *bool `json:"autoUpdate"`
 }
 
-// releaseFor returns the build published for the device's platform; an empty
-// release means that platform has nothing published.
+// clientVersion is the client package version of the platform, and an empty
+// string when that slot is not published: the admin payload reports no version
+// to update to.
+func clientVersion(release db.Release) string {
+	if release.Client == nil {
+		return ""
+	}
+	return release.Client.Version
+}
+
+// releaseFor returns the build published for the device's platform; a release
+// with no slots means that platform has nothing published.
 func releaseFor(releases []db.Release, platform string) db.Release {
 	for _, r := range releases {
 		if r.Platform == platform {
@@ -66,7 +76,7 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 		LastAppVersion: d.LastAppVersion,
 		ConfigState:    app.ConfigState(d),
 		AppState:       app.AppState(d, release),
-		AppVersion:     release.Version,
+		AppVersion:     clientVersion(release),
 		Platform:       d.LastPlatform,
 		GroupID:        d.GroupID,
 		Position:       d.Position,

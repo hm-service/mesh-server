@@ -53,20 +53,26 @@ type releaseInput struct {
 	LauncherSignature *string `json:"launcherSignature"`
 }
 
+// toView joins the slots of one platform into the flat admin entry. A missing
+// slot leaves its fields at the zero value, so the payload keeps one shape
+// whether or not the platform publishes both slots.
 func toView(r db.Release) releaseView {
-	return releaseView{
-		Platform:          r.Platform,
-		AppVersion:        r.Version,
-		AppURL:            r.URL,
-		AppSHA256:         r.SHA256,
-		AppSignature:      r.Signature,
-		AppNotes:          r.Notes,
-		AutoUpdate:        r.AutoUpdate,
-		LauncherVersion:   r.LauncherVersion,
-		LauncherURL:       r.LauncherURL,
-		LauncherSHA256:    r.LauncherSHA256,
-		LauncherSignature: r.LauncherSignature,
+	view := releaseView{Platform: r.Platform}
+	if r.Client != nil {
+		view.AppVersion = r.Client.Version
+		view.AppURL = r.Client.URL
+		view.AppSHA256 = r.Client.SHA256
+		view.AppSignature = r.Client.Signature
+		view.AppNotes = r.Client.Notes
+		view.AutoUpdate = r.Client.AutoUpdate
 	}
+	if r.Launcher != nil {
+		view.LauncherVersion = r.Launcher.Version
+		view.LauncherURL = r.Launcher.URL
+		view.LauncherSHA256 = r.Launcher.SHA256
+		view.LauncherSignature = r.Launcher.Signature
+	}
+	return view
 }
 
 func (s *Server) releasesSnapshot() (releasesResponse, error) {

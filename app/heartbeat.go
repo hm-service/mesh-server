@@ -86,23 +86,23 @@ func (a *App) Heartbeat(ctx context.Context, auth DeviceAuth, beat HeartbeatObse
 	// 只有设备上报的版本低于发布版本才算需要更新：设备版本更高（回滚过发布、
 	// 手工装过新包）时按 current 处理，不能让它每 30 秒被要求装同一个旧包。
 	//
-	// 签名为空的行同样不下发：那是加签名之前发布的记录，客户端一律拒装。按
+	// 签名为空的槽位同样不下发：那是加签名之前发布的记录，客户端一律拒装。按
 	// 未发布处理，管理端重新发布一次就恢复了。
-	if release.Signature != "" && NeedsUpdate(beat.AppVersion, release.Version) {
+	if client := release.Client; client != nil && client.Signature != "" && NeedsUpdate(beat.AppVersion, client.Version) {
 		// 每次心跳都带完整的一份：「我手上是哪一份」由客户端按版本与摘要自己判，
 		// 服务端不持有客户端的内存，也就没有可省的第二种形状。
 		result.Update = &AppUpdateOffer{
-			Version:    release.Version,
-			AutoUpdate: EffectiveAutoUpdate(device.AutoUpdate, release.AutoUpdate),
-			URL:        release.URL,
-			Notes:      release.Notes,
-			SHA256:     release.SHA256,
-			Signature:  release.Signature,
+			Version:    client.Version,
+			AutoUpdate: EffectiveAutoUpdate(device.AutoUpdate, client.AutoUpdate),
+			URL:        client.URL,
+			Notes:      client.Notes,
+			SHA256:     client.SHA256,
+			Signature:  client.Signature,
 		}
 	}
 	// 启动器不参与签名原文，服务端也就无从比较客户端手里那份，所以只要该平台
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。
-	result.Launcher = launcherOffer(release)
+	result.Launcher = launcherOffer(release.Launcher)
 	issued, err := a.credentialStepLocked(ctx, device, beat.CredentialID)
 	if err != nil {
 		slog.Error("credential step", "device_id", device.DeviceID, "error", err)
@@ -112,18 +112,18 @@ func (a *App) Heartbeat(ctx context.Context, auth DeviceAuth, beat HeartbeatObse
 	return result, nil
 }
 
-// launcherOffer is the launcher slot of release as a heartbeat offer; nil when
-// the platform has no launcher published. 有摘要没签名 = 这一行是加签名之前发布
-// 的：客户端会验签并拒装，那就等于每 30 秒给全网发一个必然失败的槽位；按「没
-// 发布」处理，等重新发布。
-func launcherOffer(release db.Release) *LauncherOffer {
-	if release.LauncherSHA256 == "" || release.LauncherSignature == "" {
+// launcherOffer is the launcher slot as a heartbeat offer; nil when the
+// platform has no launcher published. 有摘要没签名 = 这一行是加签名之前发布的：
+// 客户端会验签并拒装，那就等于每 30 秒给全网发一个必然失败的槽位；按「没发布」
+// 处理，等重新发布。
+func launcherOffer(slot *db.LauncherSlot) *LauncherOffer {
+	if slot == nil || slot.SHA256 == "" || slot.Signature == "" {
 		return nil
 	}
 	return &LauncherOffer{
-		Version:   release.LauncherVersion,
-		URL:       release.LauncherURL,
-		SHA256:    release.LauncherSHA256,
-		Signature: release.LauncherSignature,
+		Version:   slot.Version,
+		URL:       slot.URL,
+		SHA256:    slot.SHA256,
+		Signature: slot.Signature,
 	}
 }

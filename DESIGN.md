@@ -157,6 +157,8 @@ CREATE INDEX credential_device ON credential (device_public_id);
 | `TZ` | 否 | Asia/Shanghai | 日志与时间格式化时区，非法值拒绝启动 |
 | `HOST` | 否 | 0.0.0.0 | 与 `PORT` 一起决定监听地址 |
 | `PORT` | 否 | `:8088` | 与 `HOST` 一起决定监听地址；未设置时用 `:8088` |
+| `ADMIN_PORT` | 否 | 空 | 显式给出才把管理面拆到独立监听上。未设置时 `/api/auth`、`/api/admin` 与面板的路由**一条都不注册**，主端口上访问即 404——不存在「都挂在同一个端口」的回退 |
+| `ADMIN_HOST` | 否 | `127.0.0.1` | 管理面的监听地址，仅 `ADMIN_PORT` 非空时生效 |
 | `DATA_DIR` | 否 | `/data` | 唯一状态目录，`-data` 参数优先级更高 |
 | `TRUSTED_PROXIES` | 否 | 空（不信任） | 逗号分隔的 IP 或 CIDR |
 | `RELEASE_FETCH_ALLOW` | 否 | 空（只允许公网） | 逗号分隔的 IP 或 CIDR；发布下载允许连接这些内网地址 |

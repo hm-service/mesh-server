@@ -88,8 +88,8 @@ func bearerToken(r *http.Request) (string, bool) {
 
 // methodNotAllowed answers a known path with an unsupported method, naming the
 // methods that path really answers (RFC 9110 15.5.6).
-func (s *Server) methodNotAllowed(w http.ResponseWriter, path string) {
-	w.Header().Set("Allow", allowHeader(s.methods[path]))
+func (s *Server) methodNotAllowed(w http.ResponseWriter, registered []string) {
+	w.Header().Set("Allow", allowHeader(registered))
 	httpx.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 }
 

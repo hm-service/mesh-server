@@ -62,10 +62,6 @@ type Server struct {
 	sessionKey  []byte
 	nonces      *core.NonceCache
 	sleep       func(time.Duration)
-	// fallbacks records the paths whose 405 fallback is already registered;
-	// methods records the methods each path answers, for the Allow header.
-	fallbacks map[string]struct{}
-	methods   map[string][]string
 }
 
 // New returns a Server with fresh session and nonce state.
@@ -90,8 +86,6 @@ func New(opts Options) *Server {
 		sessionKey:  opts.SessionKey,
 		nonces:      core.NewNonceCache(core.ClockSkew),
 		sleep:       opts.Sleep,
-		fallbacks:   make(map[string]struct{}),
-		methods:     make(map[string][]string),
 	}
 	if s.sleep == nil {
 		s.sleep = time.Sleep
@@ -122,64 +116,100 @@ func orDefault(value, fallback int) int {
 	return value
 }
 
-// Handler returns the routed HTTP handler with its middleware applied.
+// Surface selects which routes a handler carries. The two surfaces can listen on
+// different addresses, so the admin API never shares a socket with the device API.
+type Surface int
+
+const (
+	// SurfaceAll is both surfaces on one handler, which is the single-listener setup.
+	SurfaceAll Surface = iota
+	// SurfaceDevice is the public device API plus the probes.
+	SurfaceDevice
+	// SurfaceAdmin is the console, its assets and the admin API.
+	SurfaceAdmin
+)
+
+// Handler returns both surfaces on one handler.
 func (s *Server) Handler() http.Handler {
+	return s.HandlerFor(SurfaceAll)
+}
+
+// HandlerFor returns only the routes that belong to surface. Calls share the
+// Server (and therefore the session key), so a handler built here and one built
+// by Handler accept each other's credentials.
+func (s *Server) HandlerFor(surface Surface) http.Handler {
 	mux := http.NewServeMux()
-	// Static redirect from the site root to the console.
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/admin", http.StatusFound)
-	})
-	// Probes are the only routes without a session or device guard.
-	s.route(mux, "GET", "/livez", s.handleLivez)
-	s.route(mux, "GET", "/readyz", s.withGate(s.readyzGate, s.handleReadyz))
+	methods := make(map[string][]string)
+	fallbacks := make(map[string]struct{})
+
+	// register answers 405 on a known path instead of letting the site-wide 404
+	// shadow it, and records the methods so Allow can name them.
+	register := func(method, path string, h http.HandlerFunc) {
+		mux.HandleFunc(method+" "+path, h)
+		methods[path] = append(methods[path], method)
+		if _, done := fallbacks[path]; done {
+			return
+		}
+		fallbacks[path] = struct{}{}
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			s.methodNotAllowed(w, methods[path])
+		})
+	}
+
+	onAdmin := surface == SurfaceAll || surface == SurfaceAdmin
+	onDevice := surface == SurfaceAll || surface == SurfaceDevice
+	admin := func(method, path string, h http.HandlerFunc) {
+		if onAdmin {
+			register(method, path, h)
+		}
+	}
+	device := func(method, path string, h http.HandlerFunc) {
+		if onDevice {
+			register(method, path, h)
+		}
+	}
+
+	// Console entry. On a split listener this lives on the admin surface only.
+	if onAdmin {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin", http.StatusFound)
+		})
+	}
+	// Probes belong to the device surface: kubelet reaches them from the host.
+	device("GET", "/livez", s.handleLivez)
+	device("GET", "/readyz", s.withGate(s.readyzGate, s.handleReadyz))
 	// 登录是唯一不带前缀的管理入口：它自己就是凭据的来源，放进 /api/admin 没有意义。
-	s.route(mux, "POST", "/api/auth", s.withGate(s.authGate, s.handleAuth))
+	admin("POST", "/api/auth", s.withGate(s.authGate, s.handleAuth))
 	// Admin surface: everything under /api/admin is bearer-guarded.
-	s.route(mux, "GET", "/api/admin/template", s.admin(s.handleTemplate))
-	s.route(mux, "GET", "/api/admin/devices", s.admin(s.handleListDevices))
-	s.route(mux, "POST", "/api/admin/devices", s.admin(s.handleCreateDevice))
-	s.route(mux, "GET", "/api/admin/devices/{id}", s.admin(s.handleGetDevice))
-	s.route(mux, "PUT", "/api/admin/devices/{id}", s.admin(s.handleUpdateDevice))
-	s.route(mux, "DELETE", "/api/admin/devices/{id}", s.admin(s.handleDeleteDevice))
-	s.route(mux, "POST", "/api/admin/devices/{id}/token", s.admin(s.handleIssueToken))
-	s.route(mux, "POST", "/api/admin/devices/{id}/credential", s.admin(s.handleIssueCredential))
-	s.route(mux, "DELETE", "/api/admin/devices/{id}/credential", s.admin(s.handleRevokeCredential))
-	s.route(mux, "PUT", "/api/admin/devices/{id}/group", s.admin(s.handleSetDeviceGroup))
-	s.route(mux, "PUT", "/api/admin/layout", s.admin(s.handleDeviceLayout))
+	admin("GET", "/api/admin/template", s.admin(s.handleTemplate))
+	admin("GET", "/api/admin/devices", s.admin(s.handleListDevices))
+	admin("POST", "/api/admin/devices", s.admin(s.handleCreateDevice))
+	admin("GET", "/api/admin/devices/{id}", s.admin(s.handleGetDevice))
+	admin("PUT", "/api/admin/devices/{id}", s.admin(s.handleUpdateDevice))
+	admin("DELETE", "/api/admin/devices/{id}", s.admin(s.handleDeleteDevice))
+	admin("POST", "/api/admin/devices/{id}/token", s.admin(s.handleIssueToken))
+	admin("POST", "/api/admin/devices/{id}/credential", s.admin(s.handleIssueCredential))
+	admin("DELETE", "/api/admin/devices/{id}/credential", s.admin(s.handleRevokeCredential))
+	admin("PUT", "/api/admin/devices/{id}/group", s.admin(s.handleSetDeviceGroup))
+	admin("PUT", "/api/admin/layout", s.admin(s.handleDeviceLayout))
 	// Device groups and the layout the console saves after a drag.
-	s.route(mux, "GET", "/api/admin/groups", s.admin(s.handleListGroups))
-	s.route(mux, "POST", "/api/admin/groups", s.admin(s.handleCreateGroup))
-	s.route(mux, "PUT", "/api/admin/groups/{id}", s.admin(s.handleUpdateGroup))
-	s.route(mux, "DELETE", "/api/admin/groups/{id}", s.admin(s.handleDeleteGroup))
-	s.route(mux, "GET", "/api/admin/releases", s.admin(s.handleListReleases))
-	s.route(mux, "PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
-	s.route(mux, "DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
+	admin("GET", "/api/admin/groups", s.admin(s.handleListGroups))
+	admin("POST", "/api/admin/groups", s.admin(s.handleCreateGroup))
+	admin("PUT", "/api/admin/groups/{id}", s.admin(s.handleUpdateGroup))
+	admin("DELETE", "/api/admin/groups/{id}", s.admin(s.handleDeleteGroup))
+	admin("GET", "/api/admin/releases", s.admin(s.handleListReleases))
+	admin("PUT", "/api/admin/releases", s.admin(s.handlePublishRelease))
+	admin("DELETE", "/api/admin/releases/{platform...}", s.admin(s.handleDeleteRelease))
 	// Device-facing public API. It shares nothing with the admin surface: its own
 	// gate, no bearer, and the device key in the request body.
-	s.route(mux, "POST", "/api/v1/register", s.withGate(s.deviceGate, s.handleRegister))
-	s.route(mux, "POST", "/api/v1/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
+	device("POST", "/api/v1/register", s.withGate(s.deviceGate, s.handleRegister))
+	device("POST", "/api/v1/heartbeat", s.withGate(s.deviceGate, s.handleHeartbeat))
 	// Console pages and their assets.
-	s.route(mux, "GET", "/admin", s.withGate(s.staticGate, s.handleIndex))
-	s.route(mux, "GET", "/admin/{path...}", s.withGate(s.staticGate, s.handleAsset))
+	admin("GET", "/admin", s.withGate(s.staticGate, s.handleIndex))
+	admin("GET", "/admin/{path...}", s.withGate(s.staticGate, s.handleAsset))
 	// Anything else, with or without a method, is a miss.
 	mux.HandleFunc("/", handleNotFound)
 	return s.withObservability(mux)
-}
-
-// route registers one method and, on the same path, the fallback that answers
-// 405 instead of letting the site-wide 404 shadow it. The methods registered for
-// a path are collected here so the fallback can name them in Allow.
-func (s *Server) route(mux *http.ServeMux, method, path string, h http.HandlerFunc) {
-	mux.HandleFunc(method+" "+path, h)
-	s.methods[path] = append(s.methods[path], method)
-	// Several methods share one path, so the fallback may only be registered once.
-	if _, done := s.fallbacks[path]; done {
-		return
-	}
-	s.fallbacks[path] = struct{}{}
-	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-		s.methodNotAllowed(w, path)
-	})
 }
 
 // admin guards an endpoint with the bearer credential.

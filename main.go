@@ -122,7 +122,7 @@ func run() int {
 		return 1
 	}
 
-	handler := api.New(api.Options{
+	apiServer := api.New(api.Options{
 		App:                  application,
 		Static:               frontendFS(),
 		Logger:               logger,
@@ -133,10 +133,18 @@ func run() int {
 		MaxAuthConcurrency:   conf.maxAuth,
 		MaxAPIConcurrency:    conf.maxAPI,
 		MaxStaticConcurrency: conf.maxStatic,
-	}).Handler()
+	})
+	// 主端口上永远只有设备面：管理路由一条都不注册，访问即 404。管理面只在
+	// 显式给了 ADMIN_PORT 时才存在，没给就是没有——不存在「都挂在同一个端口上」
+	// 的回退。两个面由同一个 Server 构造，共享 session key。
+	deviceHandler := apiServer.HandlerFor(api.SurfaceDevice)
+	var adminHandler http.Handler
+	if conf.adminPort != 0 {
+		adminHandler = apiServer.HandlerFor(api.SurfaceAdmin)
+	}
 	server := &http.Server{
 		Addr:    listen,
-		Handler: handler,
+		Handler: deviceHandler,
 		// A request that stops mid-body must not hold a concurrency slot: the
 		// read deadline bounds every unauthenticated upload as well.
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -144,14 +152,40 @@ func run() int {
 		IdleTimeout:       idleTimeout,
 	}
 
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() { serveErr <- server.Serve(listener) }()
+
+	var adminServer *http.Server
+	adminListen := listen
+	if adminHandler != nil {
+		adminListen = net.JoinHostPort(conf.adminHost, strconv.Itoa(conf.adminPort))
+		adminListener, err := net.Listen("tcp", adminListen)
+		if err != nil {
+			logger.Error("admin listen failed", "addr", adminListen, "error", err)
+			_ = application.Close()
+			_ = logFile.Close()
+			return 1
+		}
+		adminServer = &http.Server{
+			Addr:              adminListen,
+			Handler:           adminHandler,
+			ReadHeaderTimeout: readHeaderTimeout,
+			ReadTimeout:       readTimeout,
+			IdleTimeout:       idleTimeout,
+		}
+		go func() { serveErr <- adminServer.Serve(adminListener) }()
+	}
 	logger.Info("server started",
 		"addr", listen,
+		"admin_addr", adminListen,
 		"data_dir", dataDir,
 		"start_at", time.Now().Format(time.RFC3339),
 	)
-	logger.Info("admin console", "url", browseURL(listen)+"/admin")
+	if adminServer != nil {
+		logger.Info("admin console", "url", browseURL(adminListen)+"/admin")
+	} else {
+		logger.Warn("admin surface disabled", "hint", "set ADMIN_PORT to expose /api/auth and /api/admin")
+	}
 
 	purgeCtx, stopPurge := context.WithCancel(context.Background())
 	// 清理 goroutine 必须先停：它每一轮都写数据库，停了之后再关库与日志，
@@ -187,6 +221,12 @@ func run() int {
 		logger.Error("shutdown failed", "error", err)
 		return 254
 	}
+	if adminServer != nil {
+		if err := adminServer.Shutdown(ctx); err != nil {
+			logger.Error("admin shutdown failed", "error", err)
+			return 254
+		}
+	}
 	logger.Info("server shutdown", "stop_at", time.Now().Format(time.RFC3339))
 	stopPurge()
 	if err := application.Close(); err != nil {
@@ -202,9 +242,13 @@ func run() int {
 // environment is the validated deployment configuration; DATA_DIR, HOST, PORT
 // and the MAX_* limits are read here and nowhere else.
 type environment struct {
-	dataDir        string
-	host           string
-	port           int
+	dataDir string
+	host    string
+	port    int
+	// 管理面可以单独监听：ADMIN_PORT 非空时，/api/auth、/api/admin 与面板
+	// 只在这个地址上提供，设备面那个端口上一条都不留。
+	adminHost      string
+	adminPort      int
 	trustedProxies []netip.Prefix
 	fetchAllow     []netip.Prefix
 	readyzToken    string
@@ -246,6 +290,19 @@ func readEnvironment() (environment, error) {
 	fetchAllow, err := httpx.ParsePrefixes(os.Getenv("RELEASE_FETCH_ALLOW"))
 	if err != nil {
 		return environment{}, err
+	}
+	// 管理面默认不单独监听；显式给了 ADMIN_PORT 才拆，ADMIN_HOST 缺省只绑回环。
+	adminHost := strings.TrimSpace(os.Getenv("ADMIN_HOST"))
+	if adminHost == "" {
+		adminHost = "127.0.0.1"
+	}
+	adminPort := 0
+	if raw := strings.TrimSpace(os.Getenv("ADMIN_PORT")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 65535 {
+			return environment{}, fmt.Errorf("ADMIN_PORT must be a port number between 1 and 65535")
+		}
+		adminPort = value
 	}
 	// 凭据签发通道：CLI 由镜像提供，RPC 地址是宿主上转发到种子回环的入口。
 	credentialCLI := strings.TrimSpace(os.Getenv("ET_CLI"))
@@ -302,6 +359,8 @@ func readEnvironment() (environment, error) {
 		dataDir:          dataDir,
 		host:             host,
 		port:             port,
+		adminHost:        adminHost,
+		adminPort:        adminPort,
 		trustedProxies:   proxies,
 		fetchAllow:       fetchAllow,
 		readyzToken:      readyzToken,

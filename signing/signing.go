@@ -92,15 +92,17 @@ func FilesDigest(files map[string]string) string {
 // The client enforces the same rules when it parses a manifest
 // (mesh_install::manifest::Manifest::validate), so the two lists must be kept
 // identical: a manifest this tool signs but the client refuses is a publish that
-// only fails on the devices.
+// only fails on the devices. requiredFiles adds the install entry point's
+// minimum set: a package that does not carry the binary the launcher starts
+// verifies fine and then fails on every device.
 func ValidateManifest(slot, platform, version string, files map[string]string) error {
 	if slot != SlotClient && slot != SlotLauncher {
 		return fmt.Errorf("slot %q is not %q or %q", slot, SlotClient, SlotLauncher)
 	}
-	if !validVersion(version) {
-		return fmt.Errorf("version %q is not a release version", version)
+	if !ValidVersion(version) {
+		return fmt.Errorf("version %q is not YYYY.MM.DD-N", version)
 	}
-	if !validPlatform(platform) {
+	if !ValidPlatform(platform) {
 		return fmt.Errorf("platform %q is not GOOS/GOARCH", platform)
 	}
 	if len(files) == 0 {
@@ -119,42 +121,67 @@ func ValidateManifest(slot, platform, version string, files map[string]string) e
 			return fmt.Errorf("%s has no 64-character lowercase hex digest", name)
 		}
 	}
+	if missing := missingFiles(requiredFiles(slot, platform), files); len(missing) > 0 {
+		return fmt.Errorf("a %s manifest on %s has no %s", slot, platform, strings.Join(missing, ", "))
+	}
 	return nil
 }
 
-// validVersion mirrors mesh_install::layout::valid_version: it is also used as a
-// directory and a file name, so anything that could escape the install root or
-// confuse a shell is out.
-func validVersion(v string) bool {
-	if v == "" || len(v) > 64 {
-		return false
-	}
-	for i, r := range v {
-		switch {
-		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
-		case i > 0 && (r == '.' || r == '_' || r == '-'):
-		default:
-			return false
+// requiredFiles is the executable set a manifest must list for its slot and
+// platform. It is derived from slot+platform, so neither the release tool nor
+// the control plane carries a second copy. A platform the release tool never
+// builds for has no entry and therefore no required set; the client only
+// installs the platforms named here.
+func requiredFiles(slot, platform string) []string {
+	goos, _, _ := strings.Cut(platform, "/")
+	switch slot {
+	case SlotClient:
+		switch platform {
+		case "windows/amd64", "windows/arm64":
+			return []string{"mesh-client.exe", "easytier-core.exe"}
+		case "linux/amd64", "linux/arm64":
+			return []string{"mesh-client", "easytier-core"}
+		}
+	case SlotLauncher:
+		switch goos {
+		case "windows":
+			return []string{"mesh.exe"}
+		case "linux":
+			return []string{"mesh"}
 		}
 	}
-	return true
+	return nil
 }
 
-// validPlatform is GOOS/GOARCH: one slash, lower-case alphanumerics on both sides.
-func validPlatform(p string) bool {
-	os, arch, ok := strings.Cut(p, "/")
+// missingFiles returns the required names that the manifest does not list.
+func missingFiles(required []string, files map[string]string) []string {
+	var missing []string
+	for _, name := range required {
+		if _, ok := files[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// ValidPlatform is GOOS/GOARCH: one slash, at most 32 bytes, lower-case
+// alphanumerics on both sides. It is also the release row key, so the publish
+// path and the signing path share this one rule.
+func ValidPlatform(p string) bool {
+	goos, arch, ok := strings.Cut(p, "/")
 	if !ok || len(p) > 32 {
 		return false
 	}
-	return alnumLower(os) && alnumLower(arch)
+	return alnumLower(goos) && alnumLower(arch)
 }
 
 func alnumLower(s string) bool {
 	if s == "" {
 		return false
 	}
-	for _, r := range s {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if (b < 'a' || b > 'z') && (b < '0' || b > '9') {
 			return false
 		}
 	}
@@ -163,13 +190,16 @@ func alnumLower(s string) bool {
 
 // validFileName keeps every entry a plain file directly under bin/: no
 // separators, no parent segments, and not version.json itself, whose digest
-// cannot be written into itself.
+// cannot be written into itself. The rule is over ASCII bytes: a byte below
+// 0x20 or equal to 0x7f is a control character, and the name is at most 128
+// bytes. The client contract applies the same byte rule.
 func validFileName(name string) bool {
 	if name == "" || len(name) > 128 || name == "." || name == ".." || name == "version.json" {
 		return false
 	}
-	for _, r := range name {
-		if r == '/' || r == '\\' || r < 0x20 || r == 0x7f {
+	for i := 0; i < len(name); i++ {
+		b := name[i]
+		if b == '/' || b == '\\' || b < 0x20 || b == 0x7f {
 			return false
 		}
 	}

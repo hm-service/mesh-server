@@ -24,6 +24,10 @@ const loginBusy = ref(false);
 
 let pollTimer: number | undefined;
 let toastTimer: number | undefined;
+// 会话代次：提交登录与结束会话各递增一次。请求记下发出时的代次，只有当前代次的
+// 响应才写界面，换会话前后在途的请求一律丢弃。轮询因此不串行：串行只防同一会话内的
+// 重叠，挡不住旧会话的响应落到新会话上。
+let session = 0;
 
 const deviceCount = computed(() => devices.value.length);
 
@@ -40,23 +44,15 @@ function dismissToast() {
   if (toastTimer !== undefined) window.clearTimeout(toastTimer);
 }
 
-function startPolling() {
-  stopPolling();
-  pollTimer = window.setInterval(() => {
-    void loadDevices().catch(() => {
-      // 轮询失败保持上一屏数据，下一轮再试；401 已经在 loadDevices 里处理。
-    });
-  }, POLL_MS);
-}
-
-function stopPolling() {
-  if (pollTimer !== undefined) {
-    window.clearInterval(pollTimer);
-    pollTimer = undefined;
-  }
-}
-
-function handleUnauthorized() {
+/**
+ * 会话失效的唯一出口：清凭证、回登录页、停轮询、丢界面缓存。
+ * 只有当前会话的 401 或用户主动退出能到这里：自己的请求先按代次判定，
+ * 子组件的 401 只会来自当前挂载的面板（换会话时面板整体卸载，旧实例的
+ * 事件不再送达），因此都不会误清新会话的凭证。
+ */
+function endSession(): void {
+  session += 1;
+  api.logout();
   stopPolling();
   showNew.value = false;
   groups.value = [];
@@ -65,60 +61,108 @@ function handleUnauthorized() {
   authed.value = false;
 }
 
-async function loadDevices() {
-  try {
-    const [nextDevices, nextGroups] = await Promise.all([api.listDevices(), api.listGroups()]);
-    devices.value = nextDevices;
-    groups.value = nextGroups;
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      handleUnauthorized();
-      return;
-    }
-    throw err;
+function isUnauthorized(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401;
+}
+
+/**
+ * 读取请求失败的统一判定：当前会话的 401 走 endSession，旧代次的响应直接丢弃，
+ * 其余错误返回 false，由调用方决定怎么提示。
+ */
+function handleReadError(err: unknown, gen: number): boolean {
+  if (gen !== session) return true;
+  if (!isUnauthorized(err)) return false;
+  endSession();
+  return true;
+}
+
+function startPolling(gen: number): void {
+  stopPolling();
+  pollTimer = window.setInterval(() => {
+    void loadDevices(gen).catch((err) => {
+      // 轮询失败保持上一屏数据，下一轮再试。
+      handleReadError(err, gen);
+    });
+  }, POLL_MS);
+}
+
+function stopPolling(): void {
+  if (pollTimer !== undefined) {
+    window.clearInterval(pollTimer);
+    pollTimer = undefined;
   }
 }
 
-async function loadReleases() {
+/** 取设备与分组。失败原样抛出，由调用方决定结束会话还是提示；旧代次的响应不落地。 */
+async function loadDevices(gen: number): Promise<void> {
+  const [nextDevices, nextGroups] = await Promise.all([api.listDevices(), api.listGroups()]);
+  if (gen !== session) return;
+  devices.value = nextDevices;
+  groups.value = nextGroups;
+}
+
+async function loadReleases(gen: number): Promise<void> {
   try {
-    releases.value = await api.getReleases();
+    const next = await api.getReleases();
+    if (gen === session) releases.value = next;
   } catch (err) {
-    if (err instanceof ApiError && err.status === 401) handleUnauthorized();
+    handleReadError(err, gen);
   }
 }
 
-async function login(token: string) {
+/** 登录成功的唯一路径：设备列表真的取到了才算进来，之后才开轮询。 */
+async function enterConsole(gen: number): Promise<void> {
+  await loadDevices(gen);
+  if (gen !== session) return;
+  authed.value = true;
+  page.value = "devices";
+  startPolling(gen);
+  void loadReleases(gen);
+}
+
+async function login(token: string): Promise<void> {
+  // 新会话从提交登录开始算：此前在途的请求（含首屏初始化）都属旧代次。
+  session += 1;
+  const gen = session;
   loginError.value = "";
   loginBusy.value = true;
   try {
     await api.auth(token);
-    await loadDevices();
-    authed.value = true;
-    page.value = "devices";
-    startPolling();
-    void loadReleases();
   } catch (err) {
-    loginError.value = err instanceof ApiError && err.status === 401 ? "访问令牌错误" : err instanceof Error ? err.message : "登录失败";
-  } finally {
+    loginError.value = isUnauthorized(err) ? "访问令牌错误" : loginFailureText(err);
     loginBusy.value = false;
+    return;
   }
-}
-
-function logout() {
-  api.logout();
-  handleUnauthorized();
-}
-
-async function refreshDevices() {
   try {
-    await loadDevices();
+    await enterConsole(gen);
   } catch (err) {
+    // 初始化没成功就不算登录：清掉刚换来的凭证，留在登录页。
+    endSession();
+    loginError.value = loginFailureText(err);
+  }
+  loginBusy.value = false;
+}
+
+function loginFailureText(err: unknown): string {
+  return err instanceof Error ? err.message : "登录失败";
+}
+
+async function refreshDevices(): Promise<void> {
+  const gen = session;
+  try {
+    await loadDevices(gen);
+  } catch (err) {
+    if (handleReadError(err, gen)) return;
     showToast("刷新失败", err instanceof Error ? err.message : "", "err");
   }
 }
 
-function onCreated() {
-  void loadDevices().catch(() => {});
+function onCreated(): void {
+  const gen = session;
+  void loadDevices(gen).catch((err) => {
+    // 新建设备已经成功，列表下一轮轮询也会刷新；这里只保证 401 能结束会话。
+    handleReadError(err, gen);
+  });
 }
 
 function onSaved(next: ReleasesPayload) {
@@ -136,13 +180,12 @@ function onEscape(event: KeyboardEvent) {
 
 onMounted(async () => {
   window.addEventListener("keydown", onEscape);
+  const gen = session;
   try {
-    await loadDevices();
-    authed.value = true;
-    startPolling();
-    void loadReleases();
-  } catch {
-    authed.value = false;
+    await enterConsole(gen);
+  } catch (err) {
+    // 初始化没成功就不进控制台：401 结束会话，其余错误停在登录页。
+    handleReadError(err, gen);
   }
 });
 
@@ -171,7 +214,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="spacer" />
       <span class="who">admin</span>
-      <button type="button" @click="logout">退出</button>
+      <button type="button" @click="endSession">退出</button>
       </header>
 
       <div class="shell">
@@ -213,20 +256,20 @@ onBeforeUnmount(() => {
           @create="showNew = true"
           @refresh="refreshDevices"
           @toast="showToast"
-          @unauthorized="handleUnauthorized"
+          @unauthorized="endSession"
         />
         <ConfigView
           v-else-if="page === 'config'"
           @saved="onSaved"
           @toast="showToast"
-          @unauthorized="handleUnauthorized"
+          @unauthorized="endSession"
         />
         <UpdatesView
           v-else
           :releases="releases"
           @saved="onSaved"
           @toast="showToast"
-          @unauthorized="handleUnauthorized"
+          @unauthorized="endSession"
         />
         </main>
       </div>
@@ -238,7 +281,7 @@ onBeforeUnmount(() => {
       @close="showNew = false"
       @created="onCreated"
       @toast="showToast"
-      @unauthorized="handleUnauthorized"
+      @unauthorized="endSession"
     />
   </template>
 

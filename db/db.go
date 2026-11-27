@@ -10,8 +10,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// schema keeps every table with an auto-increment id as the primary key; the
-// business keys are separate columns on top of it.
+// schema is the complete current structure: one CREATE statement per table and
+// index, with every column the code reads. It is the only declaration of that
+// structure. Open applies it to a new file and then checks that an existing
+// file has exactly these columns; the schema is never altered in place.
 const schema = `
 CREATE TABLE IF NOT EXISTS device (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS device (
     last_ip          TEXT    NOT NULL DEFAULT '',
     last_config_hash TEXT    NOT NULL DEFAULT '',
     last_app_version TEXT    NOT NULL DEFAULT '',
+    last_platform    TEXT    NOT NULL DEFAULT '',
     group_id         INTEGER NOT NULL DEFAULT 0,
     position         INTEGER NOT NULL DEFAULT 0,
     auto_update      INTEGER
@@ -43,18 +46,18 @@ CREATE TABLE IF NOT EXISTS device_group (
 CREATE UNIQUE INDEX IF NOT EXISTS device_device_id ON device (device_id) WHERE device_id <> '';
 
 CREATE TABLE IF NOT EXISTS release (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform         TEXT    NOT NULL UNIQUE,
-    version          TEXT    NOT NULL DEFAULT '',
-    url              TEXT    NOT NULL DEFAULT '',
-    sha256           TEXT    NOT NULL DEFAULT '',
-    signature        TEXT    NOT NULL DEFAULT '',
-    notes            TEXT    NOT NULL DEFAULT '',
-    auto_update      BOOLEAN NOT NULL DEFAULT 0,
-    launcher_version TEXT    NOT NULL DEFAULT '',
-    launcher_url     TEXT    NOT NULL DEFAULT '',
-    launcher_sha256  TEXT    NOT NULL DEFAULT '',
-    launcher_signature TEXT  NOT NULL DEFAULT ''
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform           TEXT    NOT NULL UNIQUE,
+    version            TEXT    NOT NULL DEFAULT '',
+    url                TEXT    NOT NULL DEFAULT '',
+    sha256             TEXT    NOT NULL DEFAULT '',
+    signature          TEXT    NOT NULL DEFAULT '',
+    notes              TEXT    NOT NULL DEFAULT '',
+    auto_update        BOOLEAN NOT NULL DEFAULT 0,
+    launcher_version   TEXT    NOT NULL DEFAULT '',
+    launcher_url       TEXT    NOT NULL DEFAULT '',
+    launcher_sha256    TEXT    NOT NULL DEFAULT '',
+    launcher_signature TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS credential (
@@ -73,7 +76,8 @@ type DB struct {
 	conn *sql.DB
 }
 
-// Open opens path and creates the tables when they are missing.
+// Open opens path, creates the tables when they are missing and verifies that
+// the stored schema matches the one declared above.
 func Open(path string) (*DB, error) {
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -91,8 +95,12 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("apply %q: %w", pragma, err)
 		}
 	}
+	if err := createSchema(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	d := &DB{conn: conn}
-	if err := d.createSchema(); err != nil {
+	if err := d.verifySchema(); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -104,147 +112,103 @@ func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
-func (d *DB) createSchema() error {
+// createSchema runs the declared statements, which only ever create missing
+// tables and indexes. An existing table is left exactly as it is.
+func createSchema(conn *sql.DB) error {
 	for statement := range strings.SplitSeq(schema, ";") {
 		statement = strings.TrimSpace(statement)
 		if statement == "" {
 			continue
 		}
-		if _, err := d.conn.Exec(statement); err != nil {
+		if _, err := conn.Exec(statement); err != nil {
 			return fmt.Errorf("create schema: %w", err)
 		}
 	}
-	// Columns added after the table first shipped: SQLite has no
-	// ADD COLUMN IF NOT EXISTS, so they are checked one by one.
-	if err := d.ensureColumn("device", "last_platform", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := d.ensureColumn("device", "group_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := d.ensureColumn("device", "position", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	// 设备级自动更新覆盖：NULL 表示跟随发布包，0 强制手动，1 强制自动。
-	if err := d.ensureColumn("device", "auto_update", "INTEGER"); err != nil {
-		return err
-	}
-	if err := d.ensureColumn("release", "launcher_version", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := d.ensureColumn("release", "launcher_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := d.ensureColumn("release", "launcher_sha256", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	// A database written before the package-level switch existed keeps every
-	// package it published as manual: the column arrives as 0.
-	if err := d.ensureColumn("release", "auto_update", "BOOLEAN NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	// 发布签名：客户端据此确认包来自发布私钥，而不是只看控制面给的摘要。
-	// 旧记录补出来是空串，而空签名等于「这个槽位没发布」——下发侧按未发布处理，
-	// 必须由管理端重新发布一次才会恢复。
-	if err := d.ensureColumn("release", "signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := d.ensureColumn("release", "launcher_signature", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
-	}
-	if err := d.renameAppHashColumn(); err != nil {
-		return err
-	}
-	if err := d.dropReleaseHashColumn(); err != nil {
-		return err
-	}
-	return d.dropLegacySchema()
-}
-
-// renameAppHashColumn turns device.last_app_hash into last_app_version, the
-// field that now holds the version string clients report. A pre-migration row
-// holds a 16-character package digest: it is cleared because as a version it is
-// meaningless and would only be shown as one until the next heartbeat.
-func (d *DB) renameAppHashColumn() error {
-	found, err := d.hasColumn("device", "last_app_hash")
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	if _, err := d.conn.Exec("ALTER TABLE device RENAME COLUMN last_app_hash TO last_app_version"); err != nil {
-		return fmt.Errorf("rename device.last_app_hash: %w", err)
-	}
-	if _, err := d.conn.Exec("UPDATE device SET last_app_version = '' WHERE last_app_version <> ''"); err != nil {
-		return fmt.Errorf("clear device.last_app_version: %w", err)
-	}
 	return nil
 }
 
-// dropReleaseHashColumn removes release.hash, the 16-character package digest
-// clients used to report. The version string in release.version is what the
-// control plane compares now; release.sha256 stays for download verification.
-func (d *DB) dropReleaseHashColumn() error {
-	found, err := d.hasColumn("release", "hash")
+// verifySchema compares every table declared in schema with the columns the
+// database file actually has. A difference is fatal and is not repaired here:
+// deciding what an older file's data means is an operator's job, and repairing
+// it silently would hide a deployment that has not been migrated.
+func (d *DB) verifySchema() error {
+	reference, err := schemaReference()
 	if err != nil {
-		return err
+		return fmt.Errorf("verify schema: %w", err)
 	}
-	if !found {
-		return nil
-	}
-	if _, err := d.conn.Exec("ALTER TABLE release DROP COLUMN hash"); err != nil {
-		return fmt.Errorf("drop release.hash: %w", err)
-	}
-	return nil
-}
-
-// dropLegacySchema removes what the pre-SQLite import needed. The import is
-// gone, so the column, its unique index and the settings table would only keep
-// their old rows alive without a reader.
-func (d *DB) dropLegacySchema() error {
-	if _, err := d.conn.Exec("DROP INDEX IF EXISTS device_legacy_id"); err != nil {
-		return fmt.Errorf("drop device_legacy_id: %w", err)
-	}
-	found, err := d.hasColumn("device", "legacy_id")
+	defer reference.Close()
+	tables, err := schemaTables(reference)
 	if err != nil {
-		return err
+		return fmt.Errorf("verify schema: %w", err)
 	}
-	if found {
-		if _, err := d.conn.Exec("ALTER TABLE device DROP COLUMN legacy_id"); err != nil {
-			return fmt.Errorf("drop device.legacy_id: %w", err)
+	for _, table := range tables {
+		want, err := tableColumns(reference, table)
+		if err != nil {
+			return fmt.Errorf("verify schema: %w", err)
 		}
-	}
-	if _, err := d.conn.Exec("DROP TABLE IF EXISTS setting"); err != nil {
-		return fmt.Errorf("drop setting: %w", err)
-	}
-	return nil
-}
-
-// ensureColumn adds column to table when the table does not have it yet.
-func (d *DB) ensureColumn(table, column, decl string) error {
-	found, err := d.hasColumn(table, column)
-	if err != nil {
-		return err
-	}
-	if found {
-		return nil
-	}
-	if _, err := d.conn.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + decl); err != nil {
-		return fmt.Errorf("add %s.%s: %w", table, column, err)
+		got, err := tableColumns(d.conn, table)
+		if err != nil {
+			return fmt.Errorf("verify schema: %w", err)
+		}
+		missing, unexpected := columnDifference(want, got)
+		if len(missing) == 0 && len(unexpected) == 0 {
+			continue
+		}
+		var diff []string
+		if len(missing) > 0 {
+			diff = append(diff, "missing "+strings.Join(missing, ", "))
+		}
+		if len(unexpected) > 0 {
+			diff = append(diff, "unexpected "+strings.Join(unexpected, ", "))
+		}
+		return fmt.Errorf("database schema does not match db/db.go: table %s: %s", table, strings.Join(diff, "; "))
 	}
 	return nil
 }
 
-// hasColumn reports whether table has column. The connection pool holds a single
-// connection, so the PRAGMA rows must be closed before any ALTER runs.
-func (d *DB) hasColumn(table, column string) (bool, error) {
-	rows, err := d.conn.Query("PRAGMA table_info(" + table + ")")
+// schemaReference builds the declared schema in an in-memory database and
+// returns it. SQLite itself parses the same DDL the real file is compared
+// against, so there is no second column list in Go to keep in sync.
+func schemaReference() (*sql.DB, error) {
+	conn, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		return false, fmt.Errorf("inspect %s: %w", table, err)
+		return nil, err
+	}
+	conn.SetMaxOpenConns(1)
+	if err := createSchema(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// schemaTables lists the tables the declared schema creates.
+func schemaTables(conn *sql.DB) ([]string, error) {
+	rows, err := conn.Query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	found := false
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		tables = append(tables, name)
+	}
+	return tables, rows.Err()
+}
+
+// tableColumns returns the column names of table in declaration order. A
+// missing table yields no columns; callers compare it like any other mismatch.
+func tableColumns(conn *sql.DB, table string) ([]string, error) {
+	rows, err := conn.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
 	for rows.Next() {
 		var (
 			cid, notNull, pk int
@@ -252,16 +216,35 @@ func (d *DB) hasColumn(table, column string) (bool, error) {
 			dflt             any
 		)
 		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
-			return false, fmt.Errorf("inspect %s: %w", table, err)
+			return nil, err
 		}
-		if name == column {
-			found = true
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// columnDifference returns the columns in want but not in got, then the columns
+// in got but not in want.
+func columnDifference(want, got []string) (missing, unexpected []string) {
+	wantSet := make(map[string]struct{}, len(want))
+	for _, name := range want {
+		wantSet[name] = struct{}{}
+	}
+	gotSet := make(map[string]struct{}, len(got))
+	for _, name := range got {
+		gotSet[name] = struct{}{}
+	}
+	for _, name := range want {
+		if _, ok := gotSet[name]; !ok {
+			missing = append(missing, name)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("inspect %s: %w", table, err)
+	for _, name := range got {
+		if _, ok := wantSet[name]; !ok {
+			unexpected = append(unexpected, name)
+		}
 	}
-	return found, nil
+	return missing, unexpected
 }
 
 // Probe proves that the file is readable and writable by writing to and

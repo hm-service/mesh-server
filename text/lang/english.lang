@@ -22,10 +22,12 @@ api.text.slot_only_launcher = slot can only be launcher
 app.text.platform_invalid = platform must be in GOOS/GOARCH form, such as windows/amd64
 app.text.notes_too_long = appNotes is at most {0} characters
 app.text.client_file_unreadable = cannot read the file appUrl points to: {0}
-app.text.package_version_invalid = the version in {0} must have the form YYYY.MM.DD-N (at most {1} characters), but it is "{2}"
+app.text.config_unreadable = the device configuration cannot be parsed, so its identity is unknown
+app.text.package_manifest_invalid = the manifest in {0} is invalid: {1}
+app.text.package_manifest_mismatch = the slot/platform in {0} is {1}/{2}, but this publish is {3}/{4}
 app.text.launcher_file_unreadable = cannot read the file launcherUrl points to: {0}
 app.text.slot_version_required = {0}_version must not be empty
-app.text.slot_version_too_long = {0}_version is at most {1} characters
+app.text.slot_version_invalid = {0}_version must be a YYYY.MM.DD-N version, but it is "{1}"
 app.text.slot_url_required = {0}_url must not be empty
 app.text.slot_url_too_long = {0}_url is at most {1} characters
 app.text.slot_url_invalid = {0}_url must be an http(s) URL
@@ -47,7 +49,6 @@ app.error.package_read_failed = failed to read the update package
 app.error.manifest_read_failed = failed to read {0}
 app.error.manifest_too_large = {0} exceeds {1} bytes
 app.error.manifest_parse_failed = failed to parse {0}
-app.error.manifest_version_missing = {0} has no version
 
 # httpx: input parsing.
 httpx.error.address_invalid = invalid address or prefix "{0}"

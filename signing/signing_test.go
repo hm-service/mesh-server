@@ -10,13 +10,48 @@ import (
 
 const goodDigest = "abababababababababababababababababababababababababababababababab"
 
+// windowsClientFiles is a complete client manifest for one platform: the
+// required binaries are present, so a case that changes one field is blocked by
+// the rule it names rather than by a missing file.
+func clientFiles() map[string]string {
+	return map[string]string{"mesh-client.exe": goodDigest, "easytier-core.exe": goodDigest}
+}
+
 // 与 Rust 端 Manifest::validate 同一份规则：签发端签得出来的东西，客户端必须
 // 能装；反过来，客户端拒绝的东西，签发端不该给出签名。
 func TestValidateManifestAcceptsAReleaseManifest(t *testing.T) {
-	err := ValidateManifest("client", "windows/amd64", "2026.11.27-115",
-		map[string]string{"mesh-client.exe": goodDigest})
+	err := ValidateManifest("client", "windows/amd64", "2026.11.27-115", clientFiles())
 	if err != nil {
 		t.Fatalf("a plain release manifest must be accepted: %v", err)
+	}
+}
+
+// TestValidateManifestAcceptsEveryRequiredFileSet pins the platforms the release
+// tool builds for: the required names are the ones the launcher starts.
+func TestValidateManifestAcceptsEveryRequiredFileSet(t *testing.T) {
+	cases := []struct {
+		name     string
+		slot     string
+		platform string
+		files    map[string]string
+	}{
+		{"windows client", "client", "windows/amd64", clientFiles()},
+		{"windows arm64 client", "client", "windows/arm64", clientFiles()},
+		{"linux client", "client", "linux/amd64",
+			map[string]string{"mesh-client": goodDigest, "easytier-core": goodDigest}},
+		{"linux arm64 client", "client", "linux/arm64",
+			map[string]string{"mesh-client": goodDigest, "easytier-core": goodDigest}},
+		{"windows launcher", "launcher", "windows/arm64",
+			map[string]string{"mesh.exe": goodDigest}},
+		{"linux launcher", "launcher", "linux/amd64",
+			map[string]string{"mesh": goodDigest}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if err := ValidateManifest(c.slot, c.platform, "2026.11.27-115", c.files); err != nil {
+				t.Fatalf("a complete %s manifest was rejected: %v", c.slot, err)
+			}
+		})
 	}
 }
 
@@ -27,29 +62,65 @@ func TestValidateManifestRejectsInputsOutsideTheContract(t *testing.T) {
 		platform string
 		version  string
 		files    map[string]string
+		want     string
 	}{
-		{"unknown slot", "server", "windows/amd64", "2026.11.27-115", map[string]string{"a.exe": goodDigest}},
-		{"empty file set", "client", "windows/amd64", "2026.11.27-115", map[string]string{}},
-		{"nil file set", "client", "windows/amd64", "2026.11.27-115", nil},
-		{"short digest", "client", "windows/amd64", "2026.11.27-115", map[string]string{"a.exe": "ab"}},
-		{"uppercase digest", "client", "windows/amd64", "2026.11.27-115",
-			map[string]string{"a.exe": strings.ToUpper(goodDigest)}},
-		{"non-hex digest", "client", "windows/amd64", "2026.11.27-115",
-			map[string]string{"a.exe": strings.Repeat("zz", 32)}},
-		{"separator in name", "client", "windows/amd64", "2026.11.27-115",
-			map[string]string{"sub/a.exe": goodDigest}},
-		{"parent segment in name", "client", "windows/amd64", "2026.11.27-115",
-			map[string]string{"..": goodDigest}},
-		{"manifest lists itself", "client", "windows/amd64", "2026.11.27-115",
-			map[string]string{"version.json": goodDigest}},
-		{"bad platform", "client", "Windows", "2026.11.27-115", map[string]string{"a.exe": goodDigest}},
-		{"bad version", "client", "windows/amd64", "bad/version", map[string]string{"a.exe": goodDigest}},
+		{name: "unknown slot", slot: "server", platform: "windows/amd64", version: "2026.11.27-115",
+			files: clientFiles(), want: "is not \"client\""},
+		{name: "empty file set", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: map[string]string{}, want: "lists no files"},
+		{name: "nil file set", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: nil, want: "lists no files"},
+		{name: "short digest", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: map[string]string{"mesh-client.exe": goodDigest, "easytier-core.exe": "ab"},
+			want:  "easytier-core.exe has no 64-character lowercase hex digest"},
+		{name: "uppercase digest", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: map[string]string{"mesh-client.exe": goodDigest, "easytier-core.exe": strings.ToUpper(goodDigest)},
+			want:  "64-character lowercase hex digest"},
+		{name: "non-hex digest", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: map[string]string{"mesh-client.exe": goodDigest, "easytier-core.exe": strings.Repeat("zz", 32)},
+			want:  "64-character lowercase hex digest"},
+		{name: "separator in name", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: addFile(clientFiles(), "sub/a.exe"), want: "is not a plain name under bin/"},
+		{name: "backslash in name", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: addFile(clientFiles(), `sub\a.exe`), want: "is not a plain name under bin/"},
+		{name: "parent segment in name", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: addFile(clientFiles(), ".."), want: "is not a plain name under bin/"},
+		{name: "manifest lists itself", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: addFile(clientFiles(), "version.json"), want: "is not a plain name under bin/"},
+		{name: "control byte in name", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: addFile(clientFiles(), "a\x1fb.exe"), want: "is not a plain name under bin/"},
+		{name: "bad platform", slot: "client", platform: "Windows", version: "2026.11.27-115",
+			files: clientFiles(), want: "is not GOOS/GOARCH"},
+		{name: "bad version", slot: "client", platform: "windows/amd64", version: "2026.11.26-013",
+			files: clientFiles(), want: "is not YYYY.MM.DD-N"},
+		{name: "missing client binary", slot: "client", platform: "windows/amd64", version: "2026.11.27-115",
+			files: map[string]string{"easytier-core.exe": goodDigest}, want: "mesh-client.exe"},
+		{name: "missing kernel", slot: "client", platform: "linux/amd64", version: "2026.11.27-115",
+			files: map[string]string{"mesh-client": goodDigest}, want: "easytier-core"},
+		{name: "missing launcher", slot: "launcher", platform: "windows/amd64", version: "2026.11.27-115",
+			files: map[string]string{"mesh-client.exe": goodDigest}, want: "mesh.exe"},
 	}
 	for _, c := range cases {
-		if err := ValidateManifest(c.slot, c.platform, c.version, c.files); err == nil {
-			t.Errorf("%s: accepted", c.name)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateManifest(c.slot, c.platform, c.version, c.files)
+			if err == nil {
+				t.Fatalf("%s: accepted", c.name)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("%s: error = %q, want it to name %q", c.name, err, c.want)
+			}
+		})
 	}
+}
+
+// addFile copies files and adds one entry, so a case only changes its own name.
+func addFile(files map[string]string, name string) map[string]string {
+	out := make(map[string]string, len(files)+1)
+	for key, digest := range files {
+		out[key] = digest
+	}
+	out[name] = goodDigest
+	return out
 }
 
 func TestStringPinsTheFormat(t *testing.T) {

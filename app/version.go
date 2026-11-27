@@ -1,63 +1,20 @@
 package app
 
-import (
-	"cmp"
-	"regexp"
-	"strconv"
-)
-
-// appVersionPattern is the only client build label: YYYY.MM.DD-N, the build
-// date and that day's sequence number (client/build/version.ps1).
-var appVersionPattern = regexp.MustCompile(`^(\d{4})\.(\d{2})\.(\d{2})-(\d+)$`)
-
-// buildVersion is one parsed build label: the date as YYYYMMDD (numeric order
-// is calendar order) and the sequence number of that day.
-type buildVersion struct {
-	date int
-	seq  int
-}
-
-func parseAppVersion(s string) (buildVersion, bool) {
-	m := appVersionPattern.FindStringSubmatch(s)
-	if m == nil {
-		return buildVersion{}, false
-	}
-	date, err := strconv.Atoi(m[1] + m[2] + m[3])
-	if err != nil {
-		return buildVersion{}, false
-	}
-	seq, err := strconv.Atoi(m[4])
-	if err != nil {
-		return buildVersion{}, false
-	}
-	return buildVersion{date: date, seq: seq}, true
-}
+import "mesh-server/signing"
 
 // ValidAppVersion reports whether s is a build label the control plane can
 // order. Both the published version and the one a device reports come from the
-// same build, so anything else is a protocol violation.
+// same build, so anything else is a protocol violation. The rule lives in
+// package signing: the release tool and the control plane must not disagree
+// about it.
 func ValidAppVersion(s string) bool {
-	_, ok := parseAppVersion(s)
-	return ok
+	return signing.ValidVersion(s)
 }
 
-// CompareVersions orders two YYYY.MM.DD-N labels by build date and then by that
-// day's sequence number. String order gets the sequence wrong (-9 sorts after
-// -11), which would turn a newer device into an endless downgrade. ok is false
-// when a label does not have that form.
+// CompareVersions orders two build labels by (year, month, day, sequence), as
+// signing.Compare does. ok is false when a label is outside that domain.
 func CompareVersions(a, b string) (order int, ok bool) {
-	left, ok := parseAppVersion(a)
-	if !ok {
-		return 0, false
-	}
-	right, ok := parseAppVersion(b)
-	if !ok {
-		return 0, false
-	}
-	if left.date != right.date {
-		return cmp.Compare(left.date, right.date), true
-	}
-	return cmp.Compare(left.seq, right.seq), true
+	return signing.Compare(a, b)
 }
 
 // EffectiveAutoUpdate 是三态覆盖的结果：设备自己定了就用设备的值，否则用发布包

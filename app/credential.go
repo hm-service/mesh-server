@@ -165,8 +165,13 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if !ok {
 		return IssuedCredential{}, ErrNotFound
 	}
-	// 正式节点用 network_secret 认证，凭据对它没有意义。
-	if ConfigFactsOf(device.ConfigTOML).Identity == IdentityFormal {
+	// 正式节点用 network_secret 认证，凭据对它没有意义。配置读不出来时按错误停下：
+	// 当成凭据节点会签出一张它用不上的凭据，还把它记成凭据身份。
+	identity, err := identityOf(device.ConfigTOML)
+	if err != nil {
+		return IssuedCredential{}, fmt.Errorf("%s: %w", text.AppConfigUnreadable, err)
+	}
+	if identity == IdentityFormal {
 		return IssuedCredential{}, ErrFormalNode
 	}
 	issued, err := a.credential.generate(ctx, CredentialTTL)

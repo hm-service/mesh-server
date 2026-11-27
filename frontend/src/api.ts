@@ -144,10 +144,13 @@ function describe(status: number, code: string): string {
   return "请求失败（HTTP " + status + "）";
 }
 
-/** errorFrom turns a non-2xx response into an ApiError, preferring the server text. */
+/**
+ * errorFrom turns a non-2xx response into an ApiError, preferring the server text.
+ * 401 只转成错误，不动凭证：是不是当前会话已经失效由持有会话代次的调用方判定，
+ * 清凭证统一在 App.vue 的 endSession 里做。
+ */
 async function errorFrom(res: Response): Promise<ApiError> {
   if (res.status === 401) {
-    clearCredential();
     return new ApiError(401, "unauthorized");
   }
   const text = await res.text();

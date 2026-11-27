@@ -210,10 +210,10 @@ func TestFormat(t *testing.T) {
 			want: "appNotes 最长 64 字符",
 		},
 		{
-			name: "three placeholders",
-			id:   AppPackageVersionInvalid,
-			args: []any{"version.json", 64, "2026.11.27-103"},
-			want: "包内 version.json 的 version 必须是 YYYY.MM.DD-N 形式（最长 64 字符），实际是「2026.11.27-103」",
+			name: "two placeholders",
+			id:   AppPackageManifestInvalid,
+			args: []any{"version.json", "version \"bad\" is not YYYY.MM.DD-N"},
+			want: "包内 version.json 不合法：version \"bad\" is not YYYY.MM.DD-N",
 		},
 		{
 			name: "missing argument keeps the placeholder",

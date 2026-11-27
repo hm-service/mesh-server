@@ -300,7 +300,8 @@ func (a *App) revoke(deviceID string) {
 }
 
 // BindDevice consumes token and binds the slot to a client identity. The
-// previous identity of the same slot, if any, is revoked.
+// previous identity of the same slot, if any, is revoked, and the observations
+// that identity reported are cleared.
 func (a *App) BindDevice(token, deviceID, hostname, pubkey, ip string) (db.Device, error) {
 	pending, ok, err := a.DeviceByToken(token)
 	if err != nil {
@@ -314,6 +315,14 @@ func (a *App) BindDevice(token, deviceID, hostname, pubkey, ip string) (db.Devic
 	device, err := a.database.Update(pending.PublicID, func(d *db.Device) error {
 		if d.Token != token || d.TokenExpiresAt <= now.Unix() {
 			return ErrTokenInvalid
+		}
+		// 槽位自身的属性（名称、分组、布局、配置）属于这一行记录，换绑不改。
+		// last_config_hash、last_app_version、last_platform 是已绑定设备上报的
+		// 观测值，只对原身份成立；身份一变就清空，与新身份写在同一次 Update 里。
+		if d.DeviceID != deviceID {
+			d.LastConfigHash = ""
+			d.LastAppVersion = ""
+			d.LastPlatform = ""
 		}
 		rebound = d.DeviceID
 		d.DeviceID = deviceID
@@ -345,29 +354,6 @@ func (a *App) Touch(publicID, ip string) error {
 // together with its platform.
 func (a *App) RecordHeartbeat(publicID, configHash, appVersion, platform string) error {
 	return a.database.RecordHeartbeat(publicID, configHash, appVersion, platform, a.now().Unix())
-}
-
-// migrateConfigHashes 按当前算法重算每台设备的 config_hash，只写不一致的行。
-// 摘要算法变过而存量行没跟着变时，客户端现算的值永远对不上，设备会一直
-// stale，每轮心跳都被重发一遍配置。幂等，每次启动都可以跑。
-func (a *App) migrateConfigHashes() error {
-	devices, err := a.database.List()
-	if err != nil {
-		return err
-	}
-	for _, device := range devices {
-		want := core.Hash(device.ConfigTOML)
-		if device.ConfigHash == want {
-			continue
-		}
-		if _, err := a.database.Update(device.PublicID, func(d *db.Device) error {
-			d.ConfigHash = want
-			return nil
-		}); err != nil {
-			return fmt.Errorf("migrate config hash of %s: %w", device.PublicID, err)
-		}
-	}
-	return nil
 }
 
 // DeviceStatus is derived from last_seen_at; an unregistered slot is pending.

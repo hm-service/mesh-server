@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -114,89 +115,52 @@ func TestPurgeExpiredTokens(t *testing.T) {
 	}
 }
 
-// TestOpenMigratesAppIdentity proves that a database written while clients
-// reported a 16-character package digest gains device.last_app_version (the old
-// digest is cleared: it is not a version) and loses release.hash.
-func TestOpenMigratesAppIdentity(t *testing.T) {
+// TestOpenRejectsDatabaseMissingAColumn pins the startup contract: Open compares
+// the file with db/db.go and fails with the column named. It does not add the
+// column, so a server started against an unmigrated file stops instead of
+// running on a silently patched schema.
+func TestOpenRejectsDatabaseMissingAColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mesh.db")
-	conn, err := sql.Open("sqlite", path)
+	current, err := Open(path)
 	if err != nil {
-		t.Fatalf("open old database: %v", err)
+		t.Fatalf("Open() on a fresh database: %v", err)
 	}
-	const oldDevice = `CREATE TABLE device (
-	    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-	    public_id        TEXT    NOT NULL UNIQUE,
-	    name             TEXT    NOT NULL DEFAULT '',
-	    device_id        TEXT    NOT NULL DEFAULT '',
-	    hostname         TEXT    NOT NULL DEFAULT '',
-	    pubkey           TEXT    NOT NULL DEFAULT '',
-	    config_toml      TEXT    NOT NULL DEFAULT '',
-	    config_hash      TEXT    NOT NULL DEFAULT '',
-	    token            TEXT    NOT NULL DEFAULT '',
-	    token_expires_at INTEGER NOT NULL DEFAULT 0,
-	    created_at       INTEGER NOT NULL DEFAULT 0,
-	    last_seen_at     INTEGER NOT NULL DEFAULT 0,
-	    last_ip          TEXT    NOT NULL DEFAULT '',
-	    last_config_hash TEXT    NOT NULL DEFAULT '',
-	    last_app_hash    TEXT    NOT NULL DEFAULT ''
-	)`
-	const oldRelease = `CREATE TABLE release (
-	    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-	    platform         TEXT NOT NULL UNIQUE,
-	    version          TEXT NOT NULL DEFAULT '',
-	    url              TEXT NOT NULL DEFAULT '',
-	    hash             TEXT NOT NULL DEFAULT '',
-	    sha256           TEXT NOT NULL DEFAULT '',
-	    notes            TEXT NOT NULL DEFAULT ''
-	)`
-	if _, err := conn.Exec(oldDevice); err != nil {
-		conn.Close()
-		t.Fatalf("create old device table: %v", err)
-	}
-	if _, err := conn.Exec(oldRelease); err != nil {
-		conn.Close()
-		t.Fatalf("create old release table: %v", err)
-	}
-	if _, err := conn.Exec("INSERT INTO device (public_id, name, last_app_hash) VALUES ('d_old', '旧设备', 'efe0e1d322d28c45')"); err != nil {
-		conn.Close()
-		t.Fatalf("insert old device: %v", err)
-	}
-	if _, err := conn.Exec("INSERT INTO release (platform, version, url, hash, sha256, notes) VALUES ('windows/amd64', '2026.11.25-1', 'http://example/old', 'efe0e1d322d28c45', 'full-digest', '')"); err != nil {
-		conn.Close()
-		t.Fatalf("insert old release: %v", err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("close old database: %v", err)
+	if err := current.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
 	}
 
-	d, err := Open(path)
+	conn, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("Open() on old database error: %v", err)
+		t.Fatalf("open the file to age it: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Close() })
-	device, err := d.Get("d_old")
+	if _, err := conn.Exec("ALTER TABLE device DROP COLUMN last_platform"); err != nil {
+		conn.Close()
+		t.Fatalf("prepare a database without device.last_platform: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close the aged file: %v", err)
+	}
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open() accepted a database without device.last_platform")
+	} else if !strings.Contains(err.Error(), "last_platform") {
+		t.Fatalf("Open() error %q does not name the missing column", err)
+	}
+
+	// The failed start left the old table alone: nothing was added back.
+	conn, err = sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("Get() error: %v", err)
+		t.Fatalf("reopen the file: %v", err)
 	}
-	if device.LastAppVersion != "" {
-		t.Fatalf("migrated last_app_version = %q, want the old digest cleared", device.LastAppVersion)
+	defer conn.Close()
+	columns, err := tableColumns(conn, "device")
+	if err != nil {
+		t.Fatalf("inspect device columns: %v", err)
 	}
-	if found, err := d.hasColumn("device", "last_app_hash"); err != nil || found {
-		t.Fatalf("device.last_app_hash survived the migration: found %v, %v", found, err)
-	}
-	if found, err := d.hasColumn("device", "last_app_version"); err != nil || !found {
-		t.Fatalf("device.last_app_version missing after the migration: found %v, %v", found, err)
-	}
-	if found, err := d.hasColumn("release", "hash"); err != nil || found {
-		t.Fatalf("release.hash survived the migration: found %v, %v", found, err)
-	}
-	// A package published before the switch existed is manual.
-	if found, err := d.hasColumn("release", "auto_update"); err != nil || !found {
-		t.Fatalf("release.auto_update missing after the migration: found %v, %v", found, err)
-	}
-	release, found, err := d.Release("windows/amd64")
-	if err != nil || !found || release.Version != "2026.11.25-1" || release.SHA256 != "full-digest" || release.AutoUpdate {
-		t.Fatalf("migrated release = %+v, found %v, %v; want it kept and manual", release, found, err)
+	for _, name := range columns {
+		if name == "last_platform" {
+			t.Fatal("Open() added last_platform to a database that lacked it")
+		}
 	}
 }
 

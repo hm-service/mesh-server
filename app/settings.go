@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -29,10 +28,6 @@ import (
 )
 
 const (
-	// MaxAppVersionRunes bounds the version labels the control plane stores:
-	// the launcher version on the wire and the client version read from a
-	// package manifest.
-	MaxAppVersionRunes = 64
 	// MaxReleaseBytes bounds the package downloaded from a slot's URL.
 	MaxReleaseBytes = 200 << 20
 
@@ -51,9 +46,6 @@ const (
 	maxManifestBytes = 64 << 10
 )
 
-// platformPattern accepts the GOOS/GOARCH keys clients report.
-var platformPattern = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+$`)
-
 // ValidationError is a rejected admin input carrying the text the page shows.
 type ValidationError struct {
 	Message string
@@ -64,11 +56,6 @@ func (e *ValidationError) Error() string { return e.Message }
 // invalid 记下一条已经渲染好的拒绝说明：文案由 text 给出，这里不再格式化。
 func invalid(message string) error {
 	return &ValidationError{Message: message}
-}
-
-// ValidPlatform reports whether p can key a release row.
-func ValidPlatform(p string) bool {
-	return len(p) <= 64 && platformPattern.MatchString(p)
 }
 
 // TemplateTOML is the EasyTier configuration new devices start from.
@@ -150,7 +137,7 @@ func (a *App) Publish(in PublishInput) error {
 		launcher *db.LauncherSlot
 	)
 	if in.Client != nil {
-		if !ValidPlatform(in.Platform) {
+		if !signing.ValidPlatform(in.Platform) {
 			return invalid(text.Get(text.AppPlatformInvalid))
 		}
 		prepared, err := a.prepareClientSlot(in.Platform, *in.Client)
@@ -160,7 +147,7 @@ func (a *App) Publish(in PublishInput) error {
 		client = &prepared
 	}
 	if in.Launcher != nil {
-		if !ValidPlatform(in.Platform) {
+		if !signing.ValidPlatform(in.Platform) {
 			return invalid(text.Get(text.AppPlatformInvalid))
 		}
 		prepared, err := a.prepareLauncherSlot(in.Platform, *in.Launcher)
@@ -222,16 +209,22 @@ func (a *App) prepareClientSlot(platform string, pkg ClientPackage) (db.ClientSl
 	if err := checkReleaseSignatureShape(signing.SlotClient, next.Signature); err != nil {
 		return db.ClientSlot{}, err
 	}
-	sha, version, err := a.fetchClientPackage(next.URL)
+	sha, manifest, err := a.fetchClientPackage(next.URL)
 	if err != nil {
 		return db.ClientSlot{}, invalid(text.Format(text.AppClientFileUnreadable, err))
 	}
-	// 版本号要与设备上报的版本排序（CompareVersions），否则「是否更新」无从
-	// 判断，只能一直下发或一直不下发。
-	if !ValidAppVersion(version) || utf8.RuneCountInString(version) > MaxAppVersionRunes {
-		return db.ClientSlot{}, invalid(text.Format(text.AppPackageVersionInvalid,
-			manifestName, MaxAppVersionRunes, version))
+	// 清单合法域只有 signing 一份：槽位、版本、平台、文件名、摘要与必需文件
+	// 都在 ValidateManifest 里，发布路径不再自带一套字段检查。
+	if err := signing.ValidateManifest(manifest.Slot, manifest.Platform, manifest.Version, manifest.Files); err != nil {
+		return db.ClientSlot{}, invalid(text.Format(text.AppPackageManifestInvalid, manifestName, err))
 	}
+	// 合法不等于它是这一份：槽位与平台还要与本次发布一致，否则控制面会把
+	// 另一台机器的版本当成这个平台的版本存下去。
+	if manifest.Slot != signing.SlotClient || manifest.Platform != platform {
+		return db.ClientSlot{}, invalid(text.Format(text.AppPackageManifestMismatch,
+			manifestName, manifest.Slot, manifest.Platform, signing.SlotClient, platform))
+	}
+	version := manifest.Version
 	// 验签放在摘要算完之后：签名覆盖的是服务端刚下载到的那些字节的摘要，
 	// 而不是管理员在表单里填的那个。包在传输中被换掉时，这里对不上。
 	if err := a.VerifyReleaseSignature(signing.SlotClient, platform, version, sha, next.Signature); err != nil {
@@ -272,7 +265,7 @@ func (a *App) prepareLauncherSlot(platform string, slot db.LauncherSlot) (db.Lau
 
 // ClearRelease removes every slot published for platform.
 func (a *App) ClearRelease(platform string) error {
-	if !ValidPlatform(platform) {
+	if !signing.ValidPlatform(platform) {
 		return invalid(text.Get(text.AppPlatformInvalid))
 	}
 	return a.database.DeleteRelease(platform)
@@ -280,22 +273,22 @@ func (a *App) ClearRelease(platform string) error {
 
 // ClearLauncher removes only the launcher slot published for platform.
 func (a *App) ClearLauncher(platform string) error {
-	if !ValidPlatform(platform) {
+	if !signing.ValidPlatform(platform) {
 		return invalid(text.Get(text.AppPlatformInvalid))
 	}
 	return a.database.ClearLauncher(platform)
 }
 
-// validateSlotVersion enforces the shape of a slot's version label. Only the
-// launcher has one on the wire; a client package version comes from its
-// manifest and is checked by ValidAppVersion. slot is the field prefix
-// ("launcher").
+// validateSlotVersion enforces the release version shape on a slot's label.
+// Only the launcher has one on the wire; a client package version comes from
+// its manifest and goes through signing.ValidateManifest. slot is the field
+// prefix ("launcher").
 func validateSlotVersion(slot, version string) error {
 	if version == "" {
 		return invalid(text.Format(text.AppSlotVersionRequired, slot))
 	}
-	if utf8.RuneCountInString(version) > MaxAppVersionRunes {
-		return invalid(text.Format(text.AppSlotVersionTooLong, slot, MaxAppVersionRunes))
+	if !signing.ValidVersion(version) {
+		return invalid(text.Format(text.AppSlotVersionInvalid, slot, version))
 	}
 	return nil
 }
@@ -402,29 +395,29 @@ func (a *App) fetchDigest(rawURL string) (sha string, err error) {
 }
 
 // fetchClientPackage downloads a client package and returns the full sha256 of
-// the bytes clients will download together with the version its manifest
+// the bytes clients will download together with the manifest its root
 // declares. The body is decompressed only far enough to read the manifest; the
 // rest is drained so the digest still covers the whole file.
-func (a *App) fetchClientPackage(rawURL string) (sha, version string, err error) {
+func (a *App) fetchClientPackage(rawURL string) (sha string, manifest packageManifest, err error) {
 	body, err := a.openDownload(rawURL)
 	if err != nil {
-		return "", "", err
+		return "", packageManifest{}, err
 	}
 	defer body.Close()
 	sum := sha256.New()
 	counted := &countingReader{r: io.LimitReader(body, MaxReleaseBytes+1)}
 	tee := io.TeeReader(counted, sum)
-	version, err = packageVersion(tee)
+	manifest, err = readPackageManifest(tee)
 	if err != nil {
-		return "", "", err
+		return "", packageManifest{}, err
 	}
 	if _, err := io.Copy(io.Discard, tee); err != nil {
-		return "", "", err
+		return "", packageManifest{}, err
 	}
 	if counted.n > MaxReleaseBytes {
-		return "", "", errors.New(text.Get(text.AppFileTooLarge))
+		return "", packageManifest{}, errors.New(text.Get(text.AppFileTooLarge))
 	}
-	return hex.EncodeToString(sum.Sum(nil)), version, nil
+	return hex.EncodeToString(sum.Sum(nil)), manifest, nil
 }
 
 // countingReader counts the bytes read through it, so the caller can enforce
@@ -440,44 +433,49 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// packageVersion returns the version declared by the version.json manifest of a
-// tar.zst client package. A package without it, or with a manifest that names
-// no version, is rejected: the label the admin typed is only trustworthy when
-// the package agrees.
-func packageVersion(r io.Reader) (string, error) {
+// packageManifest is the version.json a client package carries at its root. The
+// fields are exactly the ones signing.ValidateManifest judges; this type only
+// carries them from the archive to that rule.
+type packageManifest struct {
+	Version  string            `json:"version"`
+	Slot     string            `json:"slot"`
+	Platform string            `json:"platform"`
+	Files    map[string]string `json:"files"`
+}
+
+// readPackageManifest returns the version.json manifest of a tar.zst client
+// package. A package without one, or with one that cannot be parsed, is
+// rejected here; whether the manifest is legal is signing.ValidateManifest's
+// question, so this function does not judge any field.
+func readPackageManifest(r io.Reader) (packageManifest, error) {
 	zr, err := zstd.NewReader(r)
 	if err != nil {
-		return "", fmt.Errorf("%s：%w", text.Get(text.AppDecompressFailed), err)
+		return packageManifest{}, fmt.Errorf("%s：%w", text.Get(text.AppDecompressFailed), err)
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return "", errors.New(text.Format(text.AppManifestMissing, manifestName))
+			return packageManifest{}, errors.New(text.Format(text.AppManifestMissing, manifestName))
 		}
 		if err != nil {
-			return "", fmt.Errorf("%s：%w", text.Get(text.AppPackageReadFailed), err)
+			return packageManifest{}, fmt.Errorf("%s：%w", text.Get(text.AppPackageReadFailed), err)
 		}
 		if path.Clean(hdr.Name) != manifestName {
 			continue
 		}
 		raw, err := io.ReadAll(io.LimitReader(tr, maxManifestBytes+1))
 		if err != nil {
-			return "", fmt.Errorf("%s：%w", text.Format(text.AppManifestReadFailed, manifestName), err)
+			return packageManifest{}, fmt.Errorf("%s：%w", text.Format(text.AppManifestReadFailed, manifestName), err)
 		}
 		if len(raw) > maxManifestBytes {
-			return "", errors.New(text.Format(text.AppManifestTooLarge, manifestName, maxManifestBytes))
+			return packageManifest{}, errors.New(text.Format(text.AppManifestTooLarge, manifestName, maxManifestBytes))
 		}
-		var manifest struct {
-			Version string `json:"version"`
-		}
+		var manifest packageManifest
 		if err := json.Unmarshal(raw, &manifest); err != nil {
-			return "", fmt.Errorf("%s：%w", text.Format(text.AppManifestParseFailed, manifestName), err)
+			return packageManifest{}, fmt.Errorf("%s：%w", text.Format(text.AppManifestParseFailed, manifestName), err)
 		}
-		if manifest.Version == "" {
-			return "", errors.New(text.Format(text.AppManifestVersionMissing, manifestName))
-		}
-		return manifest.Version, nil
+		return manifest, nil
 	}
 }

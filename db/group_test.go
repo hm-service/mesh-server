@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -181,86 +182,66 @@ func TestDeviceLayoutPersists(t *testing.T) {
 	}
 }
 
-// TestOpenMigratesExistingDatabase proves that a database created before groups
-// existed gains the columns and the table without losing its devices, and that
-// the leftovers of the removed JSON import (device.legacy_id and the setting
-// table) are dropped.
-func TestOpenMigratesExistingDatabase(t *testing.T) {
+// TestOpenRejectsLegacyDatabaseWithoutDroppingItsRemnants pins that the startup
+// check reports structure it does not expect and leaves the file untouched: the
+// legacy column and the old setting table are not removed to make Open pass.
+func TestOpenRejectsLegacyDatabaseWithoutDroppingItsRemnants(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mesh.db")
-	conn, err := sql.Open("sqlite", path)
+	current, err := Open(path)
 	if err != nil {
-		t.Fatalf("open old database: %v", err)
+		t.Fatalf("Open() on a fresh database: %v", err)
 	}
-	const oldSchema = `CREATE TABLE device (
-	    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-	    public_id        TEXT    NOT NULL UNIQUE,
-	    legacy_id        TEXT    NOT NULL DEFAULT '',
-	    name             TEXT    NOT NULL DEFAULT '',
-	    device_id        TEXT    NOT NULL DEFAULT '',
-	    hostname         TEXT    NOT NULL DEFAULT '',
-	    pubkey           TEXT    NOT NULL DEFAULT '',
-	    config_toml      TEXT    NOT NULL DEFAULT '',
-	    config_hash      TEXT    NOT NULL DEFAULT '',
-	    token            TEXT    NOT NULL DEFAULT '',
-	    token_expires_at INTEGER NOT NULL DEFAULT 0,
-	    created_at       INTEGER NOT NULL DEFAULT 0,
-	    last_seen_at     INTEGER NOT NULL DEFAULT 0,
-	    last_ip          TEXT    NOT NULL DEFAULT '',
-	    last_config_hash TEXT    NOT NULL DEFAULT '',
-	    last_app_hash    TEXT    NOT NULL DEFAULT ''
-	)`
-	if _, err := conn.Exec(oldSchema); err != nil {
-		conn.Close()
-		t.Fatalf("create old schema: %v", err)
-	}
-	const oldSetting = `CREATE TABLE setting (
-	    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-	    app_version   TEXT    NOT NULL DEFAULT '',
-	    app_url       TEXT    NOT NULL DEFAULT '',
-	    app_hash      TEXT    NOT NULL DEFAULT '',
-	    app_sha256    TEXT    NOT NULL DEFAULT '',
-	    app_notes     TEXT    NOT NULL DEFAULT ''
-	)`
-	if _, err := conn.Exec(oldSetting); err != nil {
-		conn.Close()
-		t.Fatalf("create old setting table: %v", err)
-	}
-	if _, err := conn.Exec("INSERT INTO device (public_id, name) VALUES ('d_old', '旧设备')"); err != nil {
-		conn.Close()
-		t.Fatalf("insert old device: %v", err)
-	}
-	if _, err := conn.Exec("INSERT INTO setting (app_version) VALUES ('0.1.0')"); err != nil {
-		conn.Close()
-		t.Fatalf("insert old setting: %v", err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("close old database: %v", err)
+	if err := current.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
 	}
 
-	d, err := Open(path)
+	conn, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("Open() on old database error: %v", err)
+		t.Fatalf("open the file to age it: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Close() })
-	device, err := d.Get("d_old")
-	if err != nil || device.GroupID != 0 || device.Position != 0 || device.Name != "旧设备" {
-		t.Fatalf("migrated device = %+v, %v", device, err)
+	for _, statement := range []string{
+		"ALTER TABLE device ADD COLUMN legacy_id TEXT NOT NULL DEFAULT ''",
+		"CREATE UNIQUE INDEX device_legacy_id ON device (legacy_id)",
+		"CREATE TABLE setting (id INTEGER PRIMARY KEY AUTOINCREMENT, app_version TEXT NOT NULL DEFAULT '')",
+	} {
+		if _, err := conn.Exec(statement); err != nil {
+			conn.Close()
+			t.Fatalf("prepare a legacy database: %v", err)
+		}
 	}
-	group, err := d.CreateGroup("新分组")
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close the aged file: %v", err)
+	}
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open() accepted a database with a legacy device column")
+	} else if !strings.Contains(err.Error(), "legacy_id") {
+		t.Fatalf("Open() error %q does not name the unexpected column", err)
+	}
+
+	conn, err = sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("CreateGroup() on migrated database error: %v", err)
+		t.Fatalf("reopen the file: %v", err)
 	}
-	if err := d.SetDeviceGroup("d_old", group.ID); err != nil {
-		t.Fatalf("SetDeviceGroup() on migrated database error: %v", err)
+	defer conn.Close()
+	columns, err := tableColumns(conn, "device")
+	if err != nil {
+		t.Fatalf("inspect device columns: %v", err)
 	}
-	if found, err := d.hasColumn("device", "legacy_id"); err != nil || found {
-		t.Fatalf("device.legacy_id survived the migration: found %v, %v", found, err)
+	found := false
+	for _, name := range columns {
+		if name == "legacy_id" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Open() dropped device.legacy_id instead of reporting it")
 	}
 	var settings int
-	if err := d.conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'setting'").Scan(&settings); err != nil {
+	if err := conn.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'setting'").Scan(&settings); err != nil {
 		t.Fatalf("inspect old setting table: %v", err)
 	}
-	if settings != 0 {
-		t.Fatal("the setting table survived the migration")
+	if settings != 1 {
+		t.Fatal("Open() dropped the setting table instead of reporting it")
 	}
 }

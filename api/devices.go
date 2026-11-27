@@ -76,37 +76,16 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 	}
 }
 
-// deviceDetail is the full device record GET /api/admin/devices/{id} returns, plus
-// the derived status fields the console shows.
+// deviceDetail is the full device record GET /api/admin/devices/{id} returns: the
+// same projection as one list row (embedded, so the JSON stays flat) plus the
+// fields only the detail view exposes.
 type deviceDetail struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	DeviceID       string `json:"deviceId"`
-	Hostname       string `json:"hostname"`
+	deviceSummary
 	Pubkey         string `json:"pubkey"`
 	ConfigTOML     string `json:"configToml"`
-	ConfigHash     string `json:"configHash"`
 	Token          string `json:"token"`
 	TokenExpiresAt int64  `json:"tokenExpiresAt"`
-	CreatedAt      int64  `json:"createdAt"`
-	LastSeenAt     int64  `json:"lastSeenAt"`
 	LastIP         string `json:"lastIp"`
-	LastConfigHash string `json:"lastConfigHash"`
-	LastAppVersion string `json:"lastAppVersion"`
-	Status         string `json:"status"`
-	ConfigState    string `json:"configState"`
-	AppState       string `json:"appState"`
-	AppVersion     string `json:"appVersion"`
-	Platform       string `json:"lastPlatform"`
-	GroupID        int64  `json:"groupId"`
-	Position       int64  `json:"position"`
-	// Identity、IPv4、DHCP 是从 configToml 派生的展示字段（app.ConfigFactsOf）。
-	Identity string `json:"identity"`
-	IPv4     string `json:"ipv4"`
-	DHCP     bool   `json:"dhcp"`
-	// AutoUpdate 是设备级自动更新覆盖：null 跟随发布包，true 强制自动，false
-	// 强制手动（contract/admin-api.md「设备级自动更新」）。
-	AutoUpdate *bool `json:"autoUpdate"`
 	// Credential 是最新一张凭据的签发时间与到期时间；没有凭据时是 null。
 	// 私钥从不出现在这里。
 	Credential *credentialView `json:"credential"`
@@ -119,33 +98,13 @@ type credentialView struct {
 }
 
 func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
-	facts := app.ConfigFactsOf(d.ConfigTOML)
 	return deviceDetail{
-		ID:             d.PublicID,
-		Name:           d.Name,
-		DeviceID:       d.DeviceID,
-		Hostname:       d.Hostname,
+		deviceSummary:  summarize(d, release, now),
 		Pubkey:         d.Pubkey,
 		ConfigTOML:     d.ConfigTOML,
-		ConfigHash:     d.ConfigHash,
 		Token:          d.Token,
 		TokenExpiresAt: d.TokenExpiresAt,
-		CreatedAt:      d.CreatedAt,
-		LastSeenAt:     d.LastSeenAt,
 		LastIP:         d.LastIP,
-		LastConfigHash: d.LastConfigHash,
-		LastAppVersion: d.LastAppVersion,
-		Status:         app.DeviceStatus(d, now),
-		ConfigState:    app.ConfigState(d),
-		AppState:       app.AppState(d, release),
-		AppVersion:     release.Version,
-		Platform:       d.LastPlatform,
-		GroupID:        d.GroupID,
-		Position:       d.Position,
-		Identity:       facts.Identity,
-		IPv4:           facts.IPv4,
-		DHCP:           facts.DHCP,
-		AutoUpdate:     d.AutoUpdate,
 	}
 }
 

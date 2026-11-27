@@ -21,10 +21,12 @@ api.text.slot_only_launcher = slot 只能是 launcher
 app.text.platform_invalid = platform 必须是 GOOS/GOARCH 形式，如 windows/amd64
 app.text.notes_too_long = appNotes 最长 {0} 字符
 app.text.client_file_unreadable = 无法读取 appUrl 指向的文件：{0}
-app.text.package_version_invalid = 包内 {0} 的 version 必须是 YYYY.MM.DD-N 形式（最长 {1} 字符），实际是「{2}」
+app.text.config_unreadable = 设备配置读不出来，无法判断节点身份
+app.text.package_manifest_invalid = 包内 {0} 不合法：{1}
+app.text.package_manifest_mismatch = 包内 {0} 的 slot/platform 是 {1}/{2}，本次发布是 {3}/{4}
 app.text.launcher_file_unreadable = 无法读取 launcherUrl 指向的文件：{0}
 app.text.slot_version_required = {0}_version 不能为空
-app.text.slot_version_too_long = {0}_version 最长 {1} 字符
+app.text.slot_version_invalid = {0}_version 必须是 YYYY.MM.DD-N 形式的版本号，实际是「{1}」
 app.text.slot_url_required = {0}_url 不能为空
 app.text.slot_url_too_long = {0}_url 最长 {1} 字符
 app.text.slot_url_invalid = {0}_url 必须是 http(s) 地址
@@ -46,7 +48,6 @@ app.error.package_read_failed = 读取更新包失败
 app.error.manifest_read_failed = 读取 {0} 失败
 app.error.manifest_too_large = {0} 超过 {1} 字节
 app.error.manifest_parse_failed = 解析 {0} 失败
-app.error.manifest_version_missing = {0} 缺少 version
 
 # httpx：入参解析。
 httpx.error.address_invalid = 非法的地址或网段「{0}」

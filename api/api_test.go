@@ -344,16 +344,28 @@ func tarZst(t *testing.T, entries map[string][]byte) []byte {
 }
 
 // releasePkg packs the client beside the kernel it needs and the version.json
-// manifest that states the version the package was built as.
+// manifest that states the version the package was built as. The manifest is a
+// complete windows/amd64 client manifest: every case that rejects a package
+// changes one field of it, so the publish path is never exercised with a shape
+// the release tool could not have produced.
 func releasePkg(t *testing.T, version string, client []byte) []byte {
 	t.Helper()
-	manifest, err := json.Marshal(map[string]any{"version": version, "files": map[string]string{}})
+	core := []byte("core")
+	manifest, err := json.Marshal(map[string]any{
+		"version":  version,
+		"slot":     signing.SlotClient,
+		"platform": testPlatform,
+		"files": map[string]string{
+			"mesh-client.exe":   digestOf(client),
+			"easytier-core.exe": digestOf(core),
+		},
+	})
 	if err != nil {
 		t.Fatalf("marshal version.json: %v", err)
 	}
 	return tarZst(t, map[string][]byte{
 		"mesh-client.exe":   client,
-		"easytier-core.exe": []byte("core"),
+		"easytier-core.exe": core,
 		"version.json":      manifest,
 	})
 }
@@ -830,7 +842,7 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 	}
 
 	// 没报 known：完整形状，且不带 unchanged。
-	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-0")
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-1")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("heartbeat without known = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -844,7 +856,7 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 	}
 
 	// 报了一个对不上的摘要：仍然完整，不能因为"报了个值"就当成已知。
-	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.26-0", strings.Repeat("0", 64))
+	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.25-1", strings.Repeat("0", 64))
 	got, body = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || *got.AppUpdate != wantFull {
 		t.Fatalf("heartbeat with a wrong known = %d %+v, want the full appUpdate", res.StatusCode, got.AppUpdate)
@@ -854,7 +866,7 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 	}
 
 	// 摘要一致：精简形状，只带 version/autoUpdate/unchanged。
-	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.26-0", wantSHA)
+	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.25-1", wantSHA)
 	got, body = decode(data)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("heartbeat with a matching known = %d, want 200: %s", res.StatusCode, data)
@@ -871,7 +883,7 @@ func TestHeartbeatAppUpdateKnown(t *testing.T) {
 
 	// 设备级覆盖照样生效：精简形状里的 autoUpdate 不是发布包上的值。
 	putDevice(t, env, dev.internalID, map[string]any{"name": "laptop", "configToml": dev.configTOML, "autoUpdate": false})
-	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.26-0", wantSHA)
+	res, data = heartbeatKnown(t, env, dev, &nonces, dev.configHash, "2026.11.25-1", wantSHA)
 	got, _ = decode(data)
 	if res.StatusCode != http.StatusOK || got.AppUpdate == nil || !got.AppUpdate.Unchanged || got.AppUpdate.AutoUpdate {
 		t.Fatalf("matching known after a device override = %d %+v, want unchanged with autoUpdate false", res.StatusCode, got.AppUpdate)
@@ -1163,7 +1175,7 @@ func TestAutoUpdateFollowsThePackage(t *testing.T) {
 	}
 
 	// The client learns the policy together with the update itself.
-	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-0")
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-1")
 	var got heartbeatResponse
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("decode heartbeat: %v", err)
@@ -1220,7 +1232,7 @@ func putDevice(t *testing.T, env *testenv.Env, id string, body map[string]any) {
 // autoUpdate the device is told to use.
 func deviceAutoUpdate(t *testing.T, env *testenv.Env, dev registeredDevice, nonces *int64) *bool {
 	t.Helper()
-	res, data := heartbeat(t, env, dev, nonces, dev.configHash, "2026.11.26-0")
+	res, data := heartbeat(t, env, dev, nonces, dev.configHash, "2026.11.25-1")
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("heartbeat = %d: %s, want 200", res.StatusCode, data)
 	}
@@ -1480,7 +1492,7 @@ func TestUnsignedReleaseIsNotOffered(t *testing.T) {
 	dev := registerDevice(t, env, "laptop", testTOML)
 	seedUnsignedRelease(t, env, testPlatform)
 
-	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.26-0")
+	res, data := heartbeat(t, env, dev, &nonces, dev.configHash, "2026.11.25-1")
 	if res.StatusCode != http.StatusNoContent || len(data) != 0 {
 		t.Fatalf("heartbeat = %d (%s), want 204: an unsigned slot must look unpublished", res.StatusCode, data)
 	}
@@ -1565,6 +1577,11 @@ func TestLauncherRejectsIncompletePublish(t *testing.T) {
 			name:   "missing platform",
 			fields: map[string]string{"launcherVersion": "2026.11.25-36", "launcherUrl": "http://example.com/mesh.exe", "launcherSignature": dummySignature},
 			want:   "platform",
+		},
+		{
+			name:   "version outside the domain",
+			fields: map[string]string{"platform": testPlatform, "launcherVersion": "2026.11.26-013", "launcherUrl": "http://example.com/mesh.exe", "launcherSignature": dummySignature},
+			want:   "YYYY.MM.DD-N",
 		},
 	}
 	for _, tc := range cases {
@@ -1727,15 +1744,38 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 		"easytier-core.exe": []byte("core"),
 	})
 	unorderable, err := json.Marshal(map[string]any{
-		"version": "build-2026-11-26",
-		"files":   map[string]string{},
+		"version":  "build-2026-11-26",
+		"slot":     signing.SlotClient,
+		"platform": testPlatform,
+		"files": map[string]string{
+			"mesh-client.exe":   digestOf([]byte("client build")),
+			"easytier-core.exe": digestOf([]byte("core")),
+		},
 	})
 	if err != nil {
 		t.Fatalf("marshal version.json: %v", err)
 	}
 	badLabel := tarZst(t, map[string][]byte{
-		"mesh-client.exe": []byte("client build"),
-		"version.json":    unorderable,
+		"mesh-client.exe":   []byte("client build"),
+		"easytier-core.exe": []byte("core"),
+		"version.json":      unorderable,
+	})
+	wrongPlatform, err := json.Marshal(map[string]any{
+		"version":  "2026.11.26-11",
+		"slot":     signing.SlotClient,
+		"platform": "linux/amd64",
+		"files": map[string]string{
+			"mesh-client":   digestOf([]byte("client build")),
+			"easytier-core": digestOf([]byte("core")),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal version.json: %v", err)
+	}
+	foreignPlatform := tarZst(t, map[string][]byte{
+		"mesh-client":   []byte("client build"),
+		"easytier-core": []byte("core"),
+		"version.json":  wrongPlatform,
 	})
 
 	cases := []struct {
@@ -1745,6 +1785,7 @@ func TestClientPackageVersionComesFromThePackage(t *testing.T) {
 	}{
 		{name: "missing manifest", pkg: noManifest, want: "version.json"},
 		{name: "unorderable version", pkg: badLabel, want: "YYYY.MM.DD-N"},
+		{name: "manifest for another platform", pkg: foreignPlatform, want: "slot/platform"},
 		{name: "not a tar.zst", pkg: []byte("not a package"), want: "更新包"},
 	}
 	for _, tc := range cases {

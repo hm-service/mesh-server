@@ -260,7 +260,7 @@ async function clearPlatform(platform: string) {
                 :id="platform + '-launcher-version'"
                 v-model="drafts[platform]!.launcher.version"
                 type="text"
-                maxlength="64"
+                maxlength="15"
                 placeholder="2026.11.25-36"
                 autocomplete="off"
               />

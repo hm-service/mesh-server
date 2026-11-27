@@ -28,27 +28,43 @@ type ConfigFacts struct {
 
 // configFile 只声明控制台要读的字段，其余内容原样交给 easytier-core。
 // ipv4 既可能是字符串也可能是数组，所以按 any 解。
+//
+// network_secret 只在 [network_identity] 里认：顶层同名键是早期配置的写法，
+// 两个位置都认的时候，一份「子表为空、顶层有值」的合法 TOML 会让两端判出
+// 不同的身份（客户端只认子表）。
 type configFile struct {
-	IPv4            any    `toml:"ipv4"`
-	DHCP            *bool  `toml:"dhcp"`
-	NetworkSecret   string `toml:"network_secret"`
+	IPv4            any   `toml:"ipv4"`
+	DHCP            *bool `toml:"dhcp"`
 	NetworkIdentity *struct {
 		NetworkSecret string `toml:"network_secret"`
 	} `toml:"network_identity"`
 }
 
+// identityOf 是节点身份的唯一判据：只在 [network_identity] 里看 network_secret。
+// 解析不了就返回错误，不拿「没有 secret」的普通节点语义承接解析失败——那会把
+// 一台正式节点当成凭据节点，签给它的凭据它永远不会用。
+func identityOf(configTOML string) (string, error) {
+	var file configFile
+	if _, err := toml.Decode(configTOML, &file); err != nil {
+		return "", err
+	}
+	if file.NetworkIdentity != nil && strings.TrimSpace(file.NetworkIdentity.NetworkSecret) != "" {
+		return IdentityFormal, nil
+	}
+	return IdentityCredential, nil
+}
+
 // ConfigFactsOf derives what the console shows from a device configuration.
-// 解析不了时按凭据节点、无固定地址处理：控制台只拿它显示，签发的判断在
-// IssueCredential 里另有一次，两者用的是同一个函数。
+// 解析不了时按凭据节点、无固定地址处理：控制台只拿它显示，用不着为一份坏配置
+// 把整个设备列表变成错误。凭据签发那条路走 identityOf，它不会吞掉解析错误。
 func ConfigFactsOf(configTOML string) ConfigFacts {
 	facts := ConfigFacts{Identity: IdentityCredential}
 	var file configFile
 	if _, err := toml.Decode(configTOML, &file); err != nil {
 		return facts
 	}
-	if strings.TrimSpace(file.NetworkSecret) != "" ||
-		(file.NetworkIdentity != nil && strings.TrimSpace(file.NetworkIdentity.NetworkSecret) != "") {
-		facts.Identity = IdentityFormal
+	if identity, err := identityOf(configTOML); err == nil {
+		facts.Identity = identity
 	}
 	facts.IPv4 = firstIPv4(file.IPv4)
 	facts.DHCP = file.DHCP != nil && *file.DHCP

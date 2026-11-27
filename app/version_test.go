@@ -2,6 +2,47 @@ package app
 
 import "testing"
 
+// TestValidAppVersion pins the domain the control plane shares with the release
+// tool: YYYY.MM.DD-N with a four-digit year in 2000..2999, two-digit month and
+// day, and a one-to-four-digit sequence without a leading zero.
+func TestValidAppVersion(t *testing.T) {
+	for _, good := range []string{
+		"2026.11.27-117",
+		"2026.11.27-1",
+		"2000.01.01-1",
+		"2999.12.31-9999",
+	} {
+		t.Run("accepts "+good, func(t *testing.T) {
+			if !ValidAppVersion(good) {
+				t.Fatalf("ValidAppVersion(%q) = false", good)
+			}
+		})
+	}
+	for name, bad := range map[string]string{
+		"empty":                      "",
+		"single digit month and day": "2026.1.1-1",
+		"leading zero sequence":      "2026.11.26-013",
+		"v prefix":                   "v2026.11.26-1",
+		"release candidate":          "2026.11.26-1-rc1",
+		"zero sequence":              "2026.11.26-0",
+		"sequence above 9999":        "2026.11.26-10000",
+		"missing sequence":           "2026.11.26-",
+		"year below 2000":            "1999.12.31-1",
+		"year above 2999":            "3000.01.01-1",
+		"month above 12":             "2026.13.01-1",
+		"day above 31":               "2026.11.32-1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if ValidAppVersion(bad) {
+				t.Fatalf("ValidAppVersion(%q) = true", bad)
+			}
+			if _, ok := CompareVersions(bad, "2026.11.26-1"); ok {
+				t.Fatalf("CompareVersions ordered %q", bad)
+			}
+		})
+	}
+}
+
 // TestCompareVersions pins the order: build date first, then that day's
 // sequence number. The sequence must be compared as a number, because string
 // order puts "-9" after "-11" and would make a newer device look outdated.
@@ -16,7 +57,8 @@ func TestCompareVersions(t *testing.T) {
 		{name: "sequence is numeric, reversed", a: "2026.11.26-11", b: "2026.11.26-9", wantOrder: 1},
 		{name: "many digits", a: "2026.11.26-99", b: "2026.11.26-100", wantOrder: -1},
 		{name: "date wins over sequence", a: "2026.11.25-99", b: "2026.11.26-1", wantOrder: -1},
-		{name: "year boundary", a: "2025.12.31-7", b: "2026.01.01-1", wantOrder: -1},
+		{name: "month boundary", a: "2026.10.31-99", b: "2026.11.01-1", wantOrder: -1},
+		{name: "year boundary", a: "2099.12.31-7", b: "2100.01.01-1", wantOrder: -1},
 		{name: "month digits", a: "2026.09.30-1", b: "2026.10.01-1", wantOrder: -1},
 	}
 	for _, tc := range cases {
@@ -26,16 +68,6 @@ func TestCompareVersions(t *testing.T) {
 				t.Fatalf("CompareVersions(%q, %q) = %d, %v; want %d, true", tc.a, tc.b, order, ok, tc.wantOrder)
 			}
 		})
-	}
-
-	for _, bad := range []string{"", "v1", "2026.11.26", "2026.11.26-", "2026.11.26-x", "2026.11.26-1-2", "2026.11.26-01a"} {
-		if !ValidAppVersion(bad) {
-			continue
-		}
-		t.Fatalf("ValidAppVersion(%q) = true, want false", bad)
-	}
-	if _, ok := CompareVersions("2026.11.26-1", "v2"); ok {
-		t.Fatal("CompareVersions accepted a label that is not a build version")
 	}
 }
 
@@ -57,6 +89,7 @@ func TestNeedsUpdate(t *testing.T) {
 		{name: "nothing published", reported: "2026.11.26-9", published: "", want: false},
 		{name: "never reported", reported: "", published: "2026.11.26-11", want: true},
 		{name: "unorderable report", reported: "dev-build", published: "2026.11.26-11", want: false},
+		{name: "leading zero report", reported: "2026.11.26-013", published: "2026.11.26-11", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

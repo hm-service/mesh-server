@@ -116,6 +116,68 @@ func TestReenrollRevokesPreviousIdentity(t *testing.T) {
 	}
 }
 
+// TestRebindClearsPreviousObservations pins Q10: a rebind replaces the identity
+// and the observations that identity reported, in the same update. Slot-owned
+// attributes (name, group, configuration) survive; a rebind to the same
+// device_id is not an identity change and keeps its observations.
+func TestRebindClearsPreviousObservations(t *testing.T) {
+	a := openTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(token, "dev-1", "OLD-HOST", "pk1", "10.0.0.1"); err != nil {
+		t.Fatalf("first bind: %v", err)
+	}
+	if err := a.RecordHeartbeat(device.PublicID, "old-hash", "2026.11.26-1", "windows/amd64"); err != nil {
+		t.Fatalf("RecordHeartbeat() error: %v", err)
+	}
+	if _, err := a.UpdateDevice(device.PublicID, "renamed", "a = 2\n", AutoUpdateChoice{}); err != nil {
+		t.Fatalf("UpdateDevice() error: %v", err)
+	}
+	group, err := a.CreateGroup("办公")
+	if err != nil {
+		t.Fatalf("CreateGroup() error: %v", err)
+	}
+	if err := a.SetDeviceGroup(device.PublicID, group.ID); err != nil {
+		t.Fatalf("SetDeviceGroup() error: %v", err)
+	}
+
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	bound, err := a.BindDevice(reissued, "dev-2", "NEW-HOST", "pk2", "")
+	if err != nil {
+		t.Fatalf("rebind error: %v", err)
+	}
+	if bound.LastConfigHash != "" || bound.LastAppVersion != "" || bound.LastPlatform != "" {
+		t.Fatalf("observations of the previous identity survived the rebind: %+v", bound)
+	}
+	if bound.Name != "renamed" || bound.ConfigTOML != "a = 2\n" || bound.ConfigHash != core.Hash("a = 2\n") || bound.GroupID != group.ID {
+		t.Fatalf("slot attributes were lost by the rebind: %+v", bound)
+	}
+	if bound.DeviceID != "dev-2" || bound.Hostname != "NEW-HOST" || bound.Pubkey != "pk2" {
+		t.Fatalf("identity not replaced: %+v", bound)
+	}
+
+	// 同一身份重新注册不是换绑：观测值仍属于它。
+	if err := a.RecordHeartbeat(device.PublicID, "new-hash", "2026.11.27-1", "linux/amd64"); err != nil {
+		t.Fatalf("RecordHeartbeat() error: %v", err)
+	}
+	again, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	same, err := a.BindDevice(again, "dev-2", "NEW-HOST", "pk2", "")
+	if err != nil {
+		t.Fatalf("rebind to the same identity: %v", err)
+	}
+	if same.LastConfigHash != "new-hash" || same.LastAppVersion != "2026.11.27-1" || same.LastPlatform != "linux/amd64" {
+		t.Fatalf("observations cleared although the identity did not change: %+v", same)
+	}
+}
+
 func TestDeleteRevokesDeviceID(t *testing.T) {
 	a := openTemp(t)
 	device, token, err := a.CreateDevice("laptop", "a = 1\n")
@@ -271,12 +333,11 @@ func dbRelease(version string) db.Release {
 	return db.Release{Version: version}
 }
 
-// TestOpenRehashesStoredConfigs pins F3: a row written with the old normalized
-// digest is rewritten on the next Open, so the device does not report a hash the
-// client can never compute and stays stale forever.
-func TestOpenRehashesStoredConfigs(t *testing.T) {
+// TestOpenLeavesStoredConfigHashAlone pins that startup no longer repairs data:
+// the row keeps the digest it was written with. A changed hash algorithm is a
+// manual migration, not a silent rewrite on boot.
+func TestOpenLeavesStoredConfigHashAlone(t *testing.T) {
 	dir := t.TempDir()
-	// 与内置模板一样末尾没有换行：旧算法会补一个，所以两个摘要必然不同。
 	const toml = "hostname = \"auto\""
 	first, err := Open(dir, Options{})
 	if err != nil {
@@ -286,15 +347,15 @@ func TestOpenRehashesStoredConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDevice() error: %v", err)
 	}
-	legacy := core.Hash(toml + "\n")
-	if legacy == core.Hash(toml) {
+	stored := core.Hash(toml + "\n")
+	if stored == core.Hash(toml) {
 		t.Fatalf("the two digests are equal, the test proves nothing")
 	}
 	if _, err := first.database.Update(device.PublicID, func(d *db.Device) error {
-		d.ConfigHash = legacy
+		d.ConfigHash = stored
 		return nil
 	}); err != nil {
-		t.Fatalf("store the legacy digest: %v", err)
+		t.Fatalf("store a digest written by an older algorithm: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close() error: %v", err)
@@ -305,14 +366,11 @@ func TestOpenRehashesStoredConfigs(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	t.Cleanup(func() { _ = second.Close() })
-	migrated, found, err := second.DeviceByID(device.PublicID)
+	reloaded, found, err := second.DeviceByID(device.PublicID)
 	if err != nil || !found {
 		t.Fatalf("DeviceByID() = found %v, %v", found, err)
 	}
-	if migrated.ConfigHash != core.Hash(toml) {
-		t.Fatalf("config hash = %q, want %q", migrated.ConfigHash, core.Hash(toml))
-	}
-	if migrated.ConfigTOML != toml {
-		t.Fatalf("migration rewrote the config itself: %q", migrated.ConfigTOML)
+	if reloaded.ConfigHash != stored {
+		t.Fatalf("config hash = %q, want the stored %q kept", reloaded.ConfigHash, stored)
 	}
 }

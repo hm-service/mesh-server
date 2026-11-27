@@ -55,7 +55,7 @@ func TestBindDeviceConsumesToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bound, err := a.BindDevice(token, "dev-1", "DESKTOP", "pubkey", "127.0.0.1")
+	bound, err := a.BindDevice(context.Background(), token, "dev-1", "DESKTOP", "pubkey", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestBindDeviceConsumesToken(t *testing.T) {
 	if bound.Token != "" || bound.TokenExpiresAt != 0 {
 		t.Fatalf("token not consumed: %+v", bound)
 	}
-	if _, err := a.BindDevice(token, "dev-2", "OTHER", "pubkey", ""); !errors.Is(err, ErrTokenInvalid) {
+	if _, err := a.BindDevice(context.Background(), token, "dev-2", "OTHER", "pubkey", ""); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("second BindDevice() = %v, want ErrTokenInvalid", err)
 	}
 }
@@ -83,7 +83,7 @@ func TestBindDeviceRejectsExpiredToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.now = clock.now.Add(TokenTTL + time.Second)
-	if _, err := instance.BindDevice(token, "dev-1", "HOST", "pk", ""); !errors.Is(err, ErrTokenInvalid) {
+	if _, err := instance.BindDevice(context.Background(), token, "dev-1", "HOST", "pk", ""); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("expired token = %v, want ErrTokenInvalid", err)
 	}
 }
@@ -94,14 +94,14 @@ func TestReenrollRevokesPreviousIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.BindDevice(token, "dev-1", "HOST", "pk", ""); err != nil {
+	if _, err := a.BindDevice(context.Background(), token, "dev-1", "HOST", "pk", ""); err != nil {
 		t.Fatal(err)
 	}
 	reissued, err := a.IssueToken(device.PublicID)
 	if err != nil {
 		t.Fatalf("IssueToken() error: %v", err)
 	}
-	bound, err := a.BindDevice(reissued, "dev-2", "HOST", "pk2", "")
+	bound, err := a.BindDevice(context.Background(), reissued, "dev-2", "HOST", "pk2", "")
 	if err != nil {
 		t.Fatalf("re-enroll error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.BindDevice(token, "dev-1", "OLD-HOST", "pk1", "10.0.0.1"); err != nil {
+	if _, err := a.BindDevice(context.Background(), token, "dev-1", "OLD-HOST", "pk1", "10.0.0.1"); err != nil {
 		t.Fatalf("first bind: %v", err)
 	}
 	if err := a.RecordHeartbeat(device.PublicID, "old-hash", "2026.11.26-1", "windows/amd64"); err != nil {
@@ -147,7 +147,7 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueToken() error: %v", err)
 	}
-	bound, err := a.BindDevice(reissued, "dev-2", "NEW-HOST", "pk2", "")
+	bound, err := a.BindDevice(context.Background(), reissued, "dev-2", "NEW-HOST", "pk2", "")
 	if err != nil {
 		t.Fatalf("rebind error: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueToken() error: %v", err)
 	}
-	same, err := a.BindDevice(again, "dev-2", "NEW-HOST", "pk2", "")
+	same, err := a.BindDevice(context.Background(), again, "dev-2", "NEW-HOST", "pk2", "")
 	if err != nil {
 		t.Fatalf("rebind to the same identity: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDeleteRevokesDeviceID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.BindDevice(token, "dev-1", "HOST", "pk", ""); err != nil {
+	if _, err := a.BindDevice(context.Background(), token, "dev-1", "HOST", "pk", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.DeleteDevice(context.Background(), device.PublicID); err != nil {

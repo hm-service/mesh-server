@@ -55,6 +55,8 @@ type App struct {
 	fetch     *http.Client
 	revokedMu sync.Mutex
 	revoked   map[string]struct{}
+	// locks 按设备串行化凭据生命周期：删除、换绑、确认、签发对同一台设备排队。
+	locks *keyedLock
 	// credential 为空表示这台控制面没有配置签发通道。
 	credential *credentialIssuer
 	// releaseKey 校验发布签名，见 Options.ReleasePublicKey。
@@ -82,6 +84,7 @@ func Open(dataDir string, opts Options) (*App, error) {
 		now:        opts.Now,
 		fetch:      opts.FetchClient,
 		revoked:    make(map[string]struct{}),
+		locks:      newKeyedLock(),
 		releaseKey: opts.ReleasePublicKey,
 	}
 	if a.releaseKey == nil {

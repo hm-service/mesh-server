@@ -149,9 +149,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		// 令牌是一次性的：这一支靠它证明了归属就当场清掉，否则它在剩余的有效期
 		// （≤10 分钟）内还能反复取回配置，而正式节点的配置里有 network_secret。
+		// 核对与清空在同一次事务里完成，令牌在这期间被轮换或消费时不再放行配置。
 		if byToken {
-			if err := s.app.ConsumeToken(existing.PublicID); err != nil {
+			consumed, err := s.app.ConsumeTokenIfCurrent(existing.PublicID, req.Token)
+			if err != nil {
 				s.logger.Error("consume registration token", "id", existing.PublicID, "error", err)
+				httpx.WriteError(w, http.StatusInternalServerError, "internal")
+				return
+			}
+			if !consumed {
+				httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
+				return
 			}
 		}
 		if err := s.app.Touch(existing.PublicID, s.clientIP(r)); err != nil {
@@ -168,7 +176,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token")
 		return
 	}
-	device, err := s.app.BindDevice(req.Token, req.DeviceID, req.Hostname, req.Pubkey, s.clientIP(r))
+	device, err := s.app.BindDevice(r.Context(), req.Token, req.DeviceID, req.Hostname, req.Pubkey, s.clientIP(r))
 	switch {
 	case errors.Is(err, app.ErrTokenInvalid):
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token")
@@ -325,16 +333,14 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	// 配了启动器就每次都带上；客户端自己算本地摘要去比。代价是这种情况没有
 	// 204，三十秒多几十字节。
 	launcher := launcherOf(release)
-	// 设备上报的 id 与最新签发的一致，说明它已经换上新凭据并重启过 core，
-	// 这时才吊销其余的。早一步吊销会让还没拿到新凭据的设备失联。
-	// "none" 表示它手里没有凭据（那张新签的还没被用上），空串是旧客户端或
-	// 正式节点，这两种都没有可确认的切换，不调 ConfirmCredential。
-	if req.CredentialID != "" && req.CredentialID != "none" {
-		if err := s.app.ConfirmCredential(r.Context(), device.PublicID, req.CredentialID); err != nil {
-			s.logger.Error("confirm credential", "id", device.PublicID, "error", err)
-		}
+	// 凭据的确认、收敛与签发在 app 里一次做完：整段在设备锁内，删除、换绑和
+	// 另一次心跳都排在它后面，看不到「读快照 → 决定 → 落地」的中间态。
+	issued, err := s.app.CredentialStep(r.Context(), device, req.CredentialID)
+	if err != nil {
+		// 失败不上报给设备：心跳照常回 204，下一轮再试。ErrIdentityChanged 是
+		// 换绑插进来了，这种请求本来就不该再拿到凭据。
+		s.logger.Error("credential step", "id", device.PublicID, "error", err)
 	}
-	issued := s.issueCredentialIfNeeded(r, device.PublicID, req.CredentialID)
 	if !configChanged && !appChanged && launcher == nil && issued == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -367,60 +373,4 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		resp.AppUpdate = appUpdate
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
-}
-
-// issueCredentialIfNeeded 判断这台设备要不要一张新凭据，要就当场签发，并用
-// 这次签发自己的 id 与到期时间回答（不能回头再查一次库：并发心跳时那会把
-// 一张凭据的私钥配到另一张的 id 上）。
-//
-// 上报的 credentialId 是设备 core 里正在用的那张，签发条件按它分档：
-//
-//   - 与最新签发的一致：切换已经完成，只有进入续期窗口才续签。
-//   - 报着旧 id：core 还没重启完，或者管理端刚签发了一张而设备还不知道。
-//     冷却外补一张（管理端那条通道靠这一步落到设备上），冷却内不签。
-//   - none：客户端声明本地没有凭据，冷却外签一张。
-//
-// 冷却复用 CredentialNoneCooldown：报 none 与报旧 id 都可能每轮心跳都命中，
-// 没有它就会一直签。
-func (s *Server) issueCredentialIfNeeded(r *http.Request, publicID, reportedID string) *app.IssuedCredential {
-	if !s.app.CredentialConfigured() {
-		return nil
-	}
-	// 空串是正式节点（contract/device-api.md）或还不认识这个字段的旧客户端：既不
-	// 确认也不签发，连凭据表都不必读。
-	if reportedID == "" {
-		return nil
-	}
-	now := s.app.Now().Unix()
-	cooldown := int64(app.CredentialNoneCooldown.Seconds())
-	latest, err := s.app.LatestCredential(publicID)
-	switch {
-	case errors.Is(err, db.ErrCredentialNotFound):
-		// 这台设备从来就没有过凭据：签一张。
-	case err != nil:
-		s.logger.Error("load credential", "id", publicID, "error", err)
-		return nil
-	case reportedID == "none":
-		// 客户端明确声明本地没有凭据：冷却外签一张。
-		if now-latest.CreatedAt < cooldown {
-			return nil
-		}
-	case reportedID == latest.CredentialID:
-		// 设备已经用上最新那张：只在续期窗口内才签下一张。
-		if latest.ExpiresAt-now >= int64(app.CredentialRenewBefore.Seconds()) {
-			return nil
-		}
-	case now-latest.CreatedAt < cooldown:
-		// 设备仍在用旧的那张，而且刚签过：它多半正在重启 core，等它报上
-		// 最新的那张再收敛。
-		return nil
-	}
-	// 走到这里还有一条：报着旧 id 且冷却已过——管理端签发的那张要下发，
-	// 或者客户端卡在旧凭据上。补一张，下一次签发至少要再过一个冷却窗口。
-	issued, err := s.app.IssueCredential(r.Context(), publicID)
-	if err != nil {
-		s.logger.Error("issue credential", "id", publicID, "error", err)
-		return nil
-	}
-	return &issued
 }

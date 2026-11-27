@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"mesh-server/db"
 	"mesh-server/internal/fakecli"
@@ -241,5 +242,138 @@ func TestRevokeAllStopsWhenTheCallerIsDone(t *testing.T) {
 	// 撤销没成功就不删行：记录还在，下一轮心跳还能再撤一次。
 	if _, err := a.LatestCredential(device.PublicID); err != nil {
 		t.Fatalf("the credential row disappeared after a failed revoke: %v", err)
+	}
+}
+
+// TestDeleteSerialisesWithAnIssuance pins the S1 invariant: a delete that arrives
+// while an issuance is waiting for the seed must not leave a credential the seed
+// honours after the device row is gone. The device lock makes the delete wait for
+// the issuance, and its revocation then covers the credential that was just
+// created.
+func TestDeleteSerialisesWithAnIssuance(t *testing.T) {
+	t.Setenv(fakecli.DelayEnv, "300")
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := make(chan IssuedCredential, 1)
+	issuedErr := make(chan error, 1)
+	go func() {
+		credential, err := a.IssueCredential(context.Background(), device.PublicID)
+		issued <- credential
+		issuedErr <- err
+	}()
+	// 让签发先拿到锁并卡在种子那一步。
+	time.Sleep(100 * time.Millisecond)
+	started := time.Now()
+	if _, err := a.DeleteDevice(context.Background(), device.PublicID); err != nil {
+		t.Fatalf("DeleteDevice() error: %v", err)
+	}
+	waited := time.Since(started)
+
+	credential, err := <-issued, <-issuedErr
+	if err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+	if credential.ID == "" {
+		t.Fatal("the issuance returned no credential")
+	}
+	// 删除必须排在签发之后：签发占着种子的那一步整整 300ms。
+	if waited < 150*time.Millisecond {
+		t.Fatalf("DeleteDevice() returned after %v, want it to wait for the in-flight issuance", waited)
+	}
+	rows, err := a.database.ListCredentials(device.PublicID)
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("credentials left after delete = %+v, want none", rows)
+	}
+}
+
+// TestFailedIssuanceLeavesNoIntentRow pins the compensation half of the intent
+// row: the seed failed, so the row is revoked and dropped instead of lingering
+// as an orphan nobody can account for.
+func TestFailedIssuanceLeavesNoIntentRow(t *testing.T) {
+	t.Setenv(fakecli.FailGenerateEnv, "1")
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
+		t.Fatal("IssueCredential() with a failing seed returned nil")
+	}
+	rows, err := a.database.ListCredentials(device.PublicID)
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows after a failed issuance = %+v, want none", rows)
+	}
+}
+
+// TestRebindRevokesTheOldCredentials pins the hand-over: the credentials of a
+// slot belong to the identity that held it, so binding the slot to a new
+// identity revokes them instead of letting the old machine ride a valid
+// credential until it expires.
+func TestRebindRevokesTheOldCredentials(t *testing.T) {
+	a := openCredentialTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	if _, err := a.IssueCredential(ctx, device.PublicID); err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	if _, err := a.BindDevice(ctx, reissued, "dev-2", "HOST", "pk2", ""); err != nil {
+		t.Fatalf("rebind error: %v", err)
+	}
+	rows, err := a.database.ListCredentials(device.PublicID)
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("credentials of the old identity survived the rebind: %+v", rows)
+	}
+}
+
+// TestConsumeTokenIsAtomic pins that proving a slot with a registration token is
+// a single step: the token is cleared only if it is still the one that was
+// checked, so a rotated or already spent token cannot also hand out the
+// configuration.
+func TestConsumeTokenIsAtomic(t *testing.T) {
+	a := openCredentialTemp(t)
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, token)
+	if err != nil || !consumed {
+		t.Fatalf("ConsumeTokenIfCurrent() = %v, %v; want consumed", consumed, err)
+	}
+	// 同一个令牌只能兑现一次。
+	if consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, token); err != nil || consumed {
+		t.Fatalf("second ConsumeTokenIfCurrent() = %v, %v; want refused", consumed, err)
+	}
+	// 轮换之后，旧令牌同样兑现不了。
+	rotated, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	if consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, token); err != nil || consumed {
+		t.Fatalf("ConsumeTokenIfCurrent() with a rotated token = %v, %v; want refused", consumed, err)
+	}
+	if consumed, err := a.ConsumeTokenIfCurrent(device.PublicID, rotated); err != nil || !consumed {
+		t.Fatalf("ConsumeTokenIfCurrent() with the current token = %v, %v; want consumed", consumed, err)
 	}
 }

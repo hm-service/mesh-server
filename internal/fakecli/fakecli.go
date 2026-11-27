@@ -16,6 +16,14 @@ import (
 // fake clock, so an issued credential expires in the same frame as the server.
 const NowEnv = "MESH_TEST_CLI_NOW"
 
+// DelayEnv makes every call sleep that many milliseconds before answering, so a
+// test can hold an issuance open while another operation races it.
+const DelayEnv = "MESH_TEST_CLI_DELAY_MS"
+
+// FailGenerateEnv makes credential generation fail after its delay, the way a
+// seed that is reachable but refuses (or dies mid-answer) behaves.
+const FailGenerateEnv = "MESH_TEST_CLI_GENERATE_FAIL"
+
 // SecretSeparator splits the stand-in's secret from the credential id it was
 // generated for.
 const SecretSeparator = "|"
@@ -44,15 +52,23 @@ func Owner(secret string) string {
 
 func handle(args []string) {
 	joined := " " + strings.Join(args, " ") + " "
+	delay()
 	switch {
 	case strings.Contains(joined, " credential generate "):
+		if os.Getenv(FailGenerateEnv) != "" {
+			fmt.Fprintln(os.Stderr, "fakecli: the seed refused to sign")
+			os.Exit(1)
+		}
 		id := valueOf(args, "--credential-id")
 		ttl, _ := strconv.ParseInt(valueOf(args, "--ttl"), 10, 64)
 		secret := base64.StdEncoding.EncodeToString([]byte(id + SecretSeparator + strconv.FormatInt(time.Now().UnixNano(), 10)))
 		fmt.Printf("{\"credential_id\":%q,\"credential_secret\":%q,\"expiry_unix\":%q}\n",
 			id, secret, strconv.FormatInt(nowUnix()+ttl, 10))
 	case strings.Contains(joined, " credential revoke "):
-		fmt.Println("{\"success\":true}")
+		// 真实的 easytier-cli 对种子不认识的 id 打印这一行并以 0 退出，签发通道
+		// 只看退出码。种子重启过、凭据早已过期、上一次撤销已经生效都走这一支，
+		// 所以 stand-in 也这样回答：撤销是幂等的。
+		fmt.Println("Credential not found")
 	default:
 		fmt.Fprintf(os.Stderr, "fakecli: unexpected args %v\n", args)
 		os.Exit(2)
@@ -67,6 +83,18 @@ func valueOf(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func delay() {
+	raw := os.Getenv(DelayEnv)
+	if raw == "" {
+		return
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		return
+	}
+	time.Sleep(time.Duration(ms) * time.Millisecond)
 }
 
 func nowUnix() int64 {

@@ -249,26 +249,46 @@ func (a *App) IssueToken(publicID string) (string, error) {
 	return token, nil
 }
 
-// ConsumeToken clears a registration token that has just been used to prove
-// ownership of an already bound slot. 绑定那一支在 BindDevice 里清，这一支要
-// 单独清：令牌是一次性的，否则它在剩余有效期内还能反复取回配置。
-func (a *App) ConsumeToken(publicID string) error {
+// errTokenChanged 表示核验用的令牌已经不是这一张了：被轮换、被别处消费或过期。
+var errTokenChanged = errors.New("registration token changed")
+
+// ConsumeTokenIfCurrent 兑现一次「用注册令牌证明归属」：核对与清空在同一笔事务里
+// 完成，中间没有别的请求能插进来。报告 false 表示令牌已经不是这张，调用方不能
+// 按它放行任何内容——尤其是不能用它换回配置。
+func (a *App) ConsumeTokenIfCurrent(publicID, token string) (bool, error) {
+	if token == "" {
+		return false, nil
+	}
+	now := a.now().Unix()
+	consumed := false
 	_, err := a.database.Update(publicID, func(d *db.Device) error {
+		if d.Token != token || d.TokenExpiresAt <= now {
+			return errTokenChanged
+		}
 		d.Token = ""
 		d.TokenExpiresAt = 0
+		consumed = true
 		return nil
 	})
-	return err
+	if errors.Is(err, errTokenChanged) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return consumed, nil
 }
 
 // DeleteDevice removes the slot and remembers its device_id so later signed
 // requests are answered with code "revoked" (contract/client.md). The tombstone
 // only lives in memory, exactly as before.
 func (a *App) DeleteDevice(ctx context.Context, publicID string) (db.Device, error) {
+	unlock := a.locks.lock(publicID)
+	defer unlock()
 	// 先撤销凭据再删记录：撤销失败就让删除失败，否则这台设备还能用旧凭据
 	// 一直连到过期，而控制面已经没有它的记录了。撤销走调用方的 context：
 	// 客户端断开后不该再占着种子逐张等下去。
-	if err := a.RevokeCredential(ctx, publicID); err != nil {
+	if err := a.revokeDeviceLocked(ctx, publicID); err != nil {
 		return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
 	}
 	device, err := a.database.Delete(publicID)
@@ -301,14 +321,24 @@ func (a *App) revoke(deviceID string) {
 
 // BindDevice consumes token and binds the slot to a client identity. The
 // previous identity of the same slot, if any, is revoked, and the observations
-// that identity reported are cleared.
-func (a *App) BindDevice(token, deviceID, hostname, pubkey, ip string) (db.Device, error) {
+// that identity reported are cleared. 槽位名下的凭据属于旧身份，也要在交接时
+// 撤掉：否则旧机器还能拿着它连到过期，而控制面认为这个槽位已经换人了。
+func (a *App) BindDevice(ctx context.Context, token, deviceID, hostname, pubkey, ip string) (db.Device, error) {
 	pending, ok, err := a.DeviceByToken(token)
 	if err != nil {
 		return db.Device{}, err
 	}
 	if !ok {
 		return db.Device{}, ErrTokenInvalid
+	}
+	unlock := a.locks.lock(pending.PublicID)
+	defer unlock()
+	// 撤销放在换绑之前：撤不掉就不换绑（令牌还在，客户端可以重试），旧身份也
+	// 还能照常用到下一次。撤销成功而换绑失败（令牌在这两步之间被轮换或过期）
+	// 的代价是一张凭据提前没了，下一次心跳会立刻补一张——比「换绑了但旧凭据
+	// 还活着」便宜得多。
+	if err := a.revokeDeviceLocked(ctx, pending.PublicID); err != nil {
+		return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
 	}
 	now := a.now()
 	var rebound string

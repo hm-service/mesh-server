@@ -1,0 +1,62 @@
+package db
+
+import (
+	"errors"
+	"testing"
+)
+
+// TestIntentRowIsNotIssued pins the shape the issue path relies on: the row is
+// written before the seed is asked, so it exists while no credential has been
+// handed out yet. LatestCredential must not offer it as the device's credential;
+// revocation must still see it, because the seed may have created it anyway.
+func TestIntentRowIsNotIssued(t *testing.T) {
+	d := openTemp(t)
+	if err := d.BeginCredential("c-1", "d_1", 100); err != nil {
+		t.Fatalf("BeginCredential() error: %v", err)
+	}
+	if _, err := d.LatestCredential("d_1"); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("LatestCredential() with only an intent row = %v, want ErrCredentialNotFound", err)
+	}
+	rows, err := d.ListCredentials("d_1")
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ExpiresAt != 0 {
+		t.Fatalf("rows = %+v, want one intent row with no expiry", rows)
+	}
+	stale, err := d.ListCredentialsExcept("d_1", "other")
+	if err != nil {
+		t.Fatalf("ListCredentialsExcept() error: %v", err)
+	}
+	if len(stale) != 1 || stale[0] != "c-1" {
+		t.Fatalf("ListCredentialsExcept() = %v, want the intent row included", stale)
+	}
+}
+
+// TestFinishCredentialStampsTheExpiry pins the second half of the issue path.
+func TestFinishCredentialStampsTheExpiry(t *testing.T) {
+	d := openTemp(t)
+	if err := d.BeginCredential("c-1", "d_1", 100); err != nil {
+		t.Fatalf("BeginCredential() error: %v", err)
+	}
+	if err := d.FinishCredential("c-1", 500); err != nil {
+		t.Fatalf("FinishCredential() error: %v", err)
+	}
+	got, err := d.LatestCredential("d_1")
+	if err != nil {
+		t.Fatalf("LatestCredential() error: %v", err)
+	}
+	if got.CredentialID != "c-1" || got.ExpiresAt != 500 {
+		t.Fatalf("credential = %+v, want c-1 expiring at 500", got)
+	}
+}
+
+// TestFinishCredentialRejectsAMissingRow pins that a revocation that landed
+// while the seed was signing is not papered over: the caller must not hand out
+// the secret of a credential that is already gone from the trusted list.
+func TestFinishCredentialRejectsAMissingRow(t *testing.T) {
+	d := openTemp(t)
+	if err := d.FinishCredential("c-1", 500); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("FinishCredential() = %v, want ErrCredentialNotFound", err)
+	}
+}

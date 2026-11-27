@@ -50,13 +50,10 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
 
-// generate 让种子签发一张新凭据。
+// generate 让种子签发 id 这张凭据。
 // credential_id 用 uuid4：种子对同一个 id 是幂等的，续期必须换 id 才会换密钥。
-func (c *credentialIssuer) generate(ctx context.Context, ttl time.Duration) (IssuedCredential, error) {
-	id, err := newCredentialID()
-	if err != nil {
-		return IssuedCredential{}, err
-	}
+// id 由调用方先定下来并落成意图行，种子那边多出来的凭据才总有本地记录可撤。
+func (c *credentialIssuer) generate(ctx context.Context, id string, ttl time.Duration) (IssuedCredential, error) {
 	out, err := c.run(ctx, "-o", "json", "credential", "generate",
 		"--ttl", strconv.Itoa(int(ttl.Seconds())), "--credential-id", id)
 	if err != nil {
@@ -151,6 +148,13 @@ type IssuedCredential struct {
 	Expiry int64
 }
 
+// CredentialNone 是客户端上报「本地没有凭据」的值（contract/device-api.md）。
+const CredentialNone = "none"
+
+// ErrIdentityChanged 表示这次请求认证时的身份已经不再持有这个槽位：换绑发生在
+// 请求处理期间。此时什么都不能写，尤其不能把新凭据交给旧身份。
+var ErrIdentityChanged = errors.New("device identity changed")
+
 // IssueCredential 给设备签发一张凭据，记下 id 与到期时间，返回这一次的完整
 // 结果。响应只能用返回值里的 id：回头再查一次库在并发签发时会把一张凭据的
 // 私钥配到另一张的 id 上。
@@ -158,6 +162,8 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if a.credential == nil {
 		return IssuedCredential{}, ErrCredentialChannelUnconfigured
 	}
+	unlock := a.locks.lock(publicID)
+	defer unlock()
 	device, ok, err := a.DeviceByID(publicID)
 	if err != nil {
 		return IssuedCredential{}, err
@@ -165,6 +171,15 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if !ok {
 		return IssuedCredential{}, ErrNotFound
 	}
+	return a.issueLocked(ctx, device)
+}
+
+// issueLocked 签发一张凭据，调用方必须持有该设备的锁。
+//
+// 顺序是「先记意图、再让种子签、最后补上到期时间」：种子那边多出来的凭据总有
+// 本地记录，删除、换绑、确认都能按 id 撤掉；种子成功而落库失败也不再留下一张
+// 谁都不知道的凭据。
+func (a *App) issueLocked(ctx context.Context, device db.Device) (IssuedCredential, error) {
 	// 正式节点用 network_secret 认证，凭据对它没有意义。配置读不出来时按错误停下：
 	// 当成凭据节点会签出一张它用不上的凭据，还把它记成凭据身份。
 	identity, err := identityOf(device.ConfigTOML)
@@ -174,20 +189,44 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if identity == IdentityFormal {
 		return IssuedCredential{}, ErrFormalNode
 	}
-	issued, err := a.credential.generate(ctx, CredentialTTL)
+	id, err := newCredentialID()
 	if err != nil {
 		return IssuedCredential{}, err
 	}
-	if err := a.database.CreateCredential(issued.ID, publicID, issued.Expiry, a.now().Unix()); err != nil {
+	if err := a.database.BeginCredential(id, device.PublicID, a.now().Unix()); err != nil {
+		return IssuedCredential{}, err
+	}
+	issued, err := a.credential.generate(ctx, id, CredentialTTL)
+	if err != nil {
+		// 种子可能已经建了这张（超时，或者连接断在应答回来之前）。补一次撤销把它
+		// 收干净：撤销对种子不认识的 id 也返回成功，所以这一步是幂等的。撤不掉就
+		// 把意图行留着——删除设备或下次收敛时会再按 id 撤一次。
+		if revokeErr := a.revokeIDs(ctx, id); revokeErr == nil {
+			if deleteErr := a.database.DeleteCredential(id); deleteErr != nil {
+				return IssuedCredential{}, fmt.Errorf("%w (cleanup: %v)", err, deleteErr)
+			}
+		}
+		return IssuedCredential{}, err
+	}
+	if err := a.database.FinishCredential(id, issued.Expiry); err != nil {
+		// 意图行写不进去：私钥不能交出去。那张凭据在种子上还在，但本地有记录，
+		// 删除设备时会按 id 撤掉。
 		return IssuedCredential{}, err
 	}
 	return issued, nil
 }
 
-// RevokeCredential 撤销设备的全部凭据，并清掉记录。设备名下没有凭据时什么
-// 都不做；有记录却没有签发通道时明确失败，不能回答成功（记录留在库里，种子
-// 侧那张凭据仍然有效）。
+// RevokeCredential 撤销设备的全部凭据（含只记了意图的行），并清掉记录。设备
+// 名下没有凭据时什么都不做；有记录却没有签发通道时明确失败，不能回答成功
+// （记录留在库里，种子侧那张凭据仍然有效）。
 func (a *App) RevokeCredential(ctx context.Context, publicID string) error {
+	unlock := a.locks.lock(publicID)
+	defer unlock()
+	return a.revokeDeviceLocked(ctx, publicID)
+}
+
+// revokeDeviceLocked 撤销一台设备名下的全部记录，调用方必须持有设备锁。
+func (a *App) revokeDeviceLocked(ctx context.Context, publicID string) error {
 	creds, err := a.database.ListCredentials(publicID)
 	if err != nil {
 		return err
@@ -205,9 +244,27 @@ func (a *App) RevokeCredential(ctx context.Context, publicID string) error {
 	return a.revokeAll(ctx, ids)
 }
 
+// revokeExceptLocked 撤销除 keep 以外的全部记录，调用方必须持有设备锁。
+func (a *App) revokeExceptLocked(ctx context.Context, publicID, keep string) error {
+	stale, err := a.database.ListCredentialsExcept(publicID, keep)
+	if err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	if a.credential == nil {
+		return ErrCredentialChannelUnconfigured
+	}
+	return a.revokeAll(ctx, stale)
+}
+
 // revokeAll 撤销一批凭据并删掉记录。凭据张数没有上限，逐张等种子不能让整批
 // 跟着设备走，所以整批共用一个总时限。管理端删除设备与心跳里的确认走同一条
 // 路径：两处各自算时限，口径迟早分叉，而心跳那一处还占着并发闸门的槽位。
+//
+// 撤销是幂等的：`easytier-cli credential revoke` 把「没有这张」当正常结果（种子
+// 重启过、凭据自然过期、上一次撤销已经生效），所以重试与补撤都安全。
 func (a *App) revokeAll(ctx context.Context, ids []string) error {
 	ctx, cancel := context.WithTimeout(ctx, credentialRevokeTimeout)
 	defer cancel()
@@ -222,12 +279,31 @@ func (a *App) revokeAll(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// revokeIDs 只撤销、不动本地记录，用于签发失败后的补偿。
+func (a *App) revokeIDs(ctx context.Context, ids ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, credentialRevokeTimeout)
+	defer cancel()
+	for _, id := range ids {
+		if err := a.credential.revoke(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ConfirmCredential 处理设备上报的凭据 id。只有它上报的正是最新签发的那张，
 // 才说明设备已经换上新凭据并重启过 core，这时才可以吊销其余的。
 func (a *App) ConfirmCredential(ctx context.Context, publicID, credentialID string) error {
-	if a.credential == nil || credentialID == "" {
+	if a.credential == nil || credentialID == "" || credentialID == CredentialNone {
 		return nil
 	}
+	unlock := a.locks.lock(publicID)
+	defer unlock()
+	return a.confirmLocked(ctx, publicID, credentialID)
+}
+
+// confirmLocked 处理「报上来的就是最新那张」，调用方必须持有设备锁。
+func (a *App) confirmLocked(ctx context.Context, publicID, credentialID string) error {
 	latest, err := a.database.LatestCredential(publicID)
 	if errors.Is(err, db.ErrCredentialNotFound) {
 		return nil
@@ -238,11 +314,75 @@ func (a *App) ConfirmCredential(ctx context.Context, publicID, credentialID stri
 	if latest.CredentialID != credentialID {
 		return nil
 	}
-	stale, err := a.database.ListCredentialsExcept(publicID, credentialID)
-	if err != nil {
-		return err
+	return a.revokeExceptLocked(ctx, publicID, credentialID)
+}
+
+// CredentialStep 是心跳对一台设备凭据做的全部决定与动作：确认切换、按需签发。
+// 整段在同一把设备锁里完成，「读设备 → 决定 → 让种子动手 → 写本地」不会被删除、
+// 换绑或另一次心跳插进来。
+//
+// auth 是这次请求认证出来的设备快照。设备行里的 device_id 就是身份：锁内再读
+// 一次，身份变了（换绑发生在请求处理期间）就什么都不做——否则会把一张新凭据
+// 交给已经被换掉的旧身份。
+//
+// 上报的 credentialId 是设备 core 里正在用的那张，签发条件按它分档：
+//
+//   - 与最新签发的一致：切换已经完成，只有进入续期窗口才续签。
+//   - 报着旧 id：core 还没重启完，或者管理端刚签发了一张而设备还不知道。冷却外
+//     补一张（管理端那条通道靠这一步落到设备上），冷却内不签。
+//   - none：客户端声明本地没有凭据，冷却外签一张。
+//
+// 冷却复用 CredentialNoneCooldown：报 none 与报旧 id 都可能每轮心跳都命中，
+// 没有它就会一直签。
+func (a *App) CredentialStep(ctx context.Context, auth db.Device, reportedID string) (*IssuedCredential, error) {
+	if a.credential == nil {
+		return nil, nil
 	}
-	return a.revokeAll(ctx, stale)
+	unlock := a.locks.lock(auth.PublicID)
+	defer unlock()
+	device, ok, err := a.DeviceByID(auth.PublicID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if device.DeviceID != auth.DeviceID {
+		return nil, ErrIdentityChanged
+	}
+	// 空串是正式节点（或还不认识这个字段的旧客户端）：既不确认也不签发。
+	if reportedID == "" {
+		return nil, nil
+	}
+	if reportedID != CredentialNone {
+		if err := a.confirmLocked(ctx, device.PublicID, reportedID); err != nil {
+			return nil, err
+		}
+	}
+	now := a.now().Unix()
+	latest, err := a.database.LatestCredential(device.PublicID)
+	switch {
+	case errors.Is(err, db.ErrCredentialNotFound):
+		// 这台设备从来就没有过凭据：签一张。
+	case err != nil:
+		return nil, err
+	case reportedID == CredentialNone:
+		if now-latest.CreatedAt < int64(CredentialNoneCooldown.Seconds()) {
+			return nil, nil
+		}
+	case reportedID == latest.CredentialID:
+		// 设备已经用上最新那张：只在续期窗口内才签下一张。
+		if latest.ExpiresAt-now >= int64(CredentialRenewBefore.Seconds()) {
+			return nil, nil
+		}
+	case now-latest.CreatedAt < int64(CredentialNoneCooldown.Seconds()):
+		return nil, nil
+	}
+	issued, err := a.issueLocked(ctx, device)
+	if err != nil {
+		return nil, err
+	}
+	return &issued, nil
 }
 
 // LatestCredential 返回设备最新签发的那张凭据。

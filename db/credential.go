@@ -70,6 +70,23 @@ func (d *DB) LatestCredential(devicePublicID string) (Credential, error) {
 	return c, nil
 }
 
+// CredentialByID 按种子侧 id 查这台设备名下的一行；没有这一行时返回
+// ErrCredentialNotFound。心跳用它判断「设备正在用的那张是不是还在记录里」：
+// 不在就是已经被撤销或删除。
+func (d *DB) CredentialByID(devicePublicID, credentialID string) (Credential, error) {
+	row := d.conn.QueryRow("SELECT "+credentialColumns+" FROM credential WHERE device_public_id = ? AND credential_id = ?",
+		devicePublicID, credentialID)
+	var c Credential
+	err := row.Scan(&c.ID, &c.CredentialID, &c.DevicePublicID, &c.ExpiresAt, &c.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Credential{}, ErrCredentialNotFound
+	}
+	if err != nil {
+		return Credential{}, fmt.Errorf("load credential by id: %w", err)
+	}
+	return c, nil
+}
+
 // ListCredentials returns every row of a device, newest first, intent rows
 // included: revocation works by id and an intent row may still name a credential
 // the seed created.

@@ -33,6 +33,32 @@ func TestIntentRowIsNotIssued(t *testing.T) {
 	}
 }
 
+// TestCredentialByIDIsScopedToItsDevice pins the lookup the heartbeat uses to
+// tell「这张还在记录里」from「已经被撤销或删除」：命中返回那一行，别的设备的 id
+// 与不存在的 id 一样按没有处理。
+func TestCredentialByIDIsScopedToItsDevice(t *testing.T) {
+	d := openTemp(t)
+	if err := d.BeginCredential("c-1", "d_1", 100); err != nil {
+		t.Fatalf("BeginCredential() error: %v", err)
+	}
+	if err := d.FinishCredential("c-1", 500); err != nil {
+		t.Fatalf("FinishCredential() error: %v", err)
+	}
+	got, err := d.CredentialByID("d_1", "c-1")
+	if err != nil {
+		t.Fatalf("CredentialByID() error: %v", err)
+	}
+	if got.CredentialID != "c-1" || got.DevicePublicID != "d_1" || got.ExpiresAt != 500 {
+		t.Fatalf("credential = %+v, want c-1 of d_1 expiring at 500", got)
+	}
+	if _, err := d.CredentialByID("d_1", "c-2"); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("CredentialByID() of a deleted row = %v, want ErrCredentialNotFound", err)
+	}
+	if _, err := d.CredentialByID("d_2", "c-1"); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("CredentialByID() of another device's row = %v, want ErrCredentialNotFound", err)
+	}
+}
+
 // TestFinishCredentialStampsTheExpiry pins the second half of the issue path.
 func TestFinishCredentialStampsTheExpiry(t *testing.T) {
 	d := openTemp(t)

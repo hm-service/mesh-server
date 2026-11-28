@@ -431,13 +431,18 @@ func (a *App) confirmLocked(ctx context.Context, publicID, credentialID string) 
 // reportedID 是设备 core 里正在用的那张，签发条件按它分档：
 //
 //   - 与最新签发的一致：切换已经完成，只有进入续期窗口才续签。
-//   - 报着旧 id：core 还没重启完，或者管理端刚签发了一张而设备还不知道。冷却外
-//     补一张（管理端那条通道靠这一步落到设备上），冷却内不签。
+//   - 报着库里还有的旧 id：core 还没重启完，或者管理端刚签发了一张而设备还不知道。
+//     冷却外补一张（管理端那条通道靠这一步落到设备上），冷却内不签。
+//   - 报着库里已经没有的 id：那张已经被撤销或删除，设备拿着一张种子不认的凭据
+//     重连，永远等不到「切过去」那一刻。立即补签，不适用冷却。
 //   - none：客户端声明本地没有凭据，冷却外签一张。
 //   - 空串：正式节点（或还不认识这个字段的旧客户端），既不确认也不签发。
 //
 // 冷却复用 CredentialNoneCooldown：报 none 与报旧 id 都可能每轮心跳都命中，
-// 没有它就会一直签。
+// 没有它就会一直签。报着一张已删除的 id 同样每轮都命中，但客户端把新凭据落盘
+// 之后就改报新的那张（core 还没起来时报空串），不需要冷却兜住；冷却反而会把
+// 「凭据被删掉」拖成五分钟的掉线。代价是客户端一直写不进 credential.json 时
+// 每轮都会签一张，这与「报 none 每轮都命中」是同一个坏客户端，只是不受冷却限制。
 func (a *App) credentialStepLocked(ctx context.Context, device db.Device, reportedID string) (*IssuedCredential, error) {
 	if a.credential == nil {
 		return nil, nil
@@ -452,11 +457,24 @@ func (a *App) credentialStepLocked(ctx context.Context, device db.Device, report
 	}
 	now := a.now().Unix()
 	latest, err := a.database.LatestCredential(device.PublicID)
-	switch {
-	case errors.Is(err, db.ErrCredentialNotFound):
-		// 这台设备从来就没有过凭据：签一张。
-	case err != nil:
+	noLatest := errors.Is(err, db.ErrCredentialNotFound)
+	if err != nil && !noLatest {
 		return nil, err
+	}
+	// 设备报的那张还在不在库里。只有在它既不是 none 也不是最新时才需要问：其余
+	// 两种情形的新旧关系已经决定了下文。
+	deleted := false
+	if !noLatest && reportedID != CredentialNone && reportedID != latest.CredentialID {
+		if _, err := a.database.CredentialByID(device.PublicID, reportedID); err != nil {
+			if !errors.Is(err, db.ErrCredentialNotFound) {
+				return nil, err
+			}
+			deleted = true
+		}
+	}
+	switch {
+	case noLatest, deleted:
+		// 这台设备没有凭据，或在用的那张已经被撤销/删除：签一张。
 	case reportedID == CredentialNone:
 		if now-latest.CreatedAt < int64(CredentialNoneCooldown.Seconds()) {
 			return nil, nil
@@ -467,6 +485,7 @@ func (a *App) credentialStepLocked(ctx context.Context, device db.Device, report
 			return nil, nil
 		}
 	case now-latest.CreatedAt < int64(CredentialNoneCooldown.Seconds()):
+		// 报着库里还有的旧 id：core 正在切换，冷却内等它。
 		return nil, nil
 	}
 	issued, err := a.issueLocked(ctx, device)

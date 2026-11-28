@@ -291,3 +291,76 @@ func TestHeartbeatCredentialStepUsesTheSameSnapshot(t *testing.T) {
 		t.Fatalf("stored credential = %+v, %v; want the one just issued", latest, err)
 	}
 }
+
+// TestHeartbeatReissuesADeletedCredential pins the recovery from a credential the
+// record no longer holds. 设备正在用的那一行被删掉（撤销先让种子撤、再删本地行）
+// 之后，它手里那张就是种子不认的废凭据：再等下去也不会自己好，所以这一轮心跳
+// 就要补一张，冷却只留给「库里还有行」的旧 id。设备换上新那张后，重叠期的旧行
+// 照常被撤销并清掉。
+func TestHeartbeatReissuesADeletedCredential(t *testing.T) {
+	a := openCredentialTemp(t)
+	ctx := context.Background()
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"}
+
+	older, err := a.IssueCredential(ctx, device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+	using, err := a.IssueCredential(ctx, device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+	// 撤销在种子那边成功后删的就是这一行：行没了，设备手里那张也就不再被承认。
+	if err := a.database.DeleteCredential(using.ID); err != nil {
+		t.Fatalf("DeleteCredential() error: %v", err)
+	}
+
+	result, err := a.Heartbeat(ctx, auth, HeartbeatObservation{
+		ConfigHash:   device.ConfigHash,
+		Platform:     "windows/amd64",
+		CredentialID: using.ID,
+	})
+	if err != nil {
+		t.Fatalf("Heartbeat() error: %v", err)
+	}
+	if result.Credential == nil {
+		t.Fatal("a heartbeat reporting a deleted credential got none back")
+	}
+	if result.Credential.ID == "" || result.Credential.ID == using.ID || result.Credential.ID == older.ID {
+		t.Fatalf("issued = %+v, want a credential the device does not hold yet", result.Credential)
+	}
+	if result.Credential.Secret != fakecli.SecretFor(result.Credential.ID) {
+		t.Fatalf("the answer for %q carries another issuance's secret", result.Credential.ID)
+	}
+	latest, err := a.LatestCredential(device.PublicID)
+	if err != nil || latest.CredentialID != result.Credential.ID {
+		t.Fatalf("stored credential = %+v, %v; want the one just issued", latest, err)
+	}
+
+	// 设备换上新那张：确认切换，重叠期的旧行随之撤销并删掉。
+	converged, err := a.Heartbeat(ctx, auth, HeartbeatObservation{
+		ConfigHash:   device.ConfigHash,
+		Platform:     "windows/amd64",
+		CredentialID: result.Credential.ID,
+	})
+	if err != nil {
+		t.Fatalf("second Heartbeat() error: %v", err)
+	}
+	if converged.Credential != nil {
+		t.Fatalf("the converged device was issued another credential: %+v", converged.Credential)
+	}
+	rows, err := a.database.ListCredentials(device.PublicID)
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 1 || rows[0].CredentialID != result.Credential.ID {
+		t.Fatalf("rows after the switch = %+v, want only %q", rows, result.Credential.ID)
+	}
+}

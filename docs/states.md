@@ -68,6 +68,7 @@ stateDiagram-v2
 | `none`（本地没有凭据） | 冷却外签发一张 | 新增意图行，签发后补到期时间 |
 | 有值，等于最新签发的那张 | 确认切换，撤销其余各行；剩余有效期不足 7 天则续签 | 其余行删除；续签时新增一行 |
 | 有值，但不是最新那张 | 冷却外补签一张（设备可能还在重启 core） | 新增一行；旧行保留 |
+| 有值，但记录里查不到这一行 | 那张已被撤销或删除，立即签发一张（不适用冷却） | 新增一行；查不到的那行本就不存在 |
 | 这台设备从未签发过 | 直接签发一张 | 新增一行 |
 
 「设备正在使用的那一张」由心跳上报值确定，不由「最新签发的」推定：只有上报值命中最新一行，才确认切换并撤销其余行。这正是要区分「已签发」与「已确认」的原因——签发完成后设备还没重启 core，此时撤销旧行会让正在用的那张当场失效。
@@ -78,12 +79,12 @@ stateDiagram-v2
 2. 顺序固定为「先记意图、再签发、最后补到期时间」：种子上存在的 id 总有本地记录可撤，签发成功而落库失败也不留下无人知晓的凭据。
 3. 只撤销「最新一张以外」的行；未确认之前不动设备正在用的那张。
 4. 撤销幂等（种子上没有这张也算成功），失败则不删记录，留下重试材料。
-5. 冷却 5 分钟只作用于补签两档（报 `none`、报旧 id）；续期不受它限制。
+5. 冷却 5 分钟只作用于两档（报 `none`、报库里还有的旧 id）；续期与「报一张已被删除的 id」不受它限制——后者每轮都会命中，但设备拿到新凭据后就会改报新的那张，冷却只会把一次删除拖成五分钟掉线。
 6. 正式节点不签发：判据与控制台显示同源，配置读不出来时拒绝签发而不是当成凭据节点。
 7. 设备名下全部凭据的撤销共用一个总时限（30s），不随凭据张数线性增长。
 8. 到期不自动删行：行只在被撤销时消失（确认切换、换绑、删除设备、管理端撤销），`expires_at` 只用于续期判断。
 
-依据：`server/app/credential.go` 的 `issueLocked`、`revokeDeviceLocked`、`revokeExceptLocked`、`revokeAll`、`confirmLocked`、`credentialStepLocked`、`CredentialTTL`、`CredentialRenewBefore`、`CredentialNoneCooldown`、`credentialRevokeTimeout`；`server/db/credential.go` 的 `BeginCredential`、`FinishCredential`、`LatestCredential`、`ListCredentialsExcept`；`server/app/heartbeat.go` 的 `Heartbeat`。
+依据：`server/app/credential.go` 的 `issueLocked`、`revokeDeviceLocked`、`revokeExceptLocked`、`revokeAll`、`confirmLocked`、`credentialStepLocked`、`CredentialTTL`、`CredentialRenewBefore`、`CredentialNoneCooldown`、`credentialRevokeTimeout`；`server/db/credential.go` 的 `BeginCredential`、`FinishCredential`、`LatestCredential`、`CredentialByID`、`ListCredentialsExcept`；`server/app/heartbeat.go` 的 `Heartbeat`。
 
 ## 3. 发布流程
 

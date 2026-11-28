@@ -98,26 +98,39 @@ func TestHeartbeatIssuesCredentialOnlyWhenNeeded(t *testing.T) {
 		t.Fatalf("a converged heartbeat signed %q", got.CredentialID)
 	}
 
-	// 报旧 id：core 还没重启，等它报上最新的那张就会收敛，不补签。
-	const stale = "00000000-0000-4000-8000-000000000000"
-	if res, data := credentialHeartbeat(t, env, dev, &nonces, stale); res.StatusCode != http.StatusNoContent {
-		t.Fatalf("heartbeat reporting an old credential = %d (%s), want 204", res.StatusCode, data)
+	// 报重叠期的旧 id（那一行还在库里）：core 还没重启，等它报上最新的那张就会
+	// 收敛，冷却内不补签。管理端刚签的那张让 first 成了「上一张」。
+	res, data = env.Do("POST", "/api/admin/devices/"+dev.internalID+"/credential", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("admin issue credential = %d, want 200: %s", res.StatusCode, data)
 	}
-	if got := latest(); got.CredentialID != first.CredentialID {
-		t.Fatalf("a stale id signed %q", got.CredentialID)
+	var admin struct {
+		ID string `json:"credentialId"`
+	}
+	if err := json.Unmarshal(data, &admin); err != nil {
+		t.Fatalf("decode admin credential: %v", err)
+	}
+	if admin.ID == "" || admin.ID == first.CredentialID {
+		t.Fatalf("admin credential = %+v, want a new id", admin)
+	}
+	if res, data := credentialHeartbeat(t, env, dev, &nonces, first.CredentialID); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("heartbeat reporting an older credential = %d (%s), want 204", res.StatusCode, data)
+	}
+	if got := latest(); got.CredentialID != admin.ID {
+		t.Fatalf("an older credential id signed %q", got.CredentialID)
 	}
 
 	// 空串：旧客户端或正式节点，既不签发也不确认。
 	if res, data := credentialHeartbeat(t, env, dev, &nonces, ""); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("heartbeat with an empty credential id = %d (%s), want 204", res.StatusCode, data)
 	}
-	if got := latest(); got.CredentialID != first.CredentialID {
+	if got := latest(); got.CredentialID != admin.ID {
 		t.Fatalf("an empty credential id signed %q", got.CredentialID)
 	}
 
 	// 进入续期窗口后，报着旧 id 也要签下一张。
 	env.Clock.Advance(app.CredentialTTL - app.CredentialRenewBefore + time.Hour)
-	res, data = credentialHeartbeat(t, env, dev, &nonces, stale)
+	res, data = credentialHeartbeat(t, env, dev, &nonces, first.CredentialID)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("renewal heartbeat = %d, want 200: %s", res.StatusCode, data)
 	}

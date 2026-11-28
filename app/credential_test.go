@@ -42,6 +42,7 @@ func TestIssueCredentialReturnsItsOwnID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	issued, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err != nil {
 		t.Fatalf("IssueCredential() error: %v", err)
@@ -73,6 +74,7 @@ func TestIssueCredentialRejectsAnAnswerForAnotherID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	issued, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err == nil {
 		t.Fatalf("IssueCredential() with an answer for another id = %+v, want an error", issued)
@@ -162,6 +164,7 @@ func TestConfirmCredentialRevokesEveryOther(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	ctx := context.Background()
 	first, err := a.IssueCredential(ctx, device.PublicID)
 	if err != nil {
@@ -203,6 +206,7 @@ func TestRevokeCredentialDeletesRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	ctx := context.Background()
 	for range 2 {
 		if _, err := a.IssueCredential(ctx, device.PublicID); err != nil {
@@ -230,6 +234,7 @@ func TestRevokeCredentialHonorsContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	if _, err := a.IssueCredential(context.Background(), device.PublicID); err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +266,7 @@ func TestRevokeCredentialRequiresChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, withCLI, device.PublicID)
 	ctx := context.Background()
 	if _, err := withCLI.IssueCredential(ctx, device.PublicID); err != nil {
 		t.Fatal(err)
@@ -293,6 +299,7 @@ func TestRevokeCredentialRequiresChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, withoutCLI, plain.PublicID)
 	if _, err := withoutCLI.DeleteDevice(ctx, plain.PublicID); err != nil {
 		t.Fatalf("DeleteDevice() of a device without credentials = %v, want success", err)
 	}
@@ -308,6 +315,7 @@ func TestIssueCredentialRefusesFormalNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	if _, err := a.IssueCredential(context.Background(), device.PublicID); !errors.Is(err, ErrFormalNode) {
 		t.Fatalf("IssueCredential() = %v, want ErrFormalNode", err)
 	}
@@ -325,6 +333,7 @@ func TestRevokeAllStopsWhenTheCallerIsDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	issued, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err != nil {
 		t.Fatalf("IssueCredential() error: %v", err)
@@ -353,6 +362,7 @@ func TestDeleteSerialisesWithAnIssuance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	issued := make(chan IssuedCredential, 1)
 	issuedErr := make(chan error, 1)
 	go func() {
@@ -398,6 +408,7 @@ func TestFailedIssuanceLeavesNoIntentRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	if _, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
 		t.Fatal("IssueCredential() with a failing seed returned nil")
 	}
@@ -421,6 +432,7 @@ func TestCLIFailureOutputIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	_, err = a.IssueCredential(context.Background(), device.PublicID)
 	if err == nil {
 		t.Fatal("IssueCredential() with a noisy failing seed returned nil")
@@ -444,6 +456,7 @@ func TestCLILeavesNoPipeToWaitFor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	started := time.Now()
 	_, err = a.IssueCredential(context.Background(), device.PublicID)
 	elapsed := time.Since(started)
@@ -473,6 +486,7 @@ func TestRebindRevokesTheOldCredentials(t *testing.T) {
 	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
+	bindTestPubkey(t, a, device.PublicID)
 	if _, err := a.IssueCredential(ctx, device.PublicID); err != nil {
 		t.Fatalf("IssueCredential() error: %v", err)
 	}

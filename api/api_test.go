@@ -118,6 +118,7 @@ type heartbeatResponse struct {
 	AppUpdate        *updateInfo   `json:"appUpdate,omitempty"`
 	Launcher         *launcherInfo `json:"launcher,omitempty"`
 	Credential       string        `json:"credential,omitempty"`
+	CredentialSealed string        `json:"credentialSealed,omitempty"`
 	CredentialID     string        `json:"credentialId,omitempty"`
 	CredentialExpiry int64         `json:"credentialExpiry,omitempty"`
 }

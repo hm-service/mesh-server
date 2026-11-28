@@ -86,6 +86,10 @@ func TestHeartbeatIssuesCredentialOnlyWhenNeeded(t *testing.T) {
 	if first.Credential != fakecli.SecretFor(first.CredentialID) {
 		t.Fatalf("answer the seed generated for %q carries another secret", first.CredentialID)
 	}
+	// 私钥同时以封装的形态下发：新客户端只认这一份，过渡期的明文那份还在。
+	if first.CredentialSealed == "" {
+		t.Fatalf("answer %+v carries no sealed copy of the secret", first)
+	}
 	if got := latest(); got.CredentialID != first.CredentialID || got.ExpiresAt != first.CredentialExpiry {
 		t.Fatalf("stored = %+v, answer = %+v", got, first)
 	}

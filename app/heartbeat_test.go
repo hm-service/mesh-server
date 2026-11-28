@@ -192,7 +192,8 @@ func TestHeartbeatDoesNotWriteWhenItsRequestEndsWhileQueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
+	pubkey, _ := bindTestPubkey(t, a, device.PublicID)
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", pubkey, ""); err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
 
@@ -207,7 +208,7 @@ func TestHeartbeatDoesNotWriteWhenItsRequestEndsWhileQueued(t *testing.T) {
 	request, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		_, err := a.Heartbeat(request, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"},
+		_, err := a.Heartbeat(request, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: pubkey},
 			HeartbeatObservation{
 				ConfigHash: "queued-hash",
 				AppVersion: "queued-version",
@@ -257,10 +258,11 @@ func TestHeartbeatCredentialStepUsesTheSameSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
+	pubkey, _ := bindTestPubkey(t, a, device.PublicID)
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", pubkey, ""); err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
-	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: pubkey}
 
 	result, err := a.Heartbeat(ctx, auth, HeartbeatObservation{
 		ConfigHash:   device.ConfigHash,
@@ -304,10 +306,11 @@ func TestHeartbeatReissuesADeletedCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
+	pubkey, _ := bindTestPubkey(t, a, device.PublicID)
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", pubkey, ""); err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
-	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: pubkey}
 
 	older, err := a.IssueCredential(ctx, device.PublicID)
 	if err != nil {

@@ -317,8 +317,11 @@ type heartbeatResponse struct {
 	ConfigB64  string        `json:"configB64,omitempty"`
 	AppUpdate  *updateInfo   `json:"appUpdate,omitempty"`
 	Launcher   *launcherInfo `json:"launcher,omitempty"`
-	// 凭据私钥只在签发的那一次响应里出现，之后服务端只剩 id。
+	// 凭据私钥只在签发的那一次响应里出现，之后服务端只剩 id。它同时以两种形式
+	// 下发：封给设备公钥的一份（credentialSealed，新客户端只用它），和过渡期的
+	// 明文一份（credential，旧客户端只认它）。整份载荷的大小由心跳响应的上限兜住。
 	Credential       string `json:"credential,omitempty"`
+	CredentialSealed string `json:"credentialSealed,omitempty"`
 	CredentialID     string `json:"credentialId,omitempty"`
 	CredentialExpiry int64  `json:"credentialExpiry,omitempty"`
 }
@@ -386,6 +389,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Credential != nil {
 		resp.Credential = result.Credential.Secret
+		resp.CredentialSealed = result.Credential.Sealed
 		resp.CredentialID = result.Credential.ID
 		resp.CredentialExpiry = result.Credential.Expiry
 	}

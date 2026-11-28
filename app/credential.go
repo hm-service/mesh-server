@@ -240,6 +240,9 @@ func (a *App) CredentialConfigured() bool { return a.credential != nil }
 type IssuedCredential struct {
 	ID     string
 	Secret string
+	// Sealed 是同一条私钥封给设备的那一份（base64 的信封，见 seal.go）。它和
+	// Secret 同进同出：客户端的优先级是「有封装的必须用封装的」。
+	Sealed string
 	Expiry int64
 }
 
@@ -309,6 +312,23 @@ func (a *App) issueLocked(ctx context.Context, device db.Device) (IssuedCredenti
 		}
 		return IssuedCredential{}, err
 	}
+	// 封装在落定之前做：封不出来就不下发。设备公钥转不成 X25519（记录坏了、低阶点）
+	// 时把这张凭据撤掉并删掉意图行，下一轮心跳重新签——留一张签好却交不出去的
+	// 凭据只会让设备停在「最新那张」上，等到过期都拿不到。
+	secret, err := base64.StdEncoding.DecodeString(issued.Secret)
+	if err != nil {
+		return IssuedCredential{}, fmt.Errorf("%w: %v", ErrSealRecipient, err)
+	}
+	sealed, err := sealToDevice(device.Pubkey, secret)
+	if err != nil {
+		if revokeErr := a.revokeIDs(ctx, id); revokeErr == nil {
+			if deleteErr := a.database.DeleteCredential(id); deleteErr != nil {
+				return IssuedCredential{}, fmt.Errorf("%w (cleanup: %v)", err, deleteErr)
+			}
+		}
+		return IssuedCredential{}, err
+	}
+	issued.Sealed = sealed
 	if err := a.database.FinishCredential(id, issued.Expiry); err != nil {
 		// 意图行写不进去：私钥不能交出去。那张凭据在种子上还在，但本地有记录，
 		// 删除设备时会按 id 撤掉。

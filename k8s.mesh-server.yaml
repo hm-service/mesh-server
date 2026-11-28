@@ -59,7 +59,7 @@ spec:
           #   2. 替换下面的 sha256 并提交；
           #   3. 在部署机按 build/README.md 的命令渲染 secret 后
           #      `podman kube play --replace --network apps`。
-          image: ghcr.io/hm-service/mesh-server@sha256:e160bc6267cc3efb08dce78ca39043313253ab41acc03f62e1635cf7f85697f2
+          image: ghcr.io/hm-service/mesh-server@sha256:0516a0bf72dcd8eaf5ecf0fc0763c983837bb9b824efbd9374fc51d39a9fc2db
           # digest 指向不可变内容：本地已有就不再拉。tag 引用才需要 Always。
           imagePullPolicy: IfNotPresent
 

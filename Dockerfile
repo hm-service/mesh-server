@@ -1,10 +1,12 @@
 # ==========================================
 # 第一阶段：构建前端
 # ==========================================
-# 基础镜像钉 manifest list digest：tag 会随上游重发漂移，digest 不会。升级时先
+# 基础镜像钉 manifest list digest（index，不是单架构的 image digest——钉错会让
+# arm64 阶段拿到 amd64 的 rootfs，qemu 直接报 `Invalid ELF image for this architecture`）。
+# 升级时先
 # `podman pull node:26.13.1-alpine`，再用
 # `podman image inspect --format '{{index .RepoDigests 0}}'` 取新 digest 替换这里。
-FROM --platform=$BUILDPLATFORM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS frontend
+FROM --platform=$BUILDPLATFORM node:26.13.1-alpine@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c AS frontend
 
 RUN npm install -g pnpm@12.23.0
 
@@ -20,7 +22,7 @@ RUN pnpm build
 # 第二阶段：构建 Go 二进制
 # ==========================================
 # 同样钉 digest；tag 里的 alpine 变体会随上游重发漂移。
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:0fd028db9bdd4f01657bc8047c209b04d8ce19b853d776bd6f1e76a41729b936 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -54,7 +56,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -trimpath -o
 # 不同时间、不同架构的构建拿到同一组包。升级基础镜像 digest 后，用
 # `podman run --rm <image> apk policy <pkg>` 取新版本一并替换；apk add 失败即
 # 说明写死的版本已从仓库移除。
-FROM alpine:3.24.4@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b AS easytier
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS easytier
 
 ARG TARGETARCH
 ARG EASYTIER_VERSION=v2.7.1
@@ -82,7 +84,7 @@ RUN set -eux; \
 # ==========================================
 # 第四阶段：运行
 # ==========================================
-FROM alpine:3.24.4@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b AS runtime
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS runtime
 
 # Podman 会把 kube 的 httpGet 探针翻译成 curl -f <url> || exit 1 在容器里执行，
 # 镜像里没有 curl 探针就恒失败。

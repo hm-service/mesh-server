@@ -4,9 +4,10 @@
 # 镜像里没有 easytier-cli：用它时 ET_CLI 留空，或者自己把 CLI 打进镜像。
 #
 # 基础镜像钉 manifest list digest（同 Dockerfile 的运行时阶段）。升级时先
-# `podman pull docker.io/library/alpine:3.24.4`，再用
-# `podman image inspect --format '{{index .RepoDigests 0}}'` 取新 digest 替换。
-FROM docker.io/library/alpine:3.24.4@sha256:0f49f331d9212aff11b932863be4eb01cdf962969aa86dab7d1ee21ac6f5f52b
+# `podman pull docker.io/library/alpine:3.24.4`，再取 index digest——`podman image
+# inspect` 的 RepoDigests 里有两个：单架构 image digest 在前，manifest list 在后，
+# 用后者，钉错会让 arm64 阶段拿到 amd64 的 rootfs。
+FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # curl 是 podman kube play 翻译 httpGet 探针时要用的：它把探针写成容器内的
 # `curl -f`，镜像里没有 curl 就会一直探针失败，pod 每 90 秒被杀一次。

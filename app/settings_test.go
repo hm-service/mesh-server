@@ -423,3 +423,117 @@ func TestPackageWorkIsBounded(t *testing.T) {
 		t.Fatalf("a package over the entry limit = %v, want %q", err, want)
 	}
 }
+
+// typedPackage packs entries with the tar type each one claims. tarPackage
+// always writes regular files; this one is for the members that are not.
+type typedEntry struct {
+	name string
+	body []byte
+	kind byte
+}
+
+func typedPackage(t *testing.T, entries ...typedEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	for _, entry := range entries {
+		hdr := &tar.Header{Name: entry.name, Mode: 0o644, Typeflag: entry.kind}
+		switch entry.kind {
+		case tar.TypeReg:
+			hdr.Size = int64(len(entry.body))
+		case tar.TypeSymlink:
+			hdr.Linkname = "mesh-client.exe"
+		case tar.TypeDir:
+			hdr.Mode = 0o755
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header %s: %v", entry.name, err)
+		}
+		if hdr.Size > 0 {
+			if _, err := tw.Write(entry.body); err != nil {
+				t.Fatalf("tar body %s: %v", entry.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestPackageMembersMustBeRegularFiles pins the launcher's structural rule: a
+// symlink, a directory or a device node is refused before a release row exists,
+// because the launcher refuses to unpack it. The rest of each package is a file
+// set its manifest accepts, so the member type is the only thing that can
+// reject it.
+func TestPackageMembersMustBeRegularFiles(t *testing.T) {
+	client := []byte("client build")
+	listed := tarEntry{"version.json", manifestText(t, "2026.11.28-1", map[string]string{
+		"mesh-client.exe": digest(client),
+	}, strings.Repeat("ab", 64))}
+	members := []struct {
+		name   string
+		member string
+		kind   byte
+	}{
+		{"symlink", "link", tar.TypeSymlink},
+		{"directory", "sub/", tar.TypeDir},
+		{"character device", "dev", tar.TypeChar},
+	}
+	for _, member := range members {
+		t.Run(member.name, func(t *testing.T) {
+			pkg := typedPackage(t,
+				typedEntry{"mesh-client.exe", client, tar.TypeReg},
+				typedEntry{member.member, nil, member.kind},
+				typedEntry{"version.json", listed.body, tar.TypeReg},
+			)
+			_, err := readPackageManifest(bytes.NewReader(pkg))
+			want := text.Format(text.AppPackageFileNotRegular, member.member)
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// headerOnlyPackage packs one member header that declares size bytes and no
+// body: the publish reads the declared size from the header, so the budget can
+// be judged without producing that many bytes.
+func headerOnlyPackage(t *testing.T, name string, size int64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: size, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("tar header: %v", err)
+	}
+	// 不解完这条成员：解压流到此为止，控制面读到成员头就该拒绝。
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestPackageDeclaredSizeIsBoundedByTheLauncherBudget pins the unpacked budget
+// to the number the launcher enforces: a package declaring more than 256 MiB is
+// refused from the member header alone, before any release row is written.
+func TestPackageDeclaredSizeIsBoundedByTheLauncherBudget(t *testing.T) {
+	pkg := headerOnlyPackage(t, "mesh-client.exe", 256<<20+1)
+	_, err := readPackageManifest(bytes.NewReader(pkg))
+	if err == nil {
+		t.Fatal("a package declaring more than 256 MiB was accepted")
+	}
+	if !strings.Contains(err.Error(), "268435456") {
+		t.Fatalf("error = %q, want the 256 MiB unpacked budget named", err)
+	}
+}

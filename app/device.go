@@ -260,7 +260,10 @@ func (a *App) IssueToken(publicID string) (string, error) {
 // requests are answered with code "revoked" (contract/client.md). The tombstone
 // only lives in memory, exactly as before.
 func (a *App) DeleteDevice(ctx context.Context, publicID string) (db.Device, error) {
-	unlock := a.locks.lock(publicID)
+	unlock, err := a.locks.lock(ctx, publicID)
+	if err != nil {
+		return db.Device{}, err
+	}
 	defer unlock()
 	// 先撤销凭据再删记录：撤销失败就让删除失败，否则这台设备还能用旧凭据
 	// 一直连到过期，而控制面已经没有它的记录了。撤销走调用方的 context：
@@ -308,7 +311,10 @@ func (a *App) BindDevice(ctx context.Context, token, deviceID, hostname, pubkey,
 	if !ok {
 		return db.Device{}, ErrTokenInvalid
 	}
-	unlock := a.locks.lock(pending.PublicID)
+	unlock, err := a.locks.lock(ctx, pending.PublicID)
+	if err != nil {
+		return db.Device{}, err
+	}
 	defer unlock()
 	// 撤销放在换绑之前：撤不掉就不换绑（令牌还在，客户端可以重试），旧身份也
 	// 还能照常用到下一次。撤销成功而换绑失败（令牌在这两步之间被轮换或过期）
@@ -353,23 +359,29 @@ func (a *App) BindDevice(ctx context.Context, token, deviceID, hostname, pubkey,
 }
 
 // DeviceAuth is one signed device request that authentication accepted: the slot
-// the signature was checked against and the identity that signed it. The API
-// layer produces it; every entry point below re-checks the binding under the
-// device lock before it reads or writes anything.
+// the signature was checked against, the identity that signed it, and the key the
+// signature was verified with. The API layer produces it; every entry point below
+// re-checks the binding under the device lock before it reads or writes anything.
+//
+// Pubkey 是判据里不可省的一半：device_id 可以在两次换绑之后又回到原来的值，
+// 只有「这把钥匙」能说明这次认证属于当前那一代绑定。
 type DeviceAuth struct {
 	PublicID string
 	DeviceID string
+	Pubkey   string
 }
 
 // BoundRegistration is one register request for a slot that is already bound,
 // after the API layer established what proof it carries: a signature it verified
-// (Signed), or the registration token to spend here.
+// (Signed) with ProvedPubkey, or the registration token to spend here. Pubkey is
+// the key the caller asks the slot to be bound to.
 type BoundRegistration struct {
-	DeviceID string
-	Pubkey   string
-	Token    string
-	Signed   bool
-	IP       string
+	DeviceID     string
+	Pubkey       string
+	Token        string
+	Signed       bool
+	ProvedPubkey string
+	IP           string
 }
 
 // AcceptRegistration answers an already bound slot's register request: it
@@ -382,13 +394,22 @@ type BoundRegistration struct {
 // 同一次写入里完成，令牌在这期间被轮换或消费时不再放行配置。
 //
 // 换绑发生在认证与这里之间时什么都不写：旧身份不再持有这个槽位，调用方也不能
-// 再用认证时读到的快照回答。
-func (a *App) AcceptRegistration(publicID string, in BoundRegistration) (db.Device, error) {
-	unlock := a.locks.lock(publicID)
+// 再用认证时读到的快照回答。判据是绑定本身，不只是 device_id：签名证明要复核它
+// 实际验签的那把公钥仍在位，令牌证明则在同一笔写入里消费令牌。
+func (a *App) AcceptRegistration(ctx context.Context, publicID string, in BoundRegistration) (db.Device, error) {
+	unlock, err := a.locks.lock(ctx, publicID)
+	if err != nil {
+		return db.Device{}, err
+	}
 	defer unlock()
 	now := a.now()
 	return a.database.Update(publicID, func(d *db.Device) error {
 		if d.DeviceID != in.DeviceID {
+			return ErrIdentityChanged
+		}
+		// 签名是用认证那一刻读到的公钥验过的。槽位在这之后换到另一把钥匙（device_id
+		// 可能都不变），这次证明就不再说明「本机现在持有这个槽位」。
+		if in.Signed && d.Pubkey != in.ProvedPubkey {
 			return ErrIdentityChanged
 		}
 		// 令牌先验、公钥后判：反过来的话，任何知道 device_id 的调用方都能用一次

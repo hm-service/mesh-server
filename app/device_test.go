@@ -130,7 +130,7 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	if _, err := a.BindDevice(context.Background(), token, "dev-1", "OLD-HOST", "pk1", "10.0.0.1"); err != nil {
 		t.Fatalf("first bind: %v", err)
 	}
-	if _, err := a.Heartbeat(context.Background(), DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1"},
+	if _, err := a.Heartbeat(context.Background(), DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"},
 		HeartbeatObservation{ConfigHash: "old-hash", AppVersion: "2026.11.26-1", Platform: "windows/amd64"}); err != nil {
 		t.Fatalf("Heartbeat() error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestRebindClearsPreviousObservations(t *testing.T) {
 	}
 
 	// 同一身份重新注册不是换绑：观测值仍属于它。
-	if _, err := a.Heartbeat(context.Background(), DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-2"},
+	if _, err := a.Heartbeat(context.Background(), DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-2", Pubkey: "pk2"},
 		HeartbeatObservation{ConfigHash: "new-hash", AppVersion: "2026.11.27-1", Platform: "linux/amd64"}); err != nil {
 		t.Fatalf("Heartbeat() error: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestAcceptRegistrationSpendsTheTokenOnce(t *testing.T) {
 		t.Fatalf("IssueToken() error: %v", err)
 	}
 	proof := BoundRegistration{DeviceID: "dev-1", Pubkey: "pk", Token: reissued, IP: "10.0.0.5"}
-	answered, err := a.AcceptRegistration(device.PublicID, proof)
+	answered, err := a.AcceptRegistration(context.Background(), device.PublicID, proof)
 	if err != nil {
 		t.Fatalf("AcceptRegistration() error: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestAcceptRegistrationSpendsTheTokenOnce(t *testing.T) {
 	if answered.LastIP != "10.0.0.5" {
 		t.Fatalf("last ip = %q, want the request address", answered.LastIP)
 	}
-	if _, err := a.AcceptRegistration(device.PublicID, proof); !errors.Is(err, ErrTokenInvalid) {
+	if _, err := a.AcceptRegistration(context.Background(), device.PublicID, proof); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("second AcceptRegistration() = %v, want ErrTokenInvalid", err)
 	}
 }
@@ -237,7 +237,7 @@ func TestAcceptRegistrationRejectsAnotherIdentity(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("DeviceByID() = found %v, %v", found, err)
 	}
-	_, err = a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "pk1", Signed: true, IP: "10.0.0.9"})
+	_, err = a.AcceptRegistration(ctx, device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "pk1", Signed: true, ProvedPubkey: "pk1", IP: "10.0.0.9"})
 	if !errors.Is(err, ErrIdentityChanged) {
 		t.Fatalf("AcceptRegistration() of the old identity = %v, want ErrIdentityChanged", err)
 	}
@@ -247,6 +247,67 @@ func TestAcceptRegistrationRejectsAnotherIdentity(t *testing.T) {
 	}
 	if after != before {
 		t.Fatalf("the refused registration wrote the row: %+v -> %+v", before, after)
+	}
+}
+
+// TestAcceptRegistrationRejectsAStaleSignatureProof pins the proof half of the
+// identity check: the signature was verified against the key the slot held when
+// the request was authenticated. If the slot is bound to another key before the
+// lock is taken — even under the same device_id — that proof no longer says the
+// caller holds the slot, so nothing is written and no configuration is handed
+// back.
+func TestAcceptRegistrationRejectsAStaleSignatureProof(t *testing.T) {
+	a := openTemp(t)
+	ctx := context.Background()
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+
+	// 认证已经把这次请求的签名用 pk1 验过了；之后槽位原地换到 pk2，device_id 不变。
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	if _, err := a.BindDevice(ctx, reissued, "dev-1", "HOST", "pk2", ""); err != nil {
+		t.Fatalf("rebind error: %v", err)
+	}
+	before, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+
+	// 请求想绑的正是在它认证之后读到的那把新钥匙，但证明来自旧的那把。
+	_, err = a.AcceptRegistration(ctx, device.PublicID, BoundRegistration{
+		DeviceID:     "dev-1",
+		Pubkey:       "pk2",
+		Signed:       true,
+		ProvedPubkey: "pk1",
+		IP:           "10.0.0.9",
+	})
+	if !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("AcceptRegistration() with a proof made by the previous key = %v, want ErrIdentityChanged", err)
+	}
+	after, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+	if after != before {
+		t.Fatalf("the refused registration wrote the row: %+v -> %+v", before, after)
+	}
+
+	// 用当前那把钥匙验过的证明照常通过。
+	if _, err := a.AcceptRegistration(ctx, device.PublicID, BoundRegistration{
+		DeviceID:     "dev-1",
+		Pubkey:       "pk2",
+		Signed:       true,
+		ProvedPubkey: "pk2",
+		IP:           "10.0.0.9",
+	}); err != nil {
+		t.Fatalf("AcceptRegistration() with the current key: %v", err)
 	}
 }
 
@@ -266,10 +327,10 @@ func TestAcceptRegistrationKeepsTheTokenOnAPubkeyMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueToken() error: %v", err)
 	}
-	if _, err := a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "other", Token: reissued}); !errors.Is(err, ErrPubkeyMismatch) {
+	if _, err := a.AcceptRegistration(context.Background(), device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "other", Token: reissued}); !errors.Is(err, ErrPubkeyMismatch) {
 		t.Fatalf("AcceptRegistration() with another pubkey = %v, want ErrPubkeyMismatch", err)
 	}
-	if _, err := a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "pk1", Token: reissued}); err != nil {
+	if _, err := a.AcceptRegistration(context.Background(), device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "pk1", Token: reissued}); err != nil {
 		t.Fatalf("AcceptRegistration() with the right key = %v, want the untouched token to be spent", err)
 	}
 }
@@ -287,7 +348,7 @@ func TestAcceptRegistrationChecksTheProofBeforeThePubkey(t *testing.T) {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
 	bogus := strings.Repeat("0", TokenLength)
-	if _, err := a.AcceptRegistration(device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "other", Token: bogus}); !errors.Is(err, ErrTokenInvalid) {
+	if _, err := a.AcceptRegistration(context.Background(), device.PublicID, BoundRegistration{DeviceID: "dev-1", Pubkey: "other", Token: bogus}); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("AcceptRegistration() with a bogus token = %v, want ErrTokenInvalid", err)
 	}
 }

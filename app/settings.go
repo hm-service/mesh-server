@@ -46,11 +46,13 @@ const (
 	// maxManifestBytes bounds version.json: it lists one digest per file.
 	maxManifestBytes = 64 << 10
 	// maxUnpackedBytes bounds what one package may declare after decompression.
-	// 客户端包解出来约 11 MiB；512 MiB 足够宽，也不至于让一个 200 MB 的压缩包
-	// 要求几个 GB 的解压输出。
-	maxUnpackedBytes = 512 << 20
-	// maxPackageEntries bounds the archive members. A client bin/ has six.
-	maxPackageEntries = 4096
+	// 与启动器同一组预算（contract/updates.md「启动器侧的预算」）：客户端包解出
+	// 来约 11 MiB，256 MiB 足够宽，也不会让一个 200 MB 的压缩包要求几个 GB 的
+	// 解压输出。控制面越过的每一条上限，都是目标端会拒绝安装的包。
+	maxUnpackedBytes = 256 << 20
+	// maxPackageEntries bounds the archive members. A client bin/ has six; the
+	// launcher stops at 1024, so the publish stops there too.
+	maxPackageEntries = 1024
 	// decoderMaxWindow / decoderMaxMemory bound the decompressor itself: the
 	// window decides how much match history it may allocate, independent of how
 	// many bytes it finally produces. 我们的包用 -19 打，窗口只有几 MB。
@@ -487,6 +489,11 @@ func readPackageManifest(r io.Reader) (packageManifest, error) {
 			if unpacked > maxUnpackedBytes {
 				return packageManifest{}, errors.New(text.Format(text.AppPackageTooLarge, maxUnpackedBytes))
 			}
+		}
+		// 启动器解包时只接受普通文件，符号链接、目录与设备节点一律拒绝。发布阶段
+		// 不判这一条，收下的就是目标端必然拒绝安装的包。
+		if hdr.Typeflag != tar.TypeReg {
+			return packageManifest{}, errors.New(text.Format(text.AppPackageFileNotRegular, hdr.Name))
 		}
 		name := path.Clean(hdr.Name)
 		// 只认已规范化的普通文件名：带 ./ 或 .. 的条目在解包端会落到别的路径上，

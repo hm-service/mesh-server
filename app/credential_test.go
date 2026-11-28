@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"strconv"
@@ -48,8 +49,8 @@ func TestIssueCredentialReturnsItsOwnID(t *testing.T) {
 	if issued.ID == "" || issued.Secret == "" || issued.Expiry == 0 {
 		t.Fatalf("issued = %+v, want id, secret and expiry", issued)
 	}
-	if owner := fakecli.Owner(issued.Secret); owner != issued.ID {
-		t.Fatalf("secret was generated for %q, answer carries %q", owner, issued.ID)
+	if issued.Secret != fakecli.SecretFor(issued.ID) {
+		t.Fatalf("answer the seed generated for %q carries another secret", issued.ID)
 	}
 	latest, err := a.LatestCredential(device.PublicID)
 	if err != nil {
@@ -57,6 +58,99 @@ func TestIssueCredentialReturnsItsOwnID(t *testing.T) {
 	}
 	if latest.CredentialID != issued.ID || latest.ExpiresAt != issued.Expiry {
 		t.Fatalf("stored = %+v, issued = %+v", latest, issued)
+	}
+}
+
+// TestIssueCredentialRejectsAnAnswerForAnotherID pins the identity half of the
+// issue contract: the control plane chose the id before it asked the seed, so an
+// answer carrying another id describes a credential that no local row accounts
+// for. It must not be finished, stored or handed out; the compensation revokes it
+// along with the intent id and drops the intent row.
+func TestIssueCredentialRejectsAnAnswerForAnotherID(t *testing.T) {
+	t.Setenv(fakecli.IDEnv, "11111111-2222-4333-8444-555555555555")
+	a := openCredentialTemp(t)
+	device, _, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := a.IssueCredential(context.Background(), device.PublicID)
+	if err == nil {
+		t.Fatalf("IssueCredential() with an answer for another id = %+v, want an error", issued)
+	}
+	if issued.Secret != "" {
+		t.Fatalf("a rejected issuance returned a secret: %+v", issued)
+	}
+	if _, err := a.LatestCredential(device.PublicID); !errors.Is(err, db.ErrCredentialNotFound) {
+		t.Fatalf("LatestCredential() after a rejected issuance = %v, want ErrCredentialNotFound", err)
+	}
+	rows, err := a.database.ListCredentials(device.PublicID)
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows after a rejected issuance = %+v, want none", rows)
+	}
+}
+
+// TestIssueCredentialRejectsAMalformedSecret pins the key half: the seed's answer
+// is handed to the client verbatim, so a value that is not a base64 32-byte
+// X25519 private key would leave the device unable to start its core while the
+// control plane recorded the credential as issued.
+func TestIssueCredentialRejectsAMalformedSecret(t *testing.T) {
+	cases := []struct {
+		name   string
+		secret string
+	}{
+		{"not base64", "not-a-key"},
+		{"too short", base64.StdEncoding.EncodeToString(make([]byte, 16))},
+		{"too long", base64.StdEncoding.EncodeToString(make([]byte, 64))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(fakecli.SecretEnv, tc.secret)
+			a := openCredentialTemp(t)
+			device, _, err := a.CreateDevice("laptop", "a = 1\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issued, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
+				t.Fatalf("IssueCredential() with a %s secret = %+v, want an error", tc.name, issued)
+			}
+			if _, err := a.LatestCredential(device.PublicID); !errors.Is(err, db.ErrCredentialNotFound) {
+				t.Fatalf("LatestCredential() after a rejected issuance = %v, want ErrCredentialNotFound", err)
+			}
+		})
+	}
+}
+
+// TestIssueCredentialRejectsAnExpiryOutsideTheRequest pins the lifetime half: the
+// seed is asked for CredentialTTL, so an answer that expires noticeably earlier or
+// later is not this request's result. Accepting it would put the seed, the local
+// record and the client's copy on different schedules.
+func TestIssueCredentialRejectsAnExpiryOutsideTheRequest(t *testing.T) {
+	cases := []struct {
+		name string
+		at   time.Time
+	}{
+		{"an hour short", time.Now().Add(CredentialTTL - time.Hour)},
+		{"an hour long", time.Now().Add(CredentialTTL + time.Hour)},
+		{"already expired", time.Now().Add(-time.Minute)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(fakecli.ExpiryEnv, strconv.FormatInt(tc.at.Unix(), 10))
+			a := openCredentialTemp(t)
+			device, _, err := a.CreateDevice("laptop", "a = 1\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if issued, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
+				t.Fatalf("IssueCredential() with an expiry %s = %+v, want an error", tc.name, issued)
+			}
+			if _, err := a.LatestCredential(device.PublicID); !errors.Is(err, db.ErrCredentialNotFound) {
+				t.Fatalf("LatestCredential() after a rejected issuance = %v, want ErrCredentialNotFound", err)
+			}
+		})
 	}
 }
 

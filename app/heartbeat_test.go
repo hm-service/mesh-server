@@ -29,7 +29,7 @@ func TestHeartbeatAnswersFromTheRowItWrote(t *testing.T) {
 	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
-	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1"}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"}
 
 	reported := HeartbeatObservation{
 		ConfigHash: "0000000000000000",
@@ -98,7 +98,7 @@ func TestHeartbeatWritesNothingAfterARebind(t *testing.T) {
 		t.Fatalf("DeviceByID() = found %v, %v", found, err)
 	}
 
-	_, err = a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1"}, HeartbeatObservation{
+	_, err = a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"}, HeartbeatObservation{
 		ConfigHash: "0123456789abcdef",
 		AppVersion: "2026.11.27-1",
 		Platform:   "windows/amd64",
@@ -119,8 +119,130 @@ func TestHeartbeatWritesNothingAfterARebind(t *testing.T) {
 	if _, err := a.DeleteDevice(ctx, device.PublicID); err != nil {
 		t.Fatalf("DeleteDevice() error: %v", err)
 	}
-	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1"}, HeartbeatObservation{}); !errors.Is(err, ErrNotFound) {
+	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"}, HeartbeatObservation{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Heartbeat() of a deleted slot = %v, want ErrNotFound", err)
+	}
+}
+
+// TestHeartbeatRefusesTheSameDeviceIDAfterItsKeyWasRotated pins the identity the
+// heartbeat is re-checked against. device_id alone is reusable: the slot can be
+// bound to another key and keep the same device_id. A request authenticated with
+// the previous key must therefore neither write nor answer after that key is
+// gone, even though the device_id still matches.
+func TestHeartbeatRefusesTheSameDeviceIDAfterItsKeyWasRotated(t *testing.T) {
+	a := openTemp(t)
+	ctx := context.Background()
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"}
+
+	// 认证之后、业务入口拿到锁之前：槽位原地换了一把钥匙，device_id 不变。
+	reissued, err := a.IssueToken(device.PublicID)
+	if err != nil {
+		t.Fatalf("IssueToken() error: %v", err)
+	}
+	if _, err := a.BindDevice(ctx, reissued, "dev-1", "HOST", "pk2", ""); err != nil {
+		t.Fatalf("rebind error: %v", err)
+	}
+	before, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+
+	_, err = a.Heartbeat(ctx, auth, HeartbeatObservation{
+		ConfigHash: "0123456789abcdef",
+		AppVersion: "2026.11.28-1",
+		Platform:   "windows/amd64",
+		IP:         "10.0.0.9",
+	})
+	if !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("Heartbeat() with the previous key = %v, want ErrIdentityChanged", err)
+	}
+	after, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+	if after != before {
+		t.Fatalf("the refused heartbeat wrote the row: %+v -> %+v", before, after)
+	}
+
+	// 当前这把钥匙照常。
+	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk2"}, HeartbeatObservation{
+		ConfigHash: "0123456789abcdef",
+		Platform:   "windows/amd64",
+	}); err != nil {
+		t.Fatalf("Heartbeat() with the current key: %v", err)
+	}
+}
+
+// TestHeartbeatDoesNotWriteWhenItsRequestEndsWhileQueued pins the cancellation
+// half of the device lock: a heartbeat queued behind an issuance (which can hold
+// the lock for up to 15 seconds) returns as soon as its caller goes away, and the
+// observation it carried is never written.
+func TestHeartbeatDoesNotWriteWhenItsRequestEndsWhileQueued(t *testing.T) {
+	t.Setenv(fakecli.DelayEnv, "800")
+	a := openCredentialTemp(t)
+	ctx := context.Background()
+	device, token, err := a.CreateDevice("laptop", "a = 1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
+		t.Fatalf("BindDevice() error: %v", err)
+	}
+
+	issued := make(chan error, 1)
+	go func() {
+		_, err := a.IssueCredential(ctx, device.PublicID)
+		issued <- err
+	}()
+	// 让签发先拿到设备锁，并停在种子那一步。
+	time.Sleep(150 * time.Millisecond)
+
+	request, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Heartbeat(request, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"},
+			HeartbeatObservation{
+				ConfigHash: "queued-hash",
+				AppVersion: "queued-version",
+				Platform:   "windows/amd64",
+				IP:         "10.0.0.9",
+			})
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // 让心跳排到设备锁后面的队尾
+
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued Heartbeat() = %v, want context.Canceled", err)
+		}
+		// 签发还要等将近 0.6 秒：立即返回说明等待没有跟着请求结束。
+		if waited := time.Since(started); waited > 300*time.Millisecond {
+			t.Fatalf("the cancelled heartbeat waited %v, want it to give up at once", waited)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the cancelled heartbeat kept waiting for the device lock")
+	}
+
+	if err := <-issued; err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+	// 签发已经结束、锁已经空出来：被取消的那次心跳没有跟着走进写入路径。
+	stored, found, err := a.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+	if stored.LastConfigHash == "queued-hash" || stored.LastAppVersion == "queued-version" || stored.LastIP == "10.0.0.9" {
+		t.Fatalf("the cancelled heartbeat wrote its observation: %+v", stored)
 	}
 }
 
@@ -138,7 +260,7 @@ func TestHeartbeatCredentialStepUsesTheSameSnapshot(t *testing.T) {
 	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
 		t.Fatalf("BindDevice() error: %v", err)
 	}
-	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1"}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"}
 
 	result, err := a.Heartbeat(ctx, auth, HeartbeatObservation{
 		ConfigHash:   device.ConfigHash,
@@ -148,7 +270,7 @@ func TestHeartbeatCredentialStepUsesTheSameSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Heartbeat() error: %v", err)
 	}
-	if result.Credential == nil || fakecli.Owner(result.Credential.Secret) != result.Credential.ID {
+	if result.Credential == nil || result.Credential.Secret != fakecli.SecretFor(result.Credential.ID) {
 		t.Fatalf("credential = %+v, want one issued for this heartbeat", result.Credential)
 	}
 

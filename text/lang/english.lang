@@ -55,6 +55,7 @@ app.error.package_file_missing = the package does not carry {0}, which the manif
 app.error.package_file_unexpected = the package carries {0}, which the manifest does not list
 app.error.package_file_mismatch = {0} does not match the digest in the manifest
 app.error.package_file_duplicate = the package carries {0} more than once
+app.error.package_file_not_regular = {0} in the package is not a regular file
 
 # httpx: input parsing.
 httpx.error.address_invalid = invalid address or prefix "{0}"

@@ -233,19 +233,21 @@ type Observation struct {
 
 // Observe folds one authenticated request into the device row in a single
 // conditional write and returns the row that write produced: the snapshot the
-// caller decides its answer from. The condition carries deviceID, so a slot
-// rebound since authentication is left untouched and reports
-// ErrIdentityChanged; a deleted one reports ErrNotFound. An empty IP leaves the
-// stored one alone.
-func (d *DB) Observe(publicID, deviceID string, o Observation, now int64) (Device, error) {
+// caller decides its answer from. The condition carries the identity that
+// authenticated — deviceID and the pubkey the signature was verified with — so a
+// slot rebound since authentication (even to the same device_id with another
+// key) is left untouched and reports ErrIdentityChanged; a deleted one reports
+// ErrNotFound. An empty IP leaves the stored one alone.
+func (d *DB) Observe(publicID, deviceID, pubkey string, o Observation, now int64) (Device, error) {
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return Device{}, fmt.Errorf("begin observe device: %w", err)
 	}
 	defer tx.Rollback()
 	res, err := tx.Exec("UPDATE device SET last_seen_at = ?, last_ip = COALESCE(NULLIF(?, ''), last_ip), "+
-		"last_config_hash = ?, last_app_version = ?, last_platform = ? WHERE public_id = ? AND device_id = ?",
-		now, o.IP, o.ConfigHash, o.AppVersion, o.Platform, publicID, deviceID)
+		"last_config_hash = ?, last_app_version = ?, last_platform = ? "+
+		"WHERE public_id = ? AND device_id = ? AND pubkey = ?",
+		now, o.IP, o.ConfigHash, o.AppVersion, o.Platform, publicID, deviceID, pubkey)
 	if err != nil {
 		return Device{}, fmt.Errorf("observe device: %w", err)
 	}
@@ -254,7 +256,7 @@ func (d *DB) Observe(publicID, deviceID string, o Observation, now int64) (Devic
 		return Device{}, fmt.Errorf("observe device: %w", err)
 	}
 	if affected == 0 {
-		return Device{}, observeMiss(tx, publicID, deviceID)
+		return Device{}, observeMiss(tx, publicID, deviceID, pubkey)
 	}
 	device, err := scanDevice(tx.QueryRow("SELECT "+deviceColumns+" FROM device WHERE public_id = ?", publicID))
 	if err != nil {
@@ -267,17 +269,18 @@ func (d *DB) Observe(publicID, deviceID string, o Observation, now int64) (Devic
 }
 
 // observeMiss explains a conditional write that matched no row: the slot is
-// gone, or it now belongs to another identity.
-func observeMiss(tx *sql.Tx, publicID, deviceID string) error {
-	var current string
-	err := tx.QueryRow("SELECT device_id FROM device WHERE public_id = ?", publicID).Scan(&current)
+// gone, or it now belongs to another identity — another device_id, or the same
+// device_id bound to another key.
+func observeMiss(tx *sql.Tx, publicID, deviceID, pubkey string) error {
+	var currentID, currentKey string
+	err := tx.QueryRow("SELECT device_id, pubkey FROM device WHERE public_id = ?", publicID).Scan(&currentID, &currentKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("observe device: %w", err)
 	}
-	if current != deviceID {
+	if currentID != deviceID || currentKey != pubkey {
 		return ErrIdentityChanged
 	}
 	return ErrNotFound

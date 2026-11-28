@@ -52,6 +52,7 @@ const (
 	AppPackageFileUnexpected = "app.error.package_file_unexpected"
 	AppPackageFileMismatch   = "app.error.package_file_mismatch"
 	AppPackageFileDuplicate  = "app.error.package_file_duplicate"
+	AppPackageFileNotRegular = "app.error.package_file_not_regular"
 
 	HTTPXAddressInvalid = "httpx.error.address_invalid"
 )

@@ -83,8 +83,8 @@ func TestHeartbeatIssuesCredentialOnlyWhenNeeded(t *testing.T) {
 	if first.Credential == "" || first.CredentialID == "" || first.CredentialExpiry == 0 {
 		t.Fatalf("first heartbeat = %+v, want a credential", first)
 	}
-	if owner := fakecli.Owner(first.Credential); owner != first.CredentialID {
-		t.Fatalf("secret was generated for %q, answer carries %q", owner, first.CredentialID)
+	if first.Credential != fakecli.SecretFor(first.CredentialID) {
+		t.Fatalf("answer the seed generated for %q carries another secret", first.CredentialID)
 	}
 	if got := latest(); got.CredentialID != first.CredentialID || got.ExpiresAt != first.CredentialExpiry {
 		t.Fatalf("stored = %+v, answer = %+v", got, first)
@@ -125,8 +125,8 @@ func TestHeartbeatIssuesCredentialOnlyWhenNeeded(t *testing.T) {
 	if renewed.Credential == "" || renewed.CredentialID == first.CredentialID {
 		t.Fatalf("renewal answer = %+v, want a new credential", renewed)
 	}
-	if owner := fakecli.Owner(renewed.Credential); owner != renewed.CredentialID {
-		t.Fatalf("renewal secret was generated for %q, answer carries %q", owner, renewed.CredentialID)
+	if renewed.Credential != fakecli.SecretFor(renewed.CredentialID) {
+		t.Fatalf("answer the seed generated for %q carries another secret", renewed.CredentialID)
 	}
 	if got := latest(); got.CredentialID != renewed.CredentialID {
 		t.Fatalf("stored newest = %q, answer = %q", got.CredentialID, renewed.CredentialID)
@@ -200,8 +200,8 @@ func TestNoneCooldown(t *testing.T) {
 	if second.CredentialID == "" || second.CredentialID == first.CredentialID {
 		t.Fatalf("after the cooldown = %+v, want a new credential", second)
 	}
-	if owner := fakecli.Owner(second.Credential); owner != second.CredentialID {
-		t.Fatalf("secret was generated for %q, answer carries %q", owner, second.CredentialID)
+	if second.Credential != fakecli.SecretFor(second.CredentialID) {
+		t.Fatalf("answer the seed generated for %q carries another secret", second.CredentialID)
 	}
 	if got := latest(); got.CredentialID != second.CredentialID {
 		t.Fatalf("stored newest = %q, answer = %q", got.CredentialID, second.CredentialID)
@@ -255,8 +255,8 @@ func TestAdminIssuedCredentialReachesDevice(t *testing.T) {
 	if next.CredentialID == "" || next.CredentialID == first.CredentialID {
 		t.Fatalf("after the cooldown = %+v, want a new credential", next)
 	}
-	if owner := fakecli.Owner(next.Credential); owner != next.CredentialID {
-		t.Fatalf("secret was generated for %q, answer carries %q", owner, next.CredentialID)
+	if next.Credential != fakecli.SecretFor(next.CredentialID) {
+		t.Fatalf("answer the seed generated for %q carries another secret", next.CredentialID)
 	}
 	if got, err := env.App.LatestCredential(dev.internalID); err != nil || got.CredentialID != next.CredentialID {
 		t.Fatalf("stored newest = %+v, %v", got, err)
@@ -372,8 +372,8 @@ func TestConcurrentIssuanceKeepsCredentialPairs(t *testing.T) {
 			if answer.Credential == "" || answer.CredentialID == "" {
 				t.Fatalf("heartbeat %d = %+v, want a credential", i, answer)
 			}
-			if owner := fakecli.Owner(answer.Credential); owner != answer.CredentialID {
-				t.Fatalf("heartbeat %d answered id %q with the secret generated for %q", i, answer.CredentialID, owner)
+			if answer.Credential != fakecli.SecretFor(answer.CredentialID) {
+				t.Fatalf("heartbeat %d answered id %q with another issuance's secret", i, answer.CredentialID)
 			}
 			if _, dup := seen[answer.CredentialID]; dup {
 				t.Fatalf("credential id %q was issued twice", answer.CredentialID)
@@ -408,8 +408,8 @@ func TestAdminIssueCredentialReturnsItsOwnID(t *testing.T) {
 	if err := json.Unmarshal(data, &issued); err != nil {
 		t.Fatalf("decode issued credential: %v", err)
 	}
-	if owner := fakecli.Owner(issued.Credential); owner != issued.ID {
-		t.Fatalf("secret was generated for %q, answer carries %q", owner, issued.ID)
+	if issued.Credential != fakecli.SecretFor(issued.ID) {
+		t.Fatalf("answer the seed generated for %q carries another secret", issued.ID)
 	}
 	if issued.ID == "" || issued.ExpiresAt == 0 {
 		t.Fatalf("issued = %+v, want id and expiry", issued)

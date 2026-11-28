@@ -54,6 +54,7 @@ app.error.package_file_missing = 包内缺少清单列出的 {0}
 app.error.package_file_unexpected = 包内多出清单外的文件 {0}
 app.error.package_file_mismatch = {0} 的摘要与清单不符
 app.error.package_file_duplicate = 包内 {0} 出现多次
+app.error.package_file_not_regular = 包内 {0} 不是普通文件
 
 # httpx：入参解析。
 httpx.error.address_invalid = 非法的地址或网段「{0}」

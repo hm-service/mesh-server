@@ -66,6 +66,20 @@ func TestOpenRejectsSchemaDrift(t *testing.T) {
 			},
 			want: "unique constraint",
 		},
+		{
+			name: "release slot check dropped",
+			ddl: func(t *testing.T) string {
+				return agedSchema(t, `CHECK \(slot IN \('client', 'launcher'\)\)`, "")
+			},
+			want: "check constraint",
+		},
+		{
+			name: "release launcher row check dropped",
+			ddl: func(t *testing.T) string {
+				return agedSchema(t, `,\s*\n\s*CHECK \(slot = 'client' OR \(notes = '' AND auto_update = 0\)\)`, "")
+			},
+			want: "check constraint",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,5 +195,38 @@ func TestOpenRejectsAnExtraUniqueIndex(t *testing.T) {
 
 	if err := aged(t, "CREATE INDEX device_name_lookup ON device (name)"); err != nil {
 		t.Fatalf("Open() rejected a plain added index: %v", err)
+	}
+}
+
+// TestOpenAcceptsTheSameChecksWrittenDifferently pins how the two sides are
+// compared: the reference is the declared DDL, so keyword case and the whitespace
+// around punctuation are not part of the contract, while a quoted literal keeps
+// its bytes because those decide which rows the table accepts.
+func TestOpenAcceptsTheSameChecksWrittenDifferently(t *testing.T) {
+	reformat := func(t *testing.T, text, old, replacement string) string {
+		t.Helper()
+		if !strings.Contains(text, old) {
+			t.Fatalf("%q is no longer in the declared schema; update this test", old)
+		}
+		return strings.Replace(text, old, replacement, 1)
+	}
+	ddl := reformat(t, schema,
+		"CHECK (slot IN ('client', 'launcher'))",
+		"check( slot in ('client','launcher') )")
+	ddl = reformat(t, ddl,
+		"CHECK (slot = 'client' OR (notes = '' AND auto_update = 0))",
+		"CHECK ( slot='client' or ( notes='' and auto_update=0 ) )")
+	// 注释不参与比较：一段提到 check 的说明既不是约束，也不该让库对不上。
+	ddl = reformat(t, ddl, "CREATE TABLE IF NOT EXISTS release (",
+		"CREATE TABLE IF NOT EXISTS release (\n    -- 这一行提到 check，但它只是注释")
+
+	path := filepath.Join(t.TempDir(), "mesh.db")
+	createFileDB(t, path, ddl)
+	aged, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() rejected the same constraints written differently: %v", err)
+	}
+	if err := aged.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
 	}
 }

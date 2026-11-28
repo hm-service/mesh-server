@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"mesh-server/core"
 	"mesh-server/db"
 	"mesh-server/text"
 )
@@ -63,10 +65,61 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
 
-// generate 让种子签发 id 这张凭据。
+// credentialSecretBytes 是凭据私钥的长度：base64 的 32 字节 X25519 私钥
+// （contract/device-api.md）。
+const credentialSecretBytes = 32
+
+// credentialIDMismatch 报告种子的回答不是这次请求的那一张：id 由控制面先定下并落成
+// 意图行，回答里的 id 不同，就既不能用来完成意图行，也不能交给客户端。answered 可能
+// 对应种子上一张真的凭据，补偿时要一并撤掉。
+type credentialIDMismatch struct {
+	requested string
+	answered  string
+}
+
+func (e *credentialIDMismatch) Error() string {
+	return fmt.Sprintf("签发结果里的凭据 id 是 %q，请求的是 %q", e.answered, e.requested)
+}
+
+// strayCredentialID 返回回答里那个与请求不同、形状可用的 id。撤销会把 id 原样放进
+// CLI 的参数里：形状不对的值不配当参数，也一定不是种子建的凭据。
+func strayCredentialID(err error) string {
+	var mismatch *credentialIDMismatch
+	if !errors.As(err, &mismatch) || !validCredentialID(mismatch.answered) {
+		return ""
+	}
+	return mismatch.answered
+}
+
+// validCredentialID 只认 newCredentialID 生成的 uuid4 形状。
+func validCredentialID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		switch i {
+		case 8, 13, 18, 23:
+			if id[i] != '-' {
+				return false
+			}
+		default:
+			c := id[i]
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+	return id[14] == '4' && strings.ContainsRune("89ab", rune(id[19]))
+}
+
+// generate 让种子签发 id 这张凭据，并核对回答确实属于这次请求。
 // credential_id 用 uuid4：种子对同一个 id 是幂等的，续期必须换 id 才会换密钥。
 // id 由调用方先定下来并落成意图行，种子那边多出来的凭据才总有本地记录可撤。
-func (c *credentialIssuer) generate(ctx context.Context, id string, ttl time.Duration) (IssuedCredential, error) {
+//
+// 种子的回答是一个整体：id、私钥与到期时间必须与这次请求同源。任何一项对不上都说明
+// 种子侧、控制面记录与将要交给客户端的凭据会不同源（CLI 版本变化、异常输出、参数被
+// 忽略），那不是可以继续的结果：按失败返回，由调用方走补偿。
+func (c *credentialIssuer) generate(ctx context.Context, id string, ttl time.Duration, now time.Time) (IssuedCredential, error) {
 	out, err := c.run(ctx, "-o", "json", "credential", "generate",
 		"--ttl", strconv.Itoa(int(ttl.Seconds())), "--credential-id", id)
 	if err != nil {
@@ -80,11 +133,28 @@ func (c *credentialIssuer) generate(ctx context.Context, id string, ttl time.Dur
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return IssuedCredential{}, fmt.Errorf("%s：%w", text.Get(text.AppCredentialParseFailed), err)
 	}
-	expiry, err := strconv.ParseInt(strings.TrimSpace(raw.Expiry), 10, 64)
-	if err != nil || raw.Secret == "" {
+	if raw.ID != id {
+		return IssuedCredential{}, &credentialIDMismatch{requested: id, answered: raw.ID}
+	}
+	// 私钥必须是 base64 的 32 字节 X25519 私钥：形状不对的字符串交给客户端只会让
+	// 它的 core 起不来，而那时控制面已经把这张凭据记成已签发了。
+	secret, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw.Secret))
+	if err != nil || len(secret) != credentialSecretBytes {
 		return IssuedCredential{}, errors.New(text.Get(text.AppCredentialIncomplete))
 	}
-	return IssuedCredential{ID: raw.ID, Secret: raw.Secret, Expiry: expiry}, nil
+	expiry, err := strconv.ParseInt(strings.TrimSpace(raw.Expiry), 10, 64)
+	if err != nil {
+		return IssuedCredential{}, errors.New(text.Get(text.AppCredentialIncomplete))
+	}
+	// 有效期是请求的一部分：种子被要求签 ttl，回答只能落在这个期限附近。两端时钟
+	// 允许 ClockSkew 的偏差；更短、更长或已经过期都不是这次请求的结果。
+	want := now.Add(ttl)
+	if expiry < want.Add(-core.ClockSkew).Unix() || expiry > want.Add(core.ClockSkew).Unix() {
+		return IssuedCredential{}, fmt.Errorf("签发结果的有效期 %d 不在请求的 %d 附近（±%s）", expiry, want.Unix(), core.ClockSkew)
+	}
+	// 交出去的是校验过的那一份：重新编码成规范 base64，避免把等价但形状不同的文本
+	// 连同断言一起漏过去。
+	return IssuedCredential{ID: id, Secret: base64.StdEncoding.EncodeToString(secret), Expiry: expiry}, nil
 }
 
 // revoke 让种子撤掉一张凭据，全网会在几秒内断开使用它的节点。
@@ -183,7 +253,10 @@ func (a *App) IssueCredential(ctx context.Context, publicID string) (IssuedCrede
 	if a.credential == nil {
 		return IssuedCredential{}, ErrCredentialChannelUnconfigured
 	}
-	unlock := a.locks.lock(publicID)
+	unlock, err := a.locks.lock(ctx, publicID)
+	if err != nil {
+		return IssuedCredential{}, err
+	}
 	defer unlock()
 	device, ok, err := a.DeviceByID(publicID)
 	if err != nil {
@@ -215,15 +288,21 @@ func (a *App) issueLocked(ctx context.Context, device db.Device) (IssuedCredenti
 	if err != nil {
 		return IssuedCredential{}, err
 	}
-	if err := a.database.BeginCredential(id, device.PublicID, a.now().Unix()); err != nil {
+	now := a.now()
+	if err := a.database.BeginCredential(id, device.PublicID, now.Unix()); err != nil {
 		return IssuedCredential{}, err
 	}
-	issued, err := a.credential.generate(ctx, id, CredentialTTL)
+	issued, err := a.credential.generate(ctx, id, CredentialTTL, now)
 	if err != nil {
-		// 种子可能已经建了这张（超时，或者连接断在应答回来之前）。补一次撤销把它
-		// 收干净：撤销对种子不认识的 id 也返回成功，所以这一步是幂等的。撤不掉就
-		// 把意图行留着——删除设备或下次收敛时会再按 id 撤一次。
-		if revokeErr := a.revokeIDs(ctx, id); revokeErr == nil {
+		// 种子可能已经建了这张（超时，或者连接断在应答回来之前）。ID 与请求不一致
+		// 时那张建在回答的 id 下，一并撤掉，否则补偿够不着它。撤销对种子不认识的
+		// id 也返回成功，所以这一步是幂等的。撤不掉就把意图行留着——删除设备或下次
+		// 收敛时会再按 id 撤一次。
+		ids := []string{id}
+		if stray := strayCredentialID(err); stray != "" {
+			ids = append(ids, stray)
+		}
+		if revokeErr := a.revokeIDs(ctx, ids...); revokeErr == nil {
 			if deleteErr := a.database.DeleteCredential(id); deleteErr != nil {
 				return IssuedCredential{}, fmt.Errorf("%w (cleanup: %v)", err, deleteErr)
 			}
@@ -242,7 +321,10 @@ func (a *App) issueLocked(ctx context.Context, device db.Device) (IssuedCredenti
 // 名下没有凭据时什么都不做；有记录却没有签发通道时明确失败，不能回答成功
 // （记录留在库里，种子侧那张凭据仍然有效）。
 func (a *App) RevokeCredential(ctx context.Context, publicID string) error {
-	unlock := a.locks.lock(publicID)
+	unlock, err := a.locks.lock(ctx, publicID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	return a.revokeDeviceLocked(ctx, publicID)
 }
@@ -319,7 +401,10 @@ func (a *App) ConfirmCredential(ctx context.Context, publicID, credentialID stri
 	if a.credential == nil || credentialID == "" || credentialID == CredentialNone {
 		return nil
 	}
-	unlock := a.locks.lock(publicID)
+	unlock, err := a.locks.lock(ctx, publicID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	return a.confirmLocked(ctx, publicID, credentialID)
 }

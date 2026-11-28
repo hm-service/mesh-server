@@ -37,7 +37,7 @@ func main() {
 	replayClaimed := cache.Claim("nonce-replay-probe", replay, replaySignedAt)
 	fmt.Printf("REPLAY now=%s timestampErr=%v claimed=%v\n", replay.UTC().Format(time.RFC3339), replayErr, replayClaimed)
 
-	if replayErr == nil && replayClaimed {
+	if replayErr == nil && replayClaimed == core.NonceReplay {
 		fmt.Println("REPRODUCED: the replayed signature is accepted as unused although it was already used")
 		return
 	}

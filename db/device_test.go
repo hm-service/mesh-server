@@ -50,6 +50,56 @@ func TestDeviceRoundTrip(t *testing.T) {
 	}
 }
 
+// TestObserveMatchesTheAuthenticatedKey pins the condition of the observation
+// write: the row is only touched while it still holds the identity the request
+// authenticated as. The same device_id bound to another key is another identity,
+// because a rebind can reuse a device_id — the key is what cannot be reused.
+func TestObserveMatchesTheAuthenticatedKey(t *testing.T) {
+	d := openTemp(t)
+	if err := d.Create(Device{PublicID: "d_1", DeviceID: "dev-1", Pubkey: "pk1"}, 10); err != nil {
+		t.Fatal(err)
+	}
+	now := int64(1_800_000_000)
+	got, err := d.Observe("d_1", "dev-1", "pk1", Observation{ConfigHash: "h1", AppVersion: "v1", IP: "10.0.0.9"}, now)
+	if err != nil {
+		t.Fatalf("Observe() error: %v", err)
+	}
+	if got.LastConfigHash != "h1" || got.LastAppVersion != "v1" || got.LastIP != "10.0.0.9" || got.LastSeenAt != now {
+		t.Fatalf("observed row = %+v, want the reported observations", got)
+	}
+
+	// 同一个 device_id 换了一把钥匙：旧身份写下的观测值不再属于它。
+	if _, err := d.Update("d_1", func(device *Device) error {
+		device.Pubkey = "pk2"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.Get("d_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Observe("d_1", "dev-1", "pk1", Observation{ConfigHash: "h2", AppVersion: "v2"}, now+1); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("Observe() with the previous key = %v, want ErrIdentityChanged", err)
+	}
+	after, err := d.Get("d_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("the refused observation wrote the row: %+v -> %+v", before, after)
+	}
+	if _, err := d.Observe("d_1", "dev-2", "pk2", Observation{}, now+1); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("Observe() with another device_id = %v, want ErrIdentityChanged", err)
+	}
+	if _, err := d.Observe("d_missing", "dev-1", "pk1", Observation{}, now+1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Observe() on a missing slot = %v, want ErrNotFound", err)
+	}
+	if _, err := d.Observe("d_1", "dev-1", "pk2", Observation{ConfigHash: "h2"}, now+2); err != nil {
+		t.Fatalf("Observe() with the current key: %v", err)
+	}
+}
+
 func TestDeviceLimit(t *testing.T) {
 	d := openTemp(t)
 	for i := range 3 {

@@ -232,13 +232,24 @@ func (s *Server) admin(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) withGate(gate *httpx.Gate, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !gate.Acquire() {
-			w.Header().Set("Retry-After", "1")
-			httpx.WriteError(w, http.StatusServiceUnavailable, "busy")
+			writeBusy(w)
 			return
 		}
 		defer gate.Release()
 		next(w, r)
 	}
+}
+
+// codeBusy is the body of every 503: the request was not processed and may be
+// retried unchanged. 认证失败有自己的 401，两者不能混：设备把 401 当成身份失效，
+// 把服务端容量不足当成身份失效就会清掉一个还有效的身份。
+const codeBusy = "busy"
+
+// writeBusy answers a request the server cannot process right now: a gate at its
+// concurrency limit, or a replay cache that is full.
+func writeBusy(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	httpx.WriteError(w, http.StatusServiceUnavailable, codeBusy)
 }
 
 func (s *Server) clientIP(r *http.Request) string {

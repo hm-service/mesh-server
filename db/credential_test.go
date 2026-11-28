@@ -51,6 +51,30 @@ func TestFinishCredentialStampsTheExpiry(t *testing.T) {
 	}
 }
 
+// TestFinishCredentialFinishesAnIntentRowOnce pins the write behind the issue
+// path: it stamps the intent row this issuance created and nothing else, so the
+// expiry stored is always the one that issuance validated — an already issued row
+// is never re-stamped by a second answer.
+func TestFinishCredentialFinishesAnIntentRowOnce(t *testing.T) {
+	d := openTemp(t)
+	if err := d.BeginCredential("c-1", "d_1", 100); err != nil {
+		t.Fatalf("BeginCredential() error: %v", err)
+	}
+	if err := d.FinishCredential("c-1", 500); err != nil {
+		t.Fatalf("FinishCredential() error: %v", err)
+	}
+	if err := d.FinishCredential("c-1", 900); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("FinishCredential() on an issued row = %v, want ErrCredentialNotFound", err)
+	}
+	got, err := d.LatestCredential("d_1")
+	if err != nil {
+		t.Fatalf("LatestCredential() error: %v", err)
+	}
+	if got.ExpiresAt != 500 {
+		t.Fatalf("expiry = %d, want the one the first answer wrote", got.ExpiresAt)
+	}
+}
+
 // TestFinishCredentialRejectsAMissingRow pins that a revocation that landed
 // while the seed was signing is not papered over: the caller must not hand out
 // the secret of a credential that is already gone from the trusted list.

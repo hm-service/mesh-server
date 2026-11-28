@@ -37,9 +37,11 @@ func (d *DB) BeginCredential(credentialID, devicePublicID string, createdAt int6
 // FinishCredential stamps the expiry of a credential whose intent row is still
 // there. ErrCredentialNotFound means the row was revoked or deleted in between:
 // the caller must not hand out the secret, because that credential is gone from
-// the seed's trusted list.
+// the seed's trusted list. Only an intent row (expires_at = 0) is finished; an
+// issued one is never re-stamped, so the expiry written here is always the one
+// this issuance validated.
 func (d *DB) FinishCredential(credentialID string, expiresAt int64) error {
-	res, err := d.conn.Exec("UPDATE credential SET expires_at = ? WHERE credential_id = ?", expiresAt, credentialID)
+	res, err := d.conn.Exec("UPDATE credential SET expires_at = ? WHERE credential_id = ? AND expires_at = 0", expiresAt, credentialID)
 	if err != nil {
 		return fmt.Errorf("finish credential: %w", err)
 	}

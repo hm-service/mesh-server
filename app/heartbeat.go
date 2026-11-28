@@ -56,17 +56,20 @@ type LauncherOffer struct {
 
 // Heartbeat is the complete business entry behind POST /api/v1/heartbeat. Under
 // the device lock it re-checks that the slot still holds the authenticated
-// identity, folds the observation into one conditional write, and plans the
-// answer — configuration, app update, launcher and credential step — from the
-// row that write produced.
+// identity — device_id and the key the signature was verified with — folds the
+// observation into one conditional write, and plans the answer (configuration,
+// app update, launcher and credential step) from the row that write produced.
 //
 // 锁与条件写入一起给出共同的一致性边界：换绑、删除或另一次心跳只能落在这次调用
 // 之前或之后，看不到「观察已写、响应仍来自旧绑定」的中间态。凭据步骤失败只记
 // 日志、不下发：心跳照常回答，下一轮再试。
 func (a *App) Heartbeat(ctx context.Context, auth DeviceAuth, beat HeartbeatObservation) (HeartbeatResult, error) {
-	unlock := a.locks.lock(auth.PublicID)
+	unlock, err := a.locks.lock(ctx, auth.PublicID)
+	if err != nil {
+		return HeartbeatResult{}, err
+	}
 	defer unlock()
-	device, err := a.database.Observe(auth.PublicID, auth.DeviceID, db.Observation{
+	device, err := a.database.Observe(auth.PublicID, auth.DeviceID, auth.Pubkey, db.Observation{
 		ConfigHash: beat.ConfigHash,
 		AppVersion: beat.AppVersion,
 		Platform:   beat.Platform,

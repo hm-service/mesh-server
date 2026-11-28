@@ -4,9 +4,11 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	_ "modernc.org/sqlite"
 )
@@ -130,9 +132,10 @@ func createSchema(conn *sql.DB) error {
 }
 
 // verifySchema compares every table declared in schema with the structure the
-// database file actually has. Columns, named indexes and the implicit UNIQUE
-// constraints behind a declaration all normalise to the same comparable entry,
-// so one diff covers the whole structure instead of a pass per layer. A
+// database file actually has. Columns, named indexes, the implicit UNIQUE
+// constraints and the CHECK constraints behind a declaration all normalise to
+// the same comparable entry, so one diff covers the whole structure instead of a
+// pass per layer. A
 // difference is fatal and is not repaired here: deciding what an older file's
 // data means is an operator's job, and repairing it silently would hide a
 // deployment that has not been migrated.
@@ -173,6 +176,7 @@ const (
 	schemaColumn     schemaKind = "column"
 	schemaIndex      schemaKind = "index"
 	schemaConstraint schemaKind = "unique constraint"
+	schemaCheck      schemaKind = "check constraint"
 )
 
 // schemaEntry is one comparable schema fact: which object it describes and the
@@ -199,12 +203,12 @@ type attribute struct {
 	Value string
 }
 
-// tableEntries returns the comparable structure of one table. Columns and the
-// implicit UNIQUE constraints are always kept. Of the named indexes, an
-// undeclared one is kept only when it is UNIQUE: a plain index added for a query
-// changes nothing the table accepts, while a UNIQUE index changes exactly what
-// the table will store. declared is nil for the reference side, where every
-// named index is declared by definition.
+// tableEntries returns the comparable structure of one table. Columns, the
+// implicit UNIQUE constraints and the CHECK constraints are always kept. Of the
+// named indexes, an undeclared one is kept only when it is UNIQUE: a plain index
+// added for a query changes nothing the table accepts, while a UNIQUE index
+// changes exactly what the table will store. declared is nil for the reference
+// side, where every named index is declared by definition.
 func tableEntries(conn *sql.DB, table string, declared map[string]struct{}) ([]schemaEntry, error) {
 	columns, err := tableColumns(conn, table)
 	if err != nil {
@@ -251,7 +255,191 @@ func tableEntries(conn *sql.DB, table string, declared map[string]struct{}) ([]s
 			{"count", fmt.Sprintf("%d", constraints[shape])},
 		}})
 	}
+	checks, err := tableChecks(conn, table)
+	if err != nil {
+		return nil, err
+	}
+	counted := make(map[string]int, len(checks))
+	for _, check := range checks {
+		counted[check]++
+	}
+	expressions := make([]string, 0, len(counted))
+	for expression := range counted {
+		expressions = append(expressions, expression)
+	}
+	sort.Strings(expressions)
+	for _, expression := range expressions {
+		entries = append(entries, schemaEntry{Kind: schemaCheck, Name: expression, Attrs: []attribute{
+			{"count", fmt.Sprintf("%d", counted[expression])},
+		}})
+	}
 	return entries, nil
+}
+
+// tableChecks returns the CHECK constraints of table in comparable form. SQLite
+// keeps the CREATE TABLE text in sqlite_master and exposes no pragma for CHECK,
+// so the comparison reads that text: the declaration in this file stays the only
+// source of truth, and no SQL parser is involved. A table that is not there has
+// no constraints; the missing columns report that case.
+func tableChecks(conn *sql.DB, table string) ([]string, error) {
+	var ddl sql.NullString
+	err := conn.QueryRow("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !ddl.Valid {
+		return nil, nil
+	}
+	return checkExpressions(ddl.String), nil
+}
+
+// checkExpressions returns every CHECK ( ... ) expression in ddl, normalised for
+// comparison. The parenthesis scan skips single-quoted literals, so a literal
+// holding a parenthesis cannot cut an expression short.
+func checkExpressions(ddl string) []string {
+	ddl = stripComments(ddl)
+	var checks []string
+	for offset := 0; offset < len(ddl); {
+		at := checkKeyword(ddl[offset:])
+		if at < 0 {
+			break
+		}
+		start := offset + at + len("check")
+		open := start
+		for open < len(ddl) && isSpaceByte(ddl[open]) {
+			open++
+		}
+		if open >= len(ddl) || ddl[open] != '(' {
+			offset = start
+			continue
+		}
+		depth := 0
+		end := -1
+		quoted := false
+		for i := open; i < len(ddl); i++ {
+			switch c := ddl[i]; {
+			case quoted:
+				if c == singleQuote {
+					quoted = false
+				}
+			case c == singleQuote:
+				quoted = true
+			case c == '(':
+				depth++
+			case c == ')':
+				depth--
+			}
+			if depth == 0 && i > open {
+				end = i + 1
+				break
+			}
+		}
+		if end < 0 {
+			break
+		}
+		checks = append(checks, normaliseSQL(ddl[start:end]))
+		offset = end
+	}
+	return checks
+}
+
+// stripComments removes -- line comments outside quoted literals, so the wording
+// of a comment can never read as a constraint and a hand-migrated table that
+// dropped a comment still compares equal.
+func stripComments(ddl string) string {
+	var out strings.Builder
+	quoted := false
+	for i := 0; i < len(ddl); i++ {
+		c := ddl[i]
+		switch {
+		case quoted:
+			out.WriteByte(c)
+			if c == singleQuote {
+				quoted = false
+			}
+		case c == singleQuote:
+			quoted = true
+			out.WriteByte(c)
+		case c == '-' && i+1 < len(ddl) && ddl[i+1] == '-':
+			for i < len(ddl) && ddl[i] != '\n' {
+				i++
+			}
+			out.WriteByte('\n')
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+// checkKeyword finds the next CHECK keyword at or after the start of text, or -1.
+func checkKeyword(text string) int {
+	for i := 0; i+len("check") <= len(text); i++ {
+		if !strings.EqualFold(text[i:i+len("check")], "check") {
+			continue
+		}
+		if i > 0 && isWordByte(text[i-1]) {
+			continue
+		}
+		if i+len("check") < len(text) && isWordByte(text[i+len("check")]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// normaliseSQL makes one DDL fragment comparable: keywords are case-insensitive
+// and the whitespace around punctuation is not part of the contract, while a
+// quoted literal keeps its case and its spacing, because there the bytes decide
+// which rows the constraint accepts.
+func normaliseSQL(text string) string {
+	out := make([]rune, 0, len(text))
+	space := false
+	quoted := false
+	for _, r := range text {
+		if quoted {
+			out = append(out, r)
+			if r == singleQuote {
+				quoted = false
+			}
+			continue
+		}
+		switch {
+		case r == singleQuote:
+			quoted = true
+			space = false
+			out = append(out, r)
+		case unicode.IsSpace(r):
+			space = true
+		default:
+			if space && len(out) > 0 && isWordRune(out[len(out)-1]) && isWordRune(r) {
+				out = append(out, ' ')
+			}
+			space = false
+			out = append(out, unicode.ToLower(r))
+		}
+	}
+	return string(out)
+}
+
+// singleQuote is the SQL literal delimiter; a rune literal for it is unreadable.
+const singleQuote = '\''
+
+// isSpaceByte reports the ASCII whitespace SQLite accepts between tokens.
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || c == '$' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isWordRune(r rune) bool {
+	return r == '_' || r == '$' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // constraintShape is the shape of an implicit UNIQUE index, without its
@@ -298,6 +486,8 @@ func diffTable(table string, want, got []schemaEntry) error {
 				return fmt.Errorf("table %s has no column %s", table, entry.Name)
 			case schemaIndex:
 				return fmt.Errorf("table %s has no index %s", table, entry.Name)
+			case schemaCheck:
+				return fmt.Errorf("table %s is missing a check constraint: %s", table, entry.Name)
 			default:
 				return fmt.Errorf("table %s is missing a unique constraint: %s", table, entry.Name)
 			}
@@ -315,6 +505,8 @@ func diffTable(table string, want, got []schemaEntry) error {
 			return fmt.Errorf("table %s has an unexpected column %s", table, entry.Name)
 		case schemaIndex:
 			return fmt.Errorf("table %s has an undeclared unique index %s", table, entry.Name)
+		case schemaCheck:
+			return fmt.Errorf("table %s has an unexpected check constraint: %s", table, entry.Name)
 		default:
 			return fmt.Errorf("table %s has an unexpected unique constraint: %s", table, entry.Name)
 		}

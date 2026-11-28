@@ -5,6 +5,7 @@ package fakecli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -39,9 +40,19 @@ const StdoutBytesEnv = "MESH_TEST_CLI_STDOUT_BYTES"
 // only the inherited pipes keep the caller's Wait open.
 const HoldPipeEnv = "MESH_TEST_CLI_HOLD_MS"
 
-// SecretSeparator splits the stand-in's secret from the credential id it was
-// generated for.
-const SecretSeparator = "|"
+// SecretPrefix keeps the stand-in's deterministic secret from looking like the
+// sha256 of a bare id.
+const SecretPrefix = "fakecli|"
+
+// IDEnv, SecretEnv and ExpiryEnv make the stand-in answer something other than
+// it was asked for — a changed CLI version, a reordered field, an ignored
+// --ttl — so a test can prove the control plane refuses an answer that does not
+// belong to the request.
+const (
+	IDEnv     = "MESH_TEST_CLI_GENERATE_ID"
+	SecretEnv = "MESH_TEST_CLI_GENERATE_SECRET"
+	ExpiryEnv = "MESH_TEST_CLI_GENERATE_EXPIRY"
+)
 
 // Invoked handles the call and exits the process when it is running as the
 // stand-in easytier-cli; it reports false for a normal test run.
@@ -54,15 +65,13 @@ func Invoked() bool {
 	return false
 }
 
-// Owner returns the credential id a secret was generated for, or "" when the
-// secret did not come from this stand-in.
-func Owner(secret string) string {
-	raw, err := base64.StdEncoding.DecodeString(secret)
-	if err != nil {
-		return ""
-	}
-	id, _, _ := strings.Cut(string(raw), SecretSeparator)
-	return id
+// SecretFor returns the credential secret the stand-in generates for id: a
+// deterministic 32-byte value in the shape the seed produces (a base64 X25519
+// private key), so a test can prove that the answer it received and the
+// credential it was handed describe the same issuance.
+func SecretFor(id string) string {
+	sum := sha256.Sum256([]byte(SecretPrefix + id))
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
 func handle(args []string) {
@@ -81,9 +90,21 @@ func handle(args []string) {
 		}
 		id := valueOf(args, "--credential-id")
 		ttl, _ := strconv.ParseInt(valueOf(args, "--ttl"), 10, 64)
-		secret := base64.StdEncoding.EncodeToString([]byte(id + SecretSeparator + strconv.FormatInt(time.Now().UnixNano(), 10)))
+		if raw := os.Getenv(IDEnv); raw != "" {
+			id = raw
+		}
+		secret := SecretFor(id)
+		if raw := os.Getenv(SecretEnv); raw != "" {
+			secret = raw
+		}
+		expiry := nowUnix() + ttl
+		if raw := os.Getenv(ExpiryEnv); raw != "" {
+			if value, err := strconv.ParseInt(raw, 10, 64); err == nil {
+				expiry = value
+			}
+		}
 		fmt.Printf("{\"credential_id\":%q,\"credential_secret\":%q,\"expiry_unix\":%q}\n",
-			id, secret, strconv.FormatInt(nowUnix()+ttl, 10))
+			id, secret, strconv.FormatInt(expiry, 10))
 	case strings.Contains(joined, " credential revoke "):
 		// 真实的 easytier-cli 对种子不认识的 id 打印这一行并以 0 退出，签发通道
 		// 只看退出码。种子重启过、凭据早已过期、上一次撤销已经生效都走这一支，

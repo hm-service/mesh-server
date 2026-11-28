@@ -39,7 +39,10 @@ const (
 	// shutdownTimeout bounds how long in-flight requests may finish.
 	shutdownTimeout = 5 * time.Second
 	// readHeaderTimeout, readTimeout and idleTimeout bound how long one
-	// connection may hold a request slot; a device body is at most 1MiB.
+	// connection may hold a request slot; a device body is at most 1MiB. The
+	// response side has its own bound at the point where it starts writing
+	// (httpx.WithWriteDeadline), not in http.Server: a deadline from here would
+	// cover the back-end work of a publish or a credential issue as well.
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 15 * time.Second
 	idleTimeout       = 60 * time.Second
@@ -157,10 +160,14 @@ func run() int {
 	// 主端口上永远只有设备面：管理路由一条都不注册，访问即 404。管理面只在
 	// 显式给了 ADMIN_PORT 时才存在，没给就是没有——不存在「都挂在同一个端口上」
 	// 的回退。两个面由同一个 Server 构造，共享 session key。
-	deviceHandler := apiServer.HandlerFor(api.SurfaceDevice)
+	//
+	// 响应写入时限由同一个入口给两个面：它从响应的第一个字节开始算，发布下载
+	// （200 MiB，fetchTimeout）与凭据签发（CLI/RPC 各自的超时）的后端时间不在
+	// 这个预算里，所以不给整条业务链压一个统一的截止时间。
+	deviceHandler := httpx.WithWriteDeadline(apiServer.HandlerFor(api.SurfaceDevice))
 	var adminHandler http.Handler
 	if conf.adminPort != 0 {
-		adminHandler = apiServer.HandlerFor(api.SurfaceAdmin)
+		adminHandler = httpx.WithWriteDeadline(apiServer.HandlerFor(api.SurfaceAdmin))
 	}
 	server := &http.Server{
 		Addr:    listen,

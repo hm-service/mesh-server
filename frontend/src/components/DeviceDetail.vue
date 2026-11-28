@@ -256,6 +256,7 @@ async function remove() {
     <div class="detail-head">
       <div>
         <div class="detail-title">
+          <span class="detail-eyebrow">详情</span>
           {{ device?.name ?? "设备详情" }}
           <span v-if="device" class="tag">{{ identityText(device.identity) }}</span>
         </div>

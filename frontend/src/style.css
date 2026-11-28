@@ -22,6 +22,11 @@
   --danger-line: #f4c7c3;
   --info: #1d4ed8;
 
+  /* 行内展开：选中行一层极淡主色，展开面板沉到 surface-3，再用左侧轨把两者串起来。
+     轨宽与选中行共用同一档，圆角与边框只留给最外层分组卡片。 */
+  --surface-sel: #f1f6ff;
+  --rail: 3px;
+
   --s1: 4px;
   --s2: 8px;
   --s3: 12px;
@@ -337,7 +342,7 @@ textarea {
   min-height: 48px;
   padding: 0 12px;
   background: var(--surface-2);
-  border-bottom: 1px solid var(--hair);
+  border-bottom: 1px solid var(--line);
 }
 .group-handle,
 .group-handle-spacer { flex: none; width: 18px; height: 26px; }
@@ -452,11 +457,12 @@ textarea {
   border-bottom: 1px solid var(--hair);
   background: var(--surface);
   cursor: pointer;
+  transition: background 0.12s;
 }
 .rows .dev-row:last-child { border-bottom: 0; }
 .dev-row:hover { background: #f7f9fd; }
 /* 展开时行与它下方的详情连成一块。 */
-.dev-row.open { background: var(--surface-2); border-bottom-color: transparent; }
+.dev-row.open { border-bottom-color: transparent; }
 .dev-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r1); }
 
 .drag-handle {
@@ -584,6 +590,16 @@ textarea {
 .dev-row.is-offline .live { color: var(--faint); }
 .dev-row.is-offline .tag-formal { opacity: 0.7; }
 
+/* 展开中的行就是「当前选中项」：左侧主色轨 + 极淡主色底，向下与详情面板连成一块。
+   离线行也要让选中态盖过降饱和底色，否则展开后看不出选的是哪一行。 */
+.dev-row.open,
+.dev-row.is-offline.open {
+  background: var(--surface-sel);
+  box-shadow: inset var(--rail) 0 0 var(--accent);
+}
+.dev-row.open:hover,
+.dev-row.is-offline.open:hover { background: var(--surface-sel); }
+
 /* 落点：被拖动行留下的虚线槽位，作为插入位提示。 */
 .drag-ghost {
   position: relative;
@@ -650,22 +666,42 @@ textarea {
 .empty-state button { margin-top: var(--s4); }
 
 /* ---------- 行内详情 ---------- */
+/* 详情不是一张独立卡片，而是所属分组卡片的下层：没有自己的边框和圆角，
+   底色比行沉一档，左侧轨从选中行延续下来，内容再按设备名列缩进。 */
 .dev-detail {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--s3);
-  padding: var(--s4) var(--s4) var(--s5);
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--line);
+  padding: var(--s4) var(--s4) var(--s5) calc(30px + var(--dev-gap));
+  background: var(--surface-3);
   animation: detail-in 0.12s ease-out;
+}
+/* 与选中行的左轨同宽同色，只是压低饱和度，读作同一条轨的下半段。 */
+.dev-detail::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--rail);
+  background: var(--accent);
+  opacity: 0.3;
 }
 @keyframes detail-in {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 .detail-head { display: flex; align-items: flex-start; gap: var(--s3); }
-.detail-title { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-md); font-weight: 600; }
+.detail-title { display: flex; align-items: center; gap: var(--s2); color: var(--ink); font-size: var(--fs); font-weight: 600; }
+/* 抬头只说明「这是上面那一行的详情」，不重复行标题的层级。 */
+.detail-eyebrow {
+  color: var(--faint);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
 .detail-sub { color: var(--muted); font-size: var(--fs-sm); margin-top: 2px; }
+/* 面板底色就是按钮默认的悬停档，不换一档按钮悬停会糊进背景；危险色保留自己的悬停。 */
+.dev-detail button:not(.primary):not(.danger):hover:not(:disabled) { background: var(--surface-2); }
 .icon-btn {
   margin-left: auto;
   width: 28px;
@@ -678,24 +714,26 @@ textarea {
   line-height: 1;
 }
 .icon-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+/* 展开区内部不再画卡片：字段用网格排布，区块之间只用一条细线分隔。 */
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: var(--s3) var(--s5);
-  padding: var(--s3) var(--s4);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r2);
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
 }
 .fact .k { color: var(--muted); font-size: var(--fs-xs); margin-bottom: 1px; }
 .fact .v { color: var(--ink-2); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .fact .v.mono { font-family: var(--mono); font-size: var(--fs-xs); }
 
 .section {
-  padding: var(--s3) var(--s4);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r2);
+  padding: var(--s3) 0 0;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
 }
 .section-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 10px; }
 /* 只剩标题行的 section（如「配置」）不留尾部空档 */
@@ -741,10 +779,11 @@ textarea {
   display: flex;
   align-items: flex-start;
   gap: var(--s4);
-  padding: var(--s3) var(--s4);
-  border: 1px solid var(--hair);
-  border-radius: var(--r2);
-  background: var(--surface-2);
+  padding: var(--s3) 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: none;
 }
 .danger-zone .hint { max-width: 430px; }
 
@@ -942,6 +981,8 @@ textarea {
     font-size: var(--fs-xs);
     margin-right: 6px;
   }
+  /* 窄屏行本身已改双列堆叠，详情不再按桌面端的名列缩进。 */
+  .dev-detail { padding-left: var(--s4); }
   .group-head { flex-wrap: wrap; row-gap: 3px; padding-top: 7px; padding-bottom: 7px; }
   .group-actions { margin-left: 0; width: 100%; justify-content: flex-end; }
   .rows-empty { min-height: 40px; }

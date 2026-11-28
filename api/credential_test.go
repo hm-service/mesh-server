@@ -487,6 +487,28 @@ func TestAdminCredentialRefusedForFormalNode(t *testing.T) {
 	}
 }
 
+// TestAdminCredentialRefusedWithoutADeviceKey pins the precondition: a slot that
+// has never registered has no public key, so a credential cannot be sealed for it.
+// 这一类请求的前提不成立，应当是 409 而不是 500。
+func TestAdminCredentialRefusedWithoutADeviceKey(t *testing.T) {
+	env := testenv.New(t, testenv.WithCredentialCLI())
+	id, _ := createDevice(t, env, "laptop", testTOML)
+	res, data := env.Do("POST", "/api/admin/devices/"+id+"/credential", nil)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("issue credential for an unregistered device = %d, want 409: %s", res.StatusCode, data)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if body["code"] != "device_key_missing" || body["message"] == "" {
+		t.Fatalf("error = %+v, want code device_key_missing and a message", body)
+	}
+	if _, err := env.App.LatestCredential(id); !errors.Is(err, db.ErrCredentialNotFound) {
+		t.Fatalf("a refused issuance left a credential row: %v", err)
+	}
+}
+
 // TestDeviceDetailExposesCredentialTimesOnly pins the console contract: it may
 // see when the newest credential was issued and when it expires, never the
 // secret itself.

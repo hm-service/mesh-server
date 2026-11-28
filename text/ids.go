@@ -7,6 +7,7 @@ package text
 const (
 	APIFormalNodeCredential          = "api.text.formal_node_credential"
 	APICredentialChannelUnconfigured = "api.text.credential_channel_unconfigured"
+	APIDeviceKeyMissing              = "api.text.device_key_missing"
 	APIAppNotesRequiresURL           = "api.text.app_notes_requires_url"
 	APIAutoUpdateRequiresURL         = "api.text.auto_update_requires_url"
 	APISignatureRequiresURL          = "api.text.signature_requires_url"

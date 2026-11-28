@@ -7,6 +7,7 @@
 # api：管理面请求的错误说明。
 api.text.formal_node_credential = 这台设备是正式节点（配置里有 network_secret），不使用凭据，轮换没有意义
 api.text.credential_channel_unconfigured = 未配置凭据签发通道（ET_CLI），无法在种子上撤销；请在种子上手工撤销这些凭据
+api.text.device_key_missing = 这台设备还没有注册，没有可用于封装凭据的公钥；等它第一次心跳之后再签发
 api.text.app_notes_requires_url = appNotes 必须与 appUrl 一起给出
 api.text.auto_update_requires_url = autoUpdate 必须与 appUrl 一起给出
 api.text.signature_requires_url = appSignature 必须与 appUrl 一起给出

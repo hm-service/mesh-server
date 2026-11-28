@@ -359,6 +359,11 @@ func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, app.ErrCredentialChannelUnconfigured):
 		writeCredentialChannelUnconfigured(w)
 		return
+	case errors.Is(err, app.ErrSealRecipient):
+		// 槽位建好但还没注册：没有公钥可封，凭据交不出去。这是请求的前提不成立，
+		// 不是服务端故障。
+		httpx.WriteErrorDetail(w, http.StatusConflict, "device_key_missing", text.Get(text.APIDeviceKeyMissing))
+		return
 	case err != nil:
 		s.logger.Error("issue credential", "id", id, "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")

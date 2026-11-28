@@ -52,8 +52,16 @@ spec:
     containers:
         - name: app
           # 镜像由 GitHub Actions 构建并推到 GHCR，部署机只负责拉取。
-          image: ghcr.io/hm-service/mesh-server:latest
-          imagePullPolicy: Always
+          # 按 manifest list digest 引用：tag 会漂，digest 不会。升级流程：
+          #   1. CI 构建成功后，在 run 页面「mesh-server image digest」取 digest；
+          #      或部署机 `podman pull ghcr.io/hm-service/mesh-server:latest` 后
+          #      `podman image inspect --format '{{index .RepoDigests 0}}'` 取；
+          #   2. 替换下面的 sha256 并提交；
+          #   3. 在部署机按 build/README.md 的命令渲染 secret 后
+          #      `podman kube play --replace --network apps`。
+          image: ghcr.io/hm-service/mesh-server@sha256:2b4bf4c766a8360be1319d13a5b34614f0f8f35e3944d303599694853a4df21c
+          # digest 指向不可变内容：本地已有就不再拉。tag 引用才需要 Always。
+          imagePullPolicy: IfNotPresent
 
           securityContext:
               allowPrivilegeEscalation: false

@@ -357,23 +357,30 @@ func dialGuard(allow []netip.Prefix) func(network, address string, c syscall.Raw
 }
 
 // openDownload starts the download of rawURL and rejects a non-200 answer; the
-// caller closes the body.
-func (a *App) openDownload(rawURL string) (io.ReadCloser, error) {
+// caller closes the body. The declared size is checked before any byte is read:
+// discovering the overflow only after the whole body has arrived means paying
+// for a download that could never be accepted. A response without a
+// Content-Length falls back to the read-time bound.
+func (a *App) openDownload(rawURL string) (io.ReadCloser, int64, error) {
 	res, err := a.fetch.Get(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if res.StatusCode != http.StatusOK {
 		res.Body.Close()
-		return nil, fmt.Errorf("HTTP %d", res.StatusCode)
+		return nil, 0, fmt.Errorf("HTTP %d", res.StatusCode)
 	}
-	return res.Body, nil
+	if res.ContentLength > MaxReleaseBytes {
+		res.Body.Close()
+		return nil, 0, errors.New(text.Get(text.AppFileTooLarge))
+	}
+	return res.Body, res.ContentLength, nil
 }
 
 // fetchDigest downloads rawURL and returns the full sha256 of the bytes clients
 // will download.
 func (a *App) fetchDigest(rawURL string) (sha string, err error) {
-	body, err := a.openDownload(rawURL)
+	body, _, err := a.openDownload(rawURL)
 	if err != nil {
 		return "", err
 	}
@@ -394,7 +401,7 @@ func (a *App) fetchDigest(rawURL string) (sha string, err error) {
 // declares. The body is decompressed only far enough to read the manifest; the
 // rest is drained so the digest still covers the whole file.
 func (a *App) fetchClientPackage(rawURL string) (sha string, manifest packageManifest, err error) {
-	body, err := a.openDownload(rawURL)
+	body, _, err := a.openDownload(rawURL)
 	if err != nil {
 		return "", packageManifest{}, err
 	}

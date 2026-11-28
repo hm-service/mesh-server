@@ -22,14 +22,13 @@ func TestHeartbeatAnswersFromTheRowItWrote(t *testing.T) {
 	t.Cleanup(func() { _ = a.Close() })
 	ctx := context.Background()
 
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk", ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
-	}
-	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk"}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: device.Pubkey}
 
 	reported := HeartbeatObservation{
 		ConfigHash: "0000000000000000",
@@ -79,26 +78,28 @@ func TestHeartbeatAnswersFromTheRowItWrote(t *testing.T) {
 func TestHeartbeatWritesNothingAfterARebind(t *testing.T) {
 	a := openTemp(t)
 	ctx := context.Background()
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
+	previousKey := device.Pubkey
+	next, _ := testKeypair(t)
+	if _, err := a.RebindDevice(ctx, device.PublicID, next); err != nil {
+		t.Fatalf("RebindDevice() error: %v", err)
 	}
-	reissued, err := a.IssueToken(device.PublicID)
-	if err != nil {
-		t.Fatalf("IssueToken() error: %v", err)
-	}
-	if _, err := a.BindDevice(ctx, reissued, "dev-2", "HOST", "pk2", ""); err != nil {
-		t.Fatalf("rebind error: %v", err)
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: next, DeviceID: "dev-2", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("rebind claim: %v", err)
 	}
 	before, found, err := a.DeviceByID(device.PublicID)
 	if err != nil || !found {
 		t.Fatalf("DeviceByID() = found %v, %v", found, err)
 	}
 
-	_, err = a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"}, HeartbeatObservation{
+	_, err = a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: previousKey}, HeartbeatObservation{
 		ConfigHash: "0123456789abcdef",
 		AppVersion: "2026.11.27-1",
 		Platform:   "windows/amd64",
@@ -119,7 +120,7 @@ func TestHeartbeatWritesNothingAfterARebind(t *testing.T) {
 	if _, err := a.DeleteDevice(ctx, device.PublicID); err != nil {
 		t.Fatalf("DeleteDevice() error: %v", err)
 	}
-	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"}, HeartbeatObservation{}); !errors.Is(err, ErrNotFound) {
+	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: previousKey}, HeartbeatObservation{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Heartbeat() of a deleted slot = %v, want ErrNotFound", err)
 	}
 }
@@ -132,22 +133,23 @@ func TestHeartbeatWritesNothingAfterARebind(t *testing.T) {
 func TestHeartbeatRefusesTheSameDeviceIDAfterItsKeyWasRotated(t *testing.T) {
 	a := openTemp(t)
 	ctx := context.Background()
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
-	}
-	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk1"}
+	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: device.Pubkey}
 
 	// 认证之后、业务入口拿到锁之前：槽位原地换了一把钥匙，device_id 不变。
-	reissued, err := a.IssueToken(device.PublicID)
-	if err != nil {
-		t.Fatalf("IssueToken() error: %v", err)
+	next, _ := testKeypair(t)
+	if _, err := a.RebindDevice(ctx, device.PublicID, next); err != nil {
+		t.Fatalf("RebindDevice() error: %v", err)
 	}
-	if _, err := a.BindDevice(ctx, reissued, "dev-1", "HOST", "pk2", ""); err != nil {
-		t.Fatalf("rebind error: %v", err)
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: next, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("rebind claim: %v", err)
 	}
 	before, found, err := a.DeviceByID(device.PublicID)
 	if err != nil || !found {
@@ -172,7 +174,7 @@ func TestHeartbeatRefusesTheSameDeviceIDAfterItsKeyWasRotated(t *testing.T) {
 	}
 
 	// 当前这把钥匙照常。
-	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: "pk2"}, HeartbeatObservation{
+	if _, err := a.Heartbeat(ctx, DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: next}, HeartbeatObservation{
 		ConfigHash: "0123456789abcdef",
 		Platform:   "windows/amd64",
 	}); err != nil {
@@ -188,14 +190,13 @@ func TestHeartbeatDoesNotWriteWhenItsRequestEndsWhileQueued(t *testing.T) {
 	t.Setenv(fakecli.DelayEnv, "800")
 	a := openCredentialTemp(t)
 	ctx := context.Background()
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	pubkey, _ := bindTestPubkey(t, a, device.PublicID)
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", pubkey, ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
-	}
+	pubkey := device.Pubkey
 
 	issued := make(chan error, 1)
 	go func() {
@@ -254,14 +255,13 @@ func TestHeartbeatDoesNotWriteWhenItsRequestEndsWhileQueued(t *testing.T) {
 func TestHeartbeatCredentialStepUsesTheSameSnapshot(t *testing.T) {
 	a := openCredentialTemp(t)
 	ctx := context.Background()
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	pubkey, _ := bindTestPubkey(t, a, device.PublicID)
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", pubkey, ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
-	}
+	pubkey := device.Pubkey
 	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: pubkey}
 
 	result, err := a.Heartbeat(ctx, auth, HeartbeatObservation{
@@ -302,14 +302,13 @@ func TestHeartbeatCredentialStepUsesTheSameSnapshot(t *testing.T) {
 func TestHeartbeatReissuesADeletedCredential(t *testing.T) {
 	a := openCredentialTemp(t)
 	ctx := context.Background()
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	pubkey, _ := bindTestPubkey(t, a, device.PublicID)
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", pubkey, ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
-	}
+	pubkey := device.Pubkey
 	auth := DeviceAuth{PublicID: device.PublicID, DeviceID: "dev-1", Pubkey: pubkey}
 
 	older, err := a.IssueCredential(ctx, device.PublicID)

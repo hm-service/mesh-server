@@ -123,8 +123,8 @@ func TestGroupAPI(t *testing.T) {
 func TestDeviceGroupAPI(t *testing.T) {
 	env := testenv.New(t)
 	group := createGroup(t, env, "办公")
-	first, _ := createDevice(t, env, "one", testTOML)
-	second, _ := createDevice(t, env, "two", testTOML)
+	first := createDevice(t, env, "one", testTOML)
+	second := createDevice(t, env, "two", testTOML)
 
 	res, data := env.Do("PUT", "/api/admin/devices/"+first+"/group", map[string]any{"groupId": group.ID})
 	if res.StatusCode != http.StatusNoContent {
@@ -157,8 +157,8 @@ func TestDeviceGroupAPI(t *testing.T) {
 func TestDeleteGroupUngroupsDevicesAPI(t *testing.T) {
 	env := testenv.New(t)
 	group := createGroup(t, env, "临时")
-	first, _ := createDevice(t, env, "one", testTOML)
-	second, _ := createDevice(t, env, "two", testTOML)
+	first := createDevice(t, env, "one", testTOML)
+	second := createDevice(t, env, "two", testTOML)
 	for _, id := range []string{first, second} {
 		res, data := env.Do("PUT", "/api/admin/devices/"+id+"/group", map[string]any{"groupId": group.ID})
 		if res.StatusCode != http.StatusNoContent {
@@ -183,9 +183,9 @@ func TestDeviceOrderAPI(t *testing.T) {
 	env := testenv.New(t)
 	office := createGroup(t, env, "办公")
 	home := createGroup(t, env, "家里")
-	first, _ := createDevice(t, env, "one", testTOML)
-	second, _ := createDevice(t, env, "two", testTOML)
-	third, _ := createDevice(t, env, "three", testTOML)
+	first := createDevice(t, env, "one", testTOML)
+	second := createDevice(t, env, "two", testTOML)
+	third := createDevice(t, env, "three", testTOML)
 
 	order := []map[string]any{
 		{"id": first, "groupId": home.ID, "position": 1},

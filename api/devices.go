@@ -100,11 +100,9 @@ func summarize(d db.Device, release db.Release, now time.Time) deviceSummary {
 // fields only the detail view exposes.
 type deviceDetail struct {
 	deviceSummary
-	Pubkey         string `json:"pubkey"`
-	ConfigTOML     string `json:"configToml"`
-	Token          string `json:"token"`
-	TokenExpiresAt int64  `json:"tokenExpiresAt"`
-	LastIP         string `json:"lastIp"`
+	Pubkey     string `json:"pubkey"`
+	ConfigTOML string `json:"configToml"`
+	LastIP     string `json:"lastIp"`
 	// Credential 是最新一张凭据的签发时间与到期时间；没有凭据时是 null。
 	// 私钥从不出现在这里。
 	Credential *credentialView `json:"credential"`
@@ -118,12 +116,10 @@ type credentialView struct {
 
 func detailOf(d db.Device, release db.Release, now time.Time) deviceDetail {
 	return deviceDetail{
-		deviceSummary:  summarize(d, release, now),
-		Pubkey:         d.Pubkey,
-		ConfigTOML:     d.ConfigTOML,
-		Token:          d.Token,
-		TokenExpiresAt: d.TokenExpiresAt,
-		LastIP:         d.LastIP,
+		deviceSummary: summarize(d, release, now),
+		Pubkey:        d.Pubkey,
+		ConfigTOML:    d.ConfigTOML,
+		LastIP:        d.LastIP,
 	}
 }
 
@@ -194,6 +190,14 @@ type deviceInput struct {
 	ConfigTOML string `json:"configToml"`
 }
 
+// createDeviceInput 是 POST /api/admin/devices：配置之外还要这台设备的公钥。
+// 槽位靠这把钥匙认主，因此创建时就必须拿到它——没有可传递的注册令牌。
+// 换钥匙是另一个入口（POST /{id}/pubkey），因为那件事要撤销旧身份的凭据。
+type createDeviceInput struct {
+	deviceInput
+	Pubkey string `json:"pubkey"`
+}
+
 // deviceUpdate is PUT /api/admin/devices/{id}: the fields every update rewrites
 // plus the optional device-level auto-update override.
 type deviceUpdate struct {
@@ -223,8 +227,7 @@ func (o *optionalBool) UnmarshalJSON(raw []byte) error {
 }
 
 type createDeviceResponse struct {
-	ID    string `json:"id"`
-	Token string `json:"token"`
+	ID string `json:"id"`
 	// IPv4 是从落库配置解析出来的地址，界面直接回显，省得再拉一次详情。
 	IPv4 string `json:"ipv4,omitempty"`
 }
@@ -232,14 +235,20 @@ type createDeviceResponse struct {
 func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	// 新设备一律跟随发布包（contract/admin-api.md）；autoUpdate 不是这个请求声明的
 	// 字段，出现它由统一的严格解码拒绝，不在这里单独检查。
-	var req deviceInput
+	var req createDeviceInput
 	if !httpx.DecodeJSON(w, r, &req) {
 		return
 	}
-	device, token, err := s.app.CreateDevice(req.Name, req.ConfigTOML)
+	device, err := s.app.CreateDevice(req.Name, req.ConfigTOML, req.Pubkey)
 	switch {
 	case errors.Is(err, app.ErrInvalidInput):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request")
+		return
+	case errors.Is(err, app.ErrPublicKeyInvalid):
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_pubkey")
+		return
+	case errors.Is(err, app.ErrPubkeyTaken):
+		httpx.WriteError(w, http.StatusConflict, "pubkey_in_use")
 		return
 	case errors.Is(err, app.ErrLimit):
 		httpx.WriteError(w, http.StatusConflict, "device_limit")
@@ -251,9 +260,8 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	facts, _ := app.ConfigFactsOf(device.ConfigTOML)
 	httpx.WriteJSON(w, http.StatusOK, createDeviceResponse{
-		ID:    device.PublicID,
-		Token: token,
-		IPv4:  facts.IPv4,
+		ID:   device.PublicID,
+		IPv4: facts.IPv4,
 	})
 }
 
@@ -328,19 +336,36 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
+// handleRebindKey points the slot at another device key. 换钥匙之后槽位回到待认领：
+// 旧键盘上的签名立刻失效，旧身份名下的凭据一并撤销。
+func (s *Server) handleRebindKey(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	token, err := s.app.IssueToken(id)
+	var req struct {
+		Pubkey string `json:"pubkey"`
+	}
+	if !httpx.DecodeJSON(w, r, &req) {
+		return
+	}
+	_, err := s.app.RebindDevice(r.Context(), id, req.Pubkey)
 	switch {
 	case errors.Is(err, app.ErrNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
 		return
+	case errors.Is(err, app.ErrPublicKeyInvalid):
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_pubkey")
+		return
+	case errors.Is(err, app.ErrPubkeyTaken):
+		httpx.WriteError(w, http.StatusConflict, "pubkey_in_use")
+		return
+	case errors.Is(err, app.ErrCredentialChannelUnconfigured):
+		writeCredentialChannelUnconfigured(w)
+		return
 	case err != nil:
-		s.logger.Error("issue token", "id", id, "error", err)
+		s.logger.Error("rebind key", "id", id, "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]string{"token": token})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleIssueCredential 给设备签发一张凭据，私钥只在这一个响应里出现。
@@ -362,7 +387,7 @@ func (s *Server) handleIssueCredential(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, app.ErrSealRecipient):
 		// 槽位建好但还没注册：没有公钥可封，凭据交不出去。这是请求的前提不成立，
 		// 不是服务端故障。
-		httpx.WriteErrorDetail(w, http.StatusConflict, "device_key_missing", text.Get(text.APIDeviceKeyMissing))
+		httpx.WriteErrorDetail(w, http.StatusConflict, "device_key_unusable", text.Get(text.APIDeviceKeyUnusable))
 		return
 	case err != nil:
 		s.logger.Error("issue credential", "id", id, "error", err)

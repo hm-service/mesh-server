@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/netip"
 	"os"
@@ -134,19 +133,6 @@ func (a *App) Probe(ctx context.Context) error {
 
 func (a *App) templatePath() string {
 	return filepath.Join(a.dataDir, templateName)
-}
-
-// PurgeExpiredTokens clears registration tokens whose validity has ended; the
-// ticker started in main.go calls it every minute.
-func (a *App) PurgeExpiredTokens() error {
-	purged, err := a.database.PurgeExpiredTokens(a.now().Unix())
-	if err != nil {
-		return err
-	}
-	if purged > 0 {
-		slog.Info("expired registration tokens purged", "count", purged)
-	}
-	return nil
 }
 
 func trimName(s string) string { return strings.TrimSpace(s) }

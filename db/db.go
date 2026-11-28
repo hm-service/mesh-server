@@ -27,8 +27,6 @@ CREATE TABLE IF NOT EXISTS device (
     pubkey           TEXT    NOT NULL DEFAULT '',
     config_toml      TEXT    NOT NULL DEFAULT '',
     config_hash      TEXT    NOT NULL DEFAULT '',
-    token            TEXT    NOT NULL DEFAULT '',
-    token_expires_at INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL DEFAULT 0,
     last_seen_at     INTEGER NOT NULL DEFAULT 0,
     last_ip          TEXT    NOT NULL DEFAULT '',
@@ -47,6 +45,9 @@ CREATE TABLE IF NOT EXISTS device_group (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS device_device_id ON device (device_id) WHERE device_id <> '';
+
+-- 公钥是槽位的身份：注册请求按它查行，两个槽位认同一把钥匙没有意义。
+CREATE UNIQUE INDEX IF NOT EXISTS device_pubkey ON device (pubkey) WHERE pubkey <> '';
 
 CREATE TABLE IF NOT EXISTS release (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -63,57 +63,6 @@ func TestStateJSONIsIgnored(t *testing.T) {
 	}
 }
 
-// TestPublishRefusesInternalAddresses pins the download guard: a published URL
-// must not turn the control plane into an HTTP client for its own network.
-func TestValidTokenRequiresSixtyFourLowercaseHex(t *testing.T) {
-	good := strings.Repeat("ab", TokenLength/2)
-	if !ValidToken(good) {
-		t.Fatalf("%q was rejected", good)
-	}
-	// 字符集边界：9 与 f 是合法域的两端，仍属十六进制。
-	if edge := strings.Repeat("9", TokenLength/2) + strings.Repeat("f", TokenLength/2); !ValidToken(edge) {
-		t.Fatalf("%q was rejected", edge)
-	}
-	bad := []string{
-		"",
-		strings.Repeat("a", TokenLength-1),
-		strings.Repeat("a", TokenLength+1),
-		"etk_" + strings.Repeat("a", TokenLength-4),
-		strings.Repeat("A", TokenLength),
-		strings.Repeat("a", TokenLength-1) + "-",
-		// 注释与文档说的是十六进制：g 与 z 在 a-z 里但不在 0-9a-f 里。
-		strings.Repeat("a", TokenLength-1) + "g",
-		"g" + strings.Repeat("a", TokenLength-1),
-		strings.Repeat("a", TokenLength-1) + "z",
-	}
-	for _, token := range bad {
-		if ValidToken(token) {
-			t.Fatalf("%q was accepted", token)
-		}
-	}
-}
-
-// TestIssuedTokenHasTheContractShape pins the generator to the same rule the
-// validator enforces: a shape change on one side would make every freshly
-// issued token unusable at registration.
-func TestIssuedTokenHasTheContractShape(t *testing.T) {
-	instance := openTemp(t)
-	device, token, err := instance.CreateDevice("laptop", "hostname = \"auto\"\n")
-	if err != nil {
-		t.Fatalf("CreateDevice: %v", err)
-	}
-	if !ValidToken(token) {
-		t.Fatalf("issued token %q does not match the shape", token)
-	}
-	if got, ok, err := instance.DeviceByToken(token); err != nil || !ok || got.PublicID != device.PublicID {
-		t.Fatalf("lookup = %+v, %v, %v", got, ok, err)
-	}
-	// 形状不对的令牌不查库就当作没有。
-	if _, ok, err := instance.DeviceByToken(strings.Repeat("A", TokenLength)); err != nil || ok {
-		t.Fatalf("an uppercase token was looked up: %v, %v", ok, err)
-	}
-}
-
 func TestPublishRefusesInternalAddresses(t *testing.T) {
 	a := openTemp(t)
 	err := a.Publish(PublishInput{

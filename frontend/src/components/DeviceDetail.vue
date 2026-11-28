@@ -36,8 +36,10 @@ const device = ref<DeviceDetail | null>(null);
 const loading = ref(true);
 const error = ref("");
 const editing = ref(false);
-const token = ref("");
-const tokenBusy = ref(false);
+// 换钥匙：把槽位指到另一把公钥。输入框默认收起，点「换钥匙」才展开。
+const rebindOpen = ref(false);
+const rebindKeyValue = ref("");
+const rebindBusy = ref(false);
 const confirm = ref<ConfirmKind>(null);
 const rotating = ref(false);
 const deleting = ref(false);
@@ -179,21 +181,32 @@ function onSaved(next: DeviceDetail) {
   emit("changed");
 }
 
-async function issueToken() {
-  if (!device.value || tokenBusy.value) return;
-  tokenBusy.value = true;
-  error.value = "";
+async function rebindKey() {
+  if (!device.value || rebindBusy.value) return;
+  const key = rebindKeyValue.value.trim();
+  if (!key) {
+    actionError.value = "请填写新客户端的公钥";
+    return;
+  }
+  rebindBusy.value = true;
+  actionError.value = "";
   try {
-    token.value = (await api.issueToken(device.value.id)).token;
+    await api.rebindKey(device.value.id, key);
+    rebindOpen.value = false;
+    rebindKeyValue.value = "";
+    await load();
+    emit("changed");
+    emit("toast", "已换钥匙", "旧钥匙立即失效，槽位回到待认领；新客户端点「保存并连接」即可接手", "ok");
   } catch (err) {
-    showError(err, "生成令牌失败");
+    showError(err, "换钥匙失败");
   } finally {
-    tokenBusy.value = false;
+    rebindBusy.value = false;
   }
 }
 
-async function copyToken() {
-  emit("toast", (await copyText(token.value)) ? "已复制" : "复制失败", "", "ok");
+async function copyPubkey() {
+  if (!device.value?.pubkey) return;
+  emit("toast", (await copyText(device.value.pubkey)) ? "已复制" : "复制失败", "", "ok");
 }
 
 async function rotate() {
@@ -320,7 +333,10 @@ async function remove() {
         </div>
         <div class="fact wide">
           <div class="k">公钥</div>
-          <div class="v mono">{{ device.pubkey || "—" }}</div>
+          <div class="v mono">
+            {{ device.pubkey || "—" }}
+            <button v-if="device.pubkey" class="ghost" type="button" @click="copyPubkey">复制</button>
+          </div>
         </div>
       </div>
 
@@ -334,17 +350,23 @@ async function remove() {
             <p class="hint">{{ rotateHint }}</p>
           </div>
           <div class="op">
-            <button type="button" :disabled="tokenBusy" @click="issueToken">
-              {{ tokenBusy ? "生成中…" : "签发注册令牌" }}
-            </button>
-            <p class="hint">10 分钟有效，一次性；设备注册成功后作废。</p>
+            <button type="button" :disabled="rebindBusy" @click="rebindOpen = !rebindOpen">换钥匙</button>
+            <p class="hint">机器重装或私钥丢失后，把新客户端的公钥填进来；旧钥匙立即失效。</p>
           </div>
         </div>
-        <div v-if="token" class="token-box">
-          <div class="token-label">注册令牌（10 分钟有效，一次性）</div>
-          <div class="token-row">
-            <code class="token-value">{{ token }}</code>
-            <button type="button" @click="copyToken">复制</button>
+        <div v-if="rebindOpen" class="key-box">
+          <div class="key-label">新公钥（新客户端设置页上的「本机公钥」）</div>
+          <div class="key-row">
+            <input
+              v-model="rebindKeyValue"
+              type="text"
+              placeholder="44 字符 base64"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button type="button" :disabled="rebindBusy" @click="rebindKey">
+              {{ rebindBusy ? "提交中…" : "确认换钥匙" }}
+            </button>
           </div>
         </div>
       </section>

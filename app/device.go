@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
@@ -13,8 +14,6 @@ import (
 const (
 	// MaxDevices caps the number of device slots (contract/device-api.md).
 	MaxDevices = 200
-	// TokenTTL is the lifetime of a one-time registration token.
-	TokenTTL = 10 * time.Minute
 	// OnlineWindow derives device status from last_seen_at.
 	OnlineWindow = 90 * time.Second
 	// MaxNameRunes bounds a device display name.
@@ -23,12 +22,6 @@ const (
 	// 列表要读全部配置来算派生字段：不在这里收口，200 台设备就能让一次列表请求
 	// 同时持有 200MiB。配置只有几 KB，64KiB 已经宽到不必再想。
 	MaxConfigBytes = 64 << 10
-	// TokenLength is the exact shape of a registration token: 64 characters,
-	// lowercase hex only, which is 32 bytes of entropy. The control plane
-	// refuses anything else before it looks at the database, so a token-shaped
-	// string pasted from somewhere else cannot reach the expiry branch and blur
-	// "wrong shape" into "unknown token".
-	TokenLength = 64
 )
 
 var (
@@ -38,16 +31,18 @@ var (
 	ErrLimit = db.ErrLimit
 	// ErrGroupNotFound reports a missing device group.
 	ErrGroupNotFound = db.ErrGroupNotFound
-	// ErrTokenInvalid reports a missing, used or expired registration token.
-	ErrTokenInvalid = errors.New("registration token is not usable")
+	// ErrPubkeyTaken reports a key another slot already claims.
+	ErrPubkeyTaken = db.ErrPubkeyTaken
+	// ErrDeviceIDTaken reports a device_id another slot already holds.
+	ErrDeviceIDTaken = db.ErrDeviceIDTaken
+	// ErrPublicKeyInvalid reports a key that cannot be a device identity: not
+	// base64 of 32 bytes, or not a point edwards25519 can decode.
+	ErrPublicKeyInvalid = errors.New("device public key is not usable")
 	// ErrInvalidInput reports a name or configuration that cannot be stored.
 	ErrInvalidInput = errors.New("invalid device input")
 	// ErrIdentityChanged reports a request whose authenticated identity no longer
 	// holds the slot: a rebind landed in between.
 	ErrIdentityChanged = db.ErrIdentityChanged
-	// ErrPubkeyMismatch reports a request that proved it owns the slot but
-	// presented another key.
-	ErrPubkeyMismatch = errors.New("device slot is bound to another pubkey")
 )
 
 // ListDevices returns every device in creation order.
@@ -133,69 +128,68 @@ func (a *App) DeviceByDeviceID(deviceID string) (db.Device, bool, error) {
 	return device, err == nil, err
 }
 
-// ValidToken reports whether s has the shape every registration token has: 64
-// characters of 0-9a-f, i.e. 32 bytes of lowercase hex. The shape is part of the
-// contract: admins copy tokens around, and a token that is one character off
-// should fail at the door.
-func ValidToken(s string) bool {
-	if len(s) != TokenLength {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// DeviceByToken returns the device holding a registration token. A token of
-// the wrong shape is answered as "no such device" without touching the
-// database.
-func (a *App) DeviceByToken(token string) (db.Device, bool, error) {
-	if !ValidToken(token) {
+// DeviceByPubkey returns the slot whose key is pubkey. 公钥就是槽位的身份：注册
+// 请求除了它没有别的句柄能让控制面找到「还没被认领的那个槽位」。
+func (a *App) DeviceByPubkey(pubkey string) (db.Device, bool, error) {
+	if err := CheckDevicePubkey(pubkey); err != nil {
 		return db.Device{}, false, nil
 	}
-	device, err := a.database.GetByToken(token)
+	device, err := a.database.GetByPubkey(pubkey)
 	if errors.Is(err, db.ErrNotFound) {
 		return db.Device{}, false, nil
 	}
 	return device, err == nil, err
 }
 
-// CreateDevice stores a new slot and returns it together with its one-time
-// registration token. 配置原样落库：控制面不解释、不填充、不校验它的内容。
-func (a *App) CreateDevice(name, configTOML string) (db.Device, string, error) {
+// CheckDevicePubkey reports whether s can be a device identity: base64 of 32
+// bytes that edwards25519 can decode. 形状对了但不在曲线上的公钥永远既签不出
+// 有效签名也解不开信封，与其让它变成一个永远等不到认领的槽位，不如在写入时
+// 就拒绝。
+func CheckDevicePubkey(s string) error {
+	if err := core.CheckPubkey(s); err != nil {
+		return fmt.Errorf("%w: %v", ErrPublicKeyInvalid, err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrPublicKeyInvalid, err)
+	}
+	if _, err := montgomeryPublicKey(raw); err != nil {
+		return fmt.Errorf("%w: %v", ErrPublicKeyInvalid, err)
+	}
+	return nil
+}
+
+// CreateDevice stores a new slot bound to pubkey. 配置原样落库：控制面不解释、
+// 不填充、不校验它的内容。槽位在设备首次注册之前就叫「待认领」，但它的钥匙从
+// 这一刻起已经确定——没有可传递的注册令牌。
+func (a *App) CreateDevice(name, configTOML, pubkey string) (db.Device, error) {
 	name = trimName(name)
 	if name == "" || len([]rune(name)) > MaxNameRunes {
-		return db.Device{}, "", ErrInvalidInput
+		return db.Device{}, ErrInvalidInput
 	}
 	if isBlank(configTOML) || len(configTOML) > MaxConfigBytes {
-		return db.Device{}, "", ErrInvalidInput
+		return db.Device{}, ErrInvalidInput
+	}
+	if err := CheckDevicePubkey(pubkey); err != nil {
+		return db.Device{}, err
 	}
 	id, err := a.newDeviceID()
 	if err != nil {
-		return db.Device{}, "", err
-	}
-	token, err := newToken()
-	if err != nil {
-		return db.Device{}, "", err
+		return db.Device{}, err
 	}
 	now := a.now()
 	device := db.Device{
-		PublicID:       id,
-		Name:           name,
-		ConfigTOML:     configTOML,
-		ConfigHash:     core.Hash(configTOML),
-		Token:          token,
-		TokenExpiresAt: now.Add(TokenTTL).Unix(),
-		CreatedAt:      now.Unix(),
+		PublicID:   id,
+		Name:       name,
+		Pubkey:     pubkey,
+		ConfigTOML: configTOML,
+		ConfigHash: core.Hash(configTOML),
+		CreatedAt:  now.Unix(),
 	}
 	if err := a.database.Create(device, MaxDevices); err != nil {
-		return db.Device{}, "", err
+		return db.Device{}, err
 	}
-	return device, token, nil
+	return device, nil
 }
 
 // AutoUpdateChoice 是一次设备级自动更新写入。Set 为 false 表示这次请求没有带
@@ -233,27 +227,46 @@ func (a *App) UpdateDevice(publicID, name, configTOML string, autoUpdate AutoUpd
 	})
 }
 
-// IssueToken stores a fresh one-time registration token for the slot.
-func (a *App) IssueToken(publicID string) (string, error) {
-	token, err := newToken()
+// RebindDevice points the slot at another key and takes it back to unclaimed.
+// 换钥匙是「这台机器没了、重装了、私钥文件丢了」的表达：旧钥匙的签名立刻失效，
+// 旧身份名下的凭据在种子上一并撤销，槽位等新钥匙来认领。撤销失败就不换——否则
+// 旧身份还能拿着旧凭据连到过期，而槽位已经属于别人。
+func (a *App) RebindDevice(ctx context.Context, publicID, pubkey string) (db.Device, error) {
+	if err := CheckDevicePubkey(pubkey); err != nil {
+		return db.Device{}, err
+	}
+	unlock, err := a.locks.lock(ctx, publicID)
 	if err != nil {
-		return "", err
+		return db.Device{}, err
 	}
-	// 生成端也自检一次：形状变了（改常量、改编码）要在这里炸，而不是让每个
-	// 刚发出的令牌在注册时被自己拒掉。
-	if !ValidToken(token) {
-		return "", fmt.Errorf("generated token does not match the %d-character shape", TokenLength)
+	defer unlock()
+	previous, ok, err := a.DeviceByID(publicID)
+	if err != nil {
+		return db.Device{}, err
 	}
-	now := a.now()
-	_, err = a.database.Update(publicID, func(d *db.Device) error {
-		d.Token = token
-		d.TokenExpiresAt = now.Add(TokenTTL).Unix()
+	if !ok {
+		return db.Device{}, ErrNotFound
+	}
+	if previous.Pubkey == pubkey && previous.DeviceID == "" {
+		return previous, nil
+	}
+	if err := a.revokeDeviceLocked(ctx, publicID); err != nil {
+		return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
+	}
+	device, err := a.database.Update(publicID, func(d *db.Device) error {
+		d.Pubkey = pubkey
+		d.DeviceID = ""
+		d.Hostname = ""
+		d.LastConfigHash = ""
+		d.LastAppVersion = ""
+		d.LastPlatform = ""
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return db.Device{}, err
 	}
-	return token, nil
+	a.revoke(previous.DeviceID)
+	return device, nil
 }
 
 // DeleteDevice removes the slot and remembers its device_id so later signed
@@ -299,61 +312,68 @@ func (a *App) revoke(deviceID string) {
 	a.revoked[deviceID] = struct{}{}
 }
 
-// BindDevice consumes token and binds the slot to a client identity. The
-// previous identity of the same slot, if any, is revoked, and the observations
-// that identity reported are cleared. 槽位名下的凭据属于旧身份，也要在交接时
-// 撤掉：否则旧机器还能拿着它连到过期，而控制面认为这个槽位已经换人了。
-func (a *App) BindDevice(ctx context.Context, token, deviceID, hostname, pubkey, ip string) (db.Device, error) {
-	pending, ok, err := a.DeviceByToken(token)
-	if err != nil {
-		return db.Device{}, err
-	}
-	if !ok {
-		return db.Device{}, ErrTokenInvalid
-	}
-	unlock, err := a.locks.lock(ctx, pending.PublicID)
+// Claim is one register request after its signature was verified: the slot the
+// key belongs to, the key that signed, and the identity asking to hold it.
+type Claim struct {
+	PublicID     string
+	ProvedPubkey string
+	DeviceID     string
+	Hostname     string
+	IP           string
+}
+
+// ClaimDevice binds the slot to the identity that proved it holds the key, and
+// returns the row it wrote — that row is the configuration the caller answers
+// with. 换绑（同一把钥匙、另一个 device_id）不需要额外证明：签名已经证明了钥匙，
+// 而钥匙就是这个槽位。旧身份名下的凭据属于旧身份，先撤再换；撤销失败就不换，
+// 客户端可以重试。
+func (a *App) ClaimDevice(ctx context.Context, in Claim) (db.Device, error) {
+	unlock, err := a.locks.lock(ctx, in.PublicID)
 	if err != nil {
 		return db.Device{}, err
 	}
 	defer unlock()
-	// 撤销放在换绑之前：撤不掉就不换绑（令牌还在，客户端可以重试），旧身份也
-	// 还能照常用到下一次。撤销成功而换绑失败（令牌在这两步之间被轮换或过期）
-	// 的代价是一张凭据提前没了，下一次心跳会立刻补一张——比「换绑了但旧凭据
-	// 还活着」便宜得多。
-	if err := a.revokeDeviceLocked(ctx, pending.PublicID); err != nil {
-		return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
+	current, ok, err := a.DeviceByID(in.PublicID)
+	if err != nil {
+		return db.Device{}, err
+	}
+	if !ok {
+		return db.Device{}, ErrNotFound
+	}
+	// 认证与这里之间换过钥匙：这次签名不再说明「本机持有这个槽位」。
+	if current.Pubkey != in.ProvedPubkey {
+		return db.Device{}, ErrIdentityChanged
+	}
+	if current.DeviceID != in.DeviceID {
+		if err := a.revokeDeviceLocked(ctx, in.PublicID); err != nil {
+			return db.Device{}, fmt.Errorf("revoke credentials: %w", err)
+		}
 	}
 	now := a.now()
-	var rebound string
-	device, err := a.database.Update(pending.PublicID, func(d *db.Device) error {
-		if d.Token != token || d.TokenExpiresAt <= now.Unix() {
-			return ErrTokenInvalid
+	device, err := a.database.Update(in.PublicID, func(d *db.Device) error {
+		if d.Pubkey != in.ProvedPubkey {
+			return ErrIdentityChanged
 		}
 		// 槽位自身的属性（名称、分组、布局、配置）属于这一行记录，换绑不改。
-		// last_config_hash、last_app_version、last_platform 是已绑定设备上报的
-		// 观测值，只对原身份成立；身份一变就清空，与新身份写在同一次 Update 里。
-		if d.DeviceID != deviceID {
+		// 观测值只对原身份成立：身份一变就清空，与新身份写在同一次写入里。
+		if d.DeviceID != in.DeviceID {
 			d.LastConfigHash = ""
 			d.LastAppVersion = ""
 			d.LastPlatform = ""
 		}
-		rebound = d.DeviceID
-		d.DeviceID = deviceID
-		d.Hostname = hostname
-		d.Pubkey = pubkey
-		d.Token = ""
-		d.TokenExpiresAt = 0
+		d.DeviceID = in.DeviceID
+		d.Hostname = in.Hostname
 		d.LastSeenAt = now.Unix()
-		if ip != "" {
-			d.LastIP = ip
+		if in.IP != "" {
+			d.LastIP = in.IP
 		}
 		return nil
 	})
 	if err != nil {
 		return db.Device{}, err
 	}
-	if rebound != "" && rebound != device.DeviceID {
-		a.revoke(rebound)
+	if current.DeviceID != device.DeviceID {
+		a.revoke(current.DeviceID)
 	}
 	return device, nil
 }
@@ -369,67 +389,6 @@ type DeviceAuth struct {
 	PublicID string
 	DeviceID string
 	Pubkey   string
-}
-
-// BoundRegistration is one register request for a slot that is already bound,
-// after the API layer established what proof it carries: a signature it verified
-// (Signed) with ProvedPubkey, or the registration token to spend here. Pubkey is
-// the key the caller asks the slot to be bound to.
-type BoundRegistration struct {
-	DeviceID     string
-	Pubkey       string
-	Token        string
-	Signed       bool
-	ProvedPubkey string
-	IP           string
-}
-
-// AcceptRegistration answers an already bound slot's register request: it
-// re-checks the binding, spends the token when that was the proof, and records
-// the request — in one conditional write, returning the row it wrote. That row
-// is the configuration the caller answers with.
-//
-// 令牌是一次性的：这一支靠它证明了归属就当场清掉，否则它在剩余的有效期（≤10
-// 分钟）内还能反复取回配置，而正式节点的配置里有 network_secret。核对与清空在
-// 同一次写入里完成，令牌在这期间被轮换或消费时不再放行配置。
-//
-// 换绑发生在认证与这里之间时什么都不写：旧身份不再持有这个槽位，调用方也不能
-// 再用认证时读到的快照回答。判据是绑定本身，不只是 device_id：签名证明要复核它
-// 实际验签的那把公钥仍在位，令牌证明则在同一笔写入里消费令牌。
-func (a *App) AcceptRegistration(ctx context.Context, publicID string, in BoundRegistration) (db.Device, error) {
-	unlock, err := a.locks.lock(ctx, publicID)
-	if err != nil {
-		return db.Device{}, err
-	}
-	defer unlock()
-	now := a.now()
-	return a.database.Update(publicID, func(d *db.Device) error {
-		if d.DeviceID != in.DeviceID {
-			return ErrIdentityChanged
-		}
-		// 签名是用认证那一刻读到的公钥验过的。槽位在这之后换到另一把钥匙（device_id
-		// 可能都不变），这次证明就不再说明「本机现在持有这个槽位」。
-		if in.Signed && d.Pubkey != in.ProvedPubkey {
-			return ErrIdentityChanged
-		}
-		// 令牌先验、公钥后判：反过来的话，任何知道 device_id 的调用方都能用一次
-		// 必然失败的注册（假令牌 + 猜的公钥）从 409 探出这个槽位是否已绑定。
-		if !in.Signed && (d.Token != in.Token || d.TokenExpiresAt <= now.Unix()) {
-			return ErrTokenInvalid
-		}
-		if d.Pubkey != in.Pubkey {
-			return ErrPubkeyMismatch
-		}
-		if !in.Signed {
-			d.Token = ""
-			d.TokenExpiresAt = 0
-		}
-		d.LastSeenAt = now.Unix()
-		if in.IP != "" {
-			d.LastIP = in.IP
-		}
-		return nil
-	})
 }
 
 // DeviceStatus is derived from last_seen_at; an unregistered slot is pending.
@@ -481,9 +440,4 @@ func (a *App) newDeviceID() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("device id collision")
-}
-
-func newToken() (string, error) {
-	// 32 字节 → 64 个十六进制字符，正好是 TokenLength。
-	return core.RandomHex(TokenLength / 2)
 }

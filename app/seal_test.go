@@ -96,19 +96,13 @@ func TestSealRejectsAnUnusableRecipient(t *testing.T) {
 // 明文就是 credential 那一份私钥本身，设备公钥解出来即可直接用。
 func TestIssueCredentialSealsTheSecret(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	if _, err := a.database.Update(device.PublicID, func(d *db.Device) error {
-		d.Pubkey = base64.StdEncoding.EncodeToString(pub)
-		return nil
-	}); err != nil {
-		t.Fatalf("store pubkey: %v", err)
+	device, err := a.CreateDevice("laptop", "a = 1\n", base64.StdEncoding.EncodeToString(pub))
+	if err != nil {
+		t.Fatal(err)
 	}
 	issued, err := a.IssueCredential(t.Context(), device.PublicID)
 	if err != nil {
@@ -131,12 +125,16 @@ func TestIssueCredentialSealsTheSecret(t *testing.T) {
 }
 
 // TestIssueCredentialRefusesADeviceWithoutAKey pins the compensation: 设备还没有
-// 可用的公钥时不留下「签好了却交不出去」的凭据行。
+// 可用的公钥时不留下「签好了却交不出去」的凭据行。新建的槽位从创建起就有钥匙，
+// 这里写的是迁移前留下的那一类行（pubkey 为空，只能直接落到库里）。
 func TestIssueCredentialRefusesADeviceWithoutAKey(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.database.Update(device.PublicID, func(d *db.Device) error {
+		d.Pubkey = ""
+		return nil
+	}); err != nil {
+		t.Fatalf("clear pubkey: %v", err)
 	}
 	if _, err := a.IssueCredential(t.Context(), device.PublicID); !errors.Is(err, ErrSealRecipient) {
 		t.Fatalf("IssueCredential() = %v, want ErrSealRecipient", err)

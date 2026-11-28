@@ -8,7 +8,7 @@
 # api: rejected admin requests.
 api.text.formal_node_credential = this device is a formal node (its configuration has network_secret), it does not use credentials, so rotating them is meaningless
 api.text.credential_channel_unconfigured = the credential channel (ET_CLI) is not configured, so the credentials cannot be revoked on the seeds; revoke them on the seeds by hand
-api.text.device_key_missing = this device has not registered yet, so there is no public key to seal the credential to; issue it after its first heartbeat
+api.text.device_key_unusable = the stored public key cannot be used to seal a credential (it is not a point on the curve); rebind the key
 api.text.app_notes_requires_url = appNotes must be given together with appUrl
 api.text.auto_update_requires_url = autoUpdate must be given together with appUrl
 api.text.signature_requires_url = appSignature must be given together with appUrl

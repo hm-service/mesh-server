@@ -38,11 +38,7 @@ func openCredentialTemp(t *testing.T) *App {
 // the id of that same issuance, not whatever the table holds afterwards.
 func TestIssueCredentialReturnsItsOwnID(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	issued, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err != nil {
 		t.Fatalf("IssueCredential() error: %v", err)
@@ -70,11 +66,7 @@ func TestIssueCredentialReturnsItsOwnID(t *testing.T) {
 func TestIssueCredentialRejectsAnAnswerForAnotherID(t *testing.T) {
 	t.Setenv(fakecli.IDEnv, "11111111-2222-4333-8444-555555555555")
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	issued, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err == nil {
 		t.Fatalf("IssueCredential() with an answer for another id = %+v, want an error", issued)
@@ -111,10 +103,7 @@ func TestIssueCredentialRejectsAMalformedSecret(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(fakecli.SecretEnv, tc.secret)
 			a := openCredentialTemp(t)
-			device, _, err := a.CreateDevice("laptop", "a = 1\n")
-			if err != nil {
-				t.Fatal(err)
-			}
+			device := createTestDevice(t, a, "laptop", "a = 1\n")
 			if issued, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
 				t.Fatalf("IssueCredential() with a %s secret = %+v, want an error", tc.name, issued)
 			}
@@ -142,10 +131,7 @@ func TestIssueCredentialRejectsAnExpiryOutsideTheRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(fakecli.ExpiryEnv, strconv.FormatInt(tc.at.Unix(), 10))
 			a := openCredentialTemp(t)
-			device, _, err := a.CreateDevice("laptop", "a = 1\n")
-			if err != nil {
-				t.Fatal(err)
-			}
+			device := createTestDevice(t, a, "laptop", "a = 1\n")
 			if issued, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
 				t.Fatalf("IssueCredential() with an expiry %s = %+v, want an error", tc.name, issued)
 			}
@@ -160,11 +146,7 @@ func TestIssueCredentialRejectsAnExpiryOutsideTheRequest(t *testing.T) {
 // device reports as its newest is kept, and the others are revoked and dropped.
 func TestConfirmCredentialRevokesEveryOther(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	ctx := context.Background()
 	first, err := a.IssueCredential(ctx, device.PublicID)
 	if err != nil {
@@ -202,11 +184,7 @@ func TestConfirmCredentialRevokesEveryOther(t *testing.T) {
 // later issuance starts from nothing instead of leaking stale rows forever.
 func TestRevokeCredentialDeletesRows(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	ctx := context.Background()
 	for range 2 {
 		if _, err := a.IssueCredential(ctx, device.PublicID); err != nil {
@@ -230,11 +208,7 @@ func TestRevokeCredentialDeletesRows(t *testing.T) {
 // credential.
 func TestRevokeCredentialHonorsContext(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	if _, err := a.IssueCredential(context.Background(), device.PublicID); err != nil {
 		t.Fatal(err)
 	}
@@ -262,11 +236,7 @@ func TestRevokeCredentialRequiresChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error: %v", err)
 	}
-	device, _, err := withCLI.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, withCLI, device.PublicID)
+	device := createTestDevice(t, withCLI, "laptop", "a = 1\n")
 	ctx := context.Background()
 	if _, err := withCLI.IssueCredential(ctx, device.PublicID); err != nil {
 		t.Fatal(err)
@@ -295,11 +265,7 @@ func TestRevokeCredentialRequiresChannel(t *testing.T) {
 	}
 
 	// 没有凭据记录的设备不需要通道，照删。
-	plain, _, err := withoutCLI.CreateDevice("plain", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, withoutCLI, plain.PublicID)
+	plain := createTestDevice(t, withoutCLI, "plain", "a = 1\n")
 	if _, err := withoutCLI.DeleteDevice(ctx, plain.PublicID); err != nil {
 		t.Fatalf("DeleteDevice() of a device without credentials = %v, want success", err)
 	}
@@ -311,11 +277,7 @@ func TestRevokeCredentialRequiresChannel(t *testing.T) {
 // holds.
 func TestIssueCredentialRefusesFormalNode(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("seed", "[network_identity]\nnetwork_secret = \"s\"\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "seed", "[network_identity]\nnetwork_secret = \"s\"\n")
 	if _, err := a.IssueCredential(context.Background(), device.PublicID); !errors.Is(err, ErrFormalNode) {
 		t.Fatalf("IssueCredential() = %v, want ErrFormalNode", err)
 	}
@@ -329,11 +291,7 @@ func TestIssueCredentialRefusesFormalNode(t *testing.T) {
 // 而不是把一张心跳压到 N×15 秒（种子变慢时那条路径占着设备面的并发槽位）。
 func TestRevokeAllStopsWhenTheCallerIsDone(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	issued, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err != nil {
 		t.Fatalf("IssueCredential() error: %v", err)
@@ -358,11 +316,7 @@ func TestRevokeAllStopsWhenTheCallerIsDone(t *testing.T) {
 func TestDeleteSerialisesWithAnIssuance(t *testing.T) {
 	t.Setenv(fakecli.DelayEnv, "300")
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	issued := make(chan IssuedCredential, 1)
 	issuedErr := make(chan error, 1)
 	go func() {
@@ -404,11 +358,7 @@ func TestDeleteSerialisesWithAnIssuance(t *testing.T) {
 func TestFailedIssuanceLeavesNoIntentRow(t *testing.T) {
 	t.Setenv(fakecli.FailGenerateEnv, "1")
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	if _, err := a.IssueCredential(context.Background(), device.PublicID); err == nil {
 		t.Fatal("IssueCredential() with a failing seed returned nil")
 	}
@@ -428,12 +378,8 @@ func TestCLIFailureOutputIsBounded(t *testing.T) {
 	t.Setenv(fakecli.FailGenerateEnv, "1")
 	t.Setenv(fakecli.StderrBytesEnv, "1048576")
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
-	_, err = a.IssueCredential(context.Background(), device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	_, err := a.IssueCredential(context.Background(), device.PublicID)
 	if err == nil {
 		t.Fatal("IssueCredential() with a noisy failing seed returned nil")
 	}
@@ -452,13 +398,9 @@ func TestCLIFailureOutputIsBounded(t *testing.T) {
 func TestCLILeavesNoPipeToWaitFor(t *testing.T) {
 	t.Setenv(fakecli.HoldPipeEnv, "6000")
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindTestPubkey(t, a, device.PublicID)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
 	started := time.Now()
-	_, err = a.IssueCredential(context.Background(), device.PublicID)
+	_, err := a.IssueCredential(context.Background(), device.PublicID)
 	elapsed := time.Since(started)
 	if err == nil {
 		t.Fatal("IssueCredential() returned nil while a child still held the pipes")
@@ -472,29 +414,25 @@ func TestCLILeavesNoPipeToWaitFor(t *testing.T) {
 	}
 }
 
-// TestRebindRevokesTheOldCredentials pins the hand-over: the credentials of a
-// slot belong to the identity that held it, so binding the slot to a new
-// identity revokes them instead of letting the old machine ride a valid
-// credential until it expires.
-func TestRebindRevokesTheOldCredentials(t *testing.T) {
+// TestClaimRebindingRevokesTheOldCredentials pins the hand-over between two
+// device_ids of one key: the credentials of a slot belong to the identity that
+// held it, so the claim that rebinds the slot revokes them instead of letting
+// the old machine ride a valid credential until it expires.
+func TestClaimRebindingRevokesTheOldCredentials(t *testing.T) {
 	a := openCredentialTemp(t)
-	device, token, err := a.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
-	if _, err := a.BindDevice(ctx, token, "dev-1", "HOST", "pk1", ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
-	bindTestPubkey(t, a, device.PublicID)
 	if _, err := a.IssueCredential(ctx, device.PublicID); err != nil {
 		t.Fatalf("IssueCredential() error: %v", err)
 	}
-	reissued, err := a.IssueToken(device.PublicID)
-	if err != nil {
-		t.Fatalf("IssueToken() error: %v", err)
-	}
-	if _, err := a.BindDevice(ctx, reissued, "dev-2", "HOST", "pk2", ""); err != nil {
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-2", Hostname: "HOST",
+	}); err != nil {
 		t.Fatalf("rebind error: %v", err)
 	}
 	rows, err := a.database.ListCredentials(device.PublicID)
@@ -503,6 +441,92 @@ func TestRebindRevokesTheOldCredentials(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("credentials of the old identity survived the rebind: %+v", rows)
+	}
+	if !a.Revoked("dev-1") {
+		t.Fatal("the old identity was not revoked")
+	}
+}
+
+// TestRebindRevokesTheOldCredentials pins the key half of the hand-over: the
+// credentials were issued for the key being replaced, so pointing the slot at
+// another key revokes them as well.
+func TestRebindRevokesTheOldCredentials(t *testing.T) {
+	a := openCredentialTemp(t)
+	ctx := context.Background()
+	device := createTestDevice(t, a, "laptop", "a = 1\n")
+	if _, err := a.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
+	}
+	if _, err := a.IssueCredential(ctx, device.PublicID); err != nil {
+		t.Fatalf("IssueCredential() error: %v", err)
+	}
+	next, _ := testKeypair(t)
+	if _, err := a.RebindDevice(ctx, device.PublicID, next); err != nil {
+		t.Fatalf("RebindDevice() error: %v", err)
+	}
+	rows, err := a.database.ListCredentials(device.PublicID)
+	if err != nil {
+		t.Fatalf("ListCredentials() error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("credentials of the replaced key survived the rebind: %+v", rows)
+	}
+}
+
+// TestRebindRefusedWhenTheCredentialsCannotBeRevoked pins the order of the
+// hand-over: the slot is not given to the new identity while the old one's
+// credential may still be honoured by the seed. 撤销失败就不换，两种换法都一样。
+func TestRebindRefusedWhenTheCredentialsCannotBeRevoked(t *testing.T) {
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	withCLI, err := Open(dir, Options{CredentialCLI: self, CredentialRPC: "127.0.0.1:15889"})
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	ctx := context.Background()
+	device := createTestDevice(t, withCLI, "laptop", "a = 1\n")
+	if _, err := withCLI.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: device.Pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
+	}
+	if _, err := withCLI.IssueCredential(ctx, device.PublicID); err != nil {
+		t.Fatal(err)
+	}
+	if err := withCLI.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	withoutCLI, err := Open(dir, Options{})
+	if err != nil {
+		t.Fatalf("reopen without a credential channel: %v", err)
+	}
+	t.Cleanup(func() { _ = withoutCLI.Close() })
+	before, found, err := withoutCLI.DeviceByID(device.PublicID)
+	if err != nil || !found {
+		t.Fatalf("DeviceByID() = found %v, %v", found, err)
+	}
+
+	if _, err := withoutCLI.ClaimDevice(ctx, Claim{
+		PublicID: device.PublicID, ProvedPubkey: before.Pubkey, DeviceID: "dev-2", Hostname: "HOST",
+	}); !errors.Is(err, ErrCredentialChannelUnconfigured) {
+		t.Fatalf("ClaimDevice() without a channel = %v, want ErrCredentialChannelUnconfigured", err)
+	}
+	if after, found, err := withoutCLI.DeviceByID(device.PublicID); err != nil || !found || after != before {
+		t.Fatalf("the refused rebind wrote the row: %+v, found %v, %v", after, found, err)
+	}
+
+	next, _ := testKeypair(t)
+	if _, err := withoutCLI.RebindDevice(ctx, device.PublicID, next); !errors.Is(err, ErrCredentialChannelUnconfigured) {
+		t.Fatalf("RebindDevice() without a channel = %v, want ErrCredentialChannelUnconfigured", err)
+	}
+	if after, found, err := withoutCLI.DeviceByID(device.PublicID); err != nil || !found || after != before {
+		t.Fatalf("the refused key rebind wrote the row: %+v, found %v, %v", after, found, err)
 	}
 }
 

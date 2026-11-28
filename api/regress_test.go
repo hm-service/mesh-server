@@ -19,39 +19,50 @@ import (
 	"mesh-server/signing"
 )
 
-// TestRegisterIdempotentBranchRequiresCredential pins the fix for the worst hole
-// in the old register flow: the idle branch ran before any token check, so
-// knowing deviceId and pubkey was enough to walk away with a configToml that
-// carries the network secret.
-func TestRegisterIdempotentBranchRequiresCredential(t *testing.T) {
+// TestRegisterRejectsAStranger pins what keeps the configuration out of reach:
+// knowing deviceId and pubkey is not enough, because the only proof the control
+// plane accepts is a signature from the slot's key. Neither an unsigned request
+// nor one signed by another key gets a configToml.
+func TestRegisterRejectsAStranger(t *testing.T) {
 	env := testenv.New(t)
 	dev := registerDevice(t, env, "laptop", testTOML)
 	pub := publicKeyOf(t, env, dev.internalID)
+	now := env.Clock.Now().Unix()
 
-	cases := []struct {
-		name  string
-		token string
-	}{
-		{name: "no token", token: ""},
-		{name: "garbage token", token: "etk_deadbeef"},
+	// 三件套全空：注册没有别的凭据可出示，验签这一步拒绝。
+	unsigned, err := json.Marshal(map[string]string{
+		"deviceId": dev.deviceID,
+		"hostname": "HOST-laptop",
+		"pubkey":   base64.StdEncoding.EncodeToString(pub),
+		"platform": testPlatform,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			status, body := register(t, env, tc.token, dev.deviceID, "HOST-laptop", pub)
-			if status != http.StatusUnauthorized {
-				t.Fatalf("register = %d, want 401: %s", status, body)
-			}
-			if strings.Contains(string(body), "configToml") || strings.Contains(string(body), "network_secret") {
-				t.Fatalf("the response leaked the configuration: %s", body)
-			}
-		})
+	res, body := env.Do("POST", "/api/v1/register", json.RawMessage(unsigned))
+	if res.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), "unauthorized") {
+		t.Fatalf("unsigned register = %d: %s, want 401 unauthorized", res.StatusCode, body)
+	}
+	if strings.Contains(string(body), "configToml") || strings.Contains(string(body), "network_secret") {
+		t.Fatalf("the response leaked the configuration: %s", body)
 	}
 
-	// The same request with a signature from the bound key still works: the
-	// published client keeps its idempotent re-registration.
+	// 拿另一把钥匙给这个槽位的公钥签名：验签失败，同样是 401。
 	var nonces int64
-	body := signedRegisterBody(t, dev.deviceID, dev.priv, "HOST-laptop", pub, env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
+	_, strangerPriv := newKeypair(t)
+	forged := signedRegisterBody(t, dev.deviceID, strangerPriv, "HOST-laptop", pub, now, newNonce(&nonces))
+	res, body = env.Do("POST", "/api/v1/register", json.RawMessage(forged))
+	if res.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), "unauthorized") {
+		t.Fatalf("register signed by another key = %d: %s, want 401 unauthorized", res.StatusCode, body)
+	}
+	if strings.Contains(string(body), "configToml") || strings.Contains(string(body), "network_secret") {
+		t.Fatalf("the response leaked the configuration: %s", body)
+	}
+
+	// The same request with a signature from the slot's key still works: the
+	// published client keeps its idempotent re-registration.
+	signedBody := signedRegisterBody(t, dev.deviceID, dev.priv, "HOST-laptop", pub, now, newNonce(&nonces))
+	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(signedBody))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed re-register = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -95,7 +106,7 @@ func TestManagementRoutesRequireSession(t *testing.T) {
 		{"GET", "/api/admin/devices/d_000000"},
 		{"PUT", "/api/admin/devices/d_000000"},
 		{"DELETE", "/api/admin/devices/d_000000"},
-		{"POST", "/api/admin/devices/d_000000/token"},
+		{"POST", "/api/admin/devices/d_000000/pubkey"},
 		{"POST", "/api/admin/devices/d_000000/credential"},
 		{"DELETE", "/api/admin/devices/d_000000/credential"},
 		{"GET", "/api/admin/releases"},
@@ -338,66 +349,6 @@ func TestMethodNotAllowedAndNotFound(t *testing.T) {
 	}
 }
 
-// TestBoundSlotAcceptsValidTokenDespiteBrokenSignature pins F1 of the
-// 2026-11-27T05-45-47+0800_a6b688 review. 契约写的是「出示下列任一凭据」，而
-// 三个签名字段只要都在就只走验签：签名一不可用，有效令牌也被拒，调用方拿到
-// 401，无法与「什么都没有」区分。
-func TestBoundSlotAcceptsValidTokenDespiteBrokenSignature(t *testing.T) {
-	env := testenv.New(t)
-	dev := registerDevice(t, env, "laptop", testTOML)
-	pub := publicKeyOf(t, env, dev.internalID)
-
-	// 管理端给已经绑定过的槽位补一张令牌（换机、本地身份丢失时就是这么做的）。
-	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/token", nil)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("issue token = %d: %s", res.StatusCode, data)
-	}
-	var issued struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(data, &issued); err != nil || issued.Token == "" {
-		t.Fatalf("decode token: %v (%s)", err, data)
-	}
-
-	// 十分钟前的签名：超出 300 秒窗口，验签这一支必然不可用。
-	var nonces int64
-	body := signedRegisterBody(t, dev.deviceID, dev.priv, "HOST-laptop", pub,
-		env.Clock.Now().Add(-10*time.Minute).Unix(), newNonce(&nonces))
-	var payload map[string]string
-	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatal(err)
-	}
-	payload["token"] = issued.Token
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, data = env.Do("POST", "/api/v1/register", json.RawMessage(raw))
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("token with an unusable signature = %d, want 200: %s", res.StatusCode, data)
-	}
-	var out configResponse
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.ConfigHash != dev.configHash {
-		t.Fatalf("register returned %+v, want hash %q", out, dev.configHash)
-	}
-
-	// 令牌是一次性的：用它换到配置之后就作废，否则它在剩余有效期内还能反复
-	// 取回配置（正式节点的配置里有 network_secret）。
-	stored, found, err := env.App.DeviceByID(dev.internalID)
-	if err != nil || !found {
-		t.Fatalf("DeviceByID = found %v, %v", found, err)
-	}
-	if stored.Token != "" || stored.TokenExpiresAt != 0 {
-		t.Fatalf("token survived the register: %+v", stored)
-	}
-	if status, _ := register(t, env, issued.Token, dev.deviceID, "HOST-laptop", pub); status != http.StatusUnauthorized {
-		t.Fatalf("consumed token = %d, want 401", status)
-	}
-}
-
 // TestCreateDeviceRejectsAutoUpdate pins F4: 新设备一律跟随发布包，请求里带这个
 // 字段就 400，而不是收下 200 再悄悄丢掉。autoUpdate 不是这个请求声明的字段，
 // 由统一的严格解码拒绝（400 invalid_request），不是这一处单独检查。
@@ -432,15 +383,17 @@ func TestCreateDeviceRejectsAutoUpdate(t *testing.T) {
 // 全部配置读进内存来算派生字段，所以约束得落在写入端。
 func TestDeviceConfigHasItsOwnLimit(t *testing.T) {
 	env := testenv.New(t)
+	pub, _ := newKeypair(t)
+	pubkey := base64.StdEncoding.EncodeToString(pub)
 	over := strings.Repeat("a", app.MaxConfigBytes+1)
-	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "big", "configToml": over})
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "big", "configToml": over, "pubkey": pubkey})
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("create with an oversized config = %d, want 400: %s", res.StatusCode, data)
 	}
 
 	// 上限之内照收。
 	atLimit := strings.Repeat("a", app.MaxConfigBytes)
-	res, data = env.Do("POST", "/api/admin/devices", map[string]string{"name": "big", "configToml": atLimit})
+	res, data = env.Do("POST", "/api/admin/devices", map[string]string{"name": "big", "configToml": atLimit, "pubkey": pubkey})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("create at the limit = %d, want 200: %s", res.StatusCode, data)
 	}

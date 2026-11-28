@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { api, ApiError } from "../api";
-import { copyText } from "../clipboard";
 import { validateToml } from "../format";
 import { nextFreeAddress } from "../template";
 import ConfigTemplateEditor from "./ConfigTemplateEditor.vue";
@@ -17,13 +16,15 @@ const emit = defineEmits<{
 }>();
 
 const name = ref("");
+// 公钥是槽位的身份：设备侧在设置页显示，用户抄过来。它不是秘密，但抄错一个字符
+// 就等于建了一个永远等不到认领的槽位，所以形状在提交前先判一遍。
+const pubkey = ref("");
 // template 是服务端给的默认模板原文（带占位符），只交给编辑器做初值；
 // 之后模板与表单值都由 ConfigTemplateEditor 管。
 const template = ref("");
 // suggestion 是加载时算出的建议地址，之后不再跟着轮询变。
 const suggestion = ref("");
 const error = ref("");
-const token = ref("");
 const address = ref("");
 const busy = ref(false);
 const locked = ref(false);
@@ -73,10 +74,14 @@ async function submit() {
     error.value = warning;
     return;
   }
+  const key = pubkey.value.trim();
+  if (!isDeviceKey(key)) {
+    error.value = "公钥形状不对：应为客户端设置页上那串 44 字符的 base64";
+    return;
+  }
   busy.value = true;
   try {
-    const created = await api.createDevice(trimmed, built.config);
-    token.value = created.token;
+    const created = await api.createDevice(trimmed, built.config, key);
     address.value = created.ipv4 ?? "";
     locked.value = true;
     emit("toast", "设备已创建", trimmed, "ok");
@@ -92,8 +97,9 @@ async function submit() {
   }
 }
 
-async function copy() {
-  emit("toast", (await copyText(token.value)) ? "已复制" : "复制失败", "", "ok");
+/** 32 字节 Ed25519 公钥的标准 base64：44 个字符、带一个 '=' 填充。 */
+function isDeviceKey(raw: string): boolean {
+  return /^[A-Za-z0-9+/]{43}=$/.test(raw);
 }
 </script>
 
@@ -101,7 +107,7 @@ async function copy() {
   <div class="modal" @click.self="emit('close')">
     <div class="dialog wide scrolling" role="dialog" aria-modal="true">
       <h2 class="dialog-title">新建设备</h2>
-      <p class="dialog-sub">配置由默认模板预填。生成一次性令牌，设备注册后自动绑定，之后从心跳取配置。</p>
+      <p class="dialog-sub">配置由默认模板预填。槽位绑定客户端的设备公钥，它第一次认领之后从心跳取配置。</p>
       <div class="dialog-body">
         <div class="field">
           <label class="field-label" for="new-device-name">设备名称</label>
@@ -114,6 +120,20 @@ async function copy() {
             autocomplete="off"
             :disabled="locked"
           />
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="new-device-key">设备公钥</label>
+          <input
+            id="new-device-key"
+            v-model="pubkey"
+            type="text"
+            placeholder="客户端设置页「本机公钥」，44 字符 base64"
+            autocomplete="off"
+            spellcheck="false"
+            :disabled="locked"
+          />
+          <span class="hint">槽位认的就是这把钥匙：谁持有对应私钥，谁就来认领这个槽位。</span>
         </div>
 
         <ConfigTemplateEditor
@@ -130,14 +150,9 @@ async function copy() {
           {{ templateError }}
           <button class="ghost" type="button" @click="loadTemplate">重试</button>
         </div>
-        <div v-if="token" class="token-box">
-          <div class="token-label">
-            一次性令牌（10 分钟内有效，注册成功后作废）
-            <template v-if="address"> · 地址 <code>{{ address }}</code></template>
-          </div>
-          <div class="token-row">
-            <code class="token-value">{{ token }}</code>
-            <button type="button" @click="copy">复制</button>
+        <div v-if="locked" class="key-box">
+          <div class="key-label">
+            已创建<template v-if="address">，地址 <code>{{ address }}</code></template>：到那台设备的设置页点「保存并连接」，它用这把钥匙认领之后就开始工作。
           </div>
         </div>
         <div v-if="error" class="err">{{ error }}</div>
@@ -145,7 +160,7 @@ async function copy() {
       <div class="dialog-actions">
         <button type="button" @click="emit('close')">{{ locked ? "关闭" : "取消" }}</button>
         <button v-if="!locked" class="primary" type="button" :disabled="busy || !templateReady" @click="submit">
-          {{ busy ? "生成中…" : "生成令牌" }}
+          {{ busy ? "创建中…" : "创建设备" }}
         </button>
       </div>
     </div>

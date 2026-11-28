@@ -46,8 +46,6 @@ const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 15 * time.Second
 	idleTimeout       = 60 * time.Second
-	// purgeInterval is how often expired registration tokens are cleared.
-	purgeInterval = time.Minute
 )
 
 func main() {
@@ -214,12 +212,6 @@ func run() int {
 		logger.Warn("admin surface disabled", "hint", "set ADMIN_PORT to expose /api/auth and /api/admin")
 	}
 
-	purgeCtx, stopPurge := context.WithCancel(context.Background())
-	// 清理 goroutine 必须先停：它每一轮都写数据库，停了之后再关库与日志，
-	// 否则退出窗口里那一次 tick 会打到已关闭的连接上。defer 只是兜底。
-	defer stopPurge()
-	go purgeTokens(purgeCtx, application, logger)
-
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -228,12 +220,10 @@ func run() int {
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", "error", err)
-			stopPurge()
 			_ = application.Close()
 			_ = logFile.Close()
 			return 1
 		}
-		stopPurge()
 		_ = application.Close()
 		_ = logFile.Close()
 		return 0
@@ -255,7 +245,6 @@ func run() int {
 		}
 	}
 	logger.Info("server shutdown", "stop_at", time.Now().Format(time.RFC3339))
-	stopPurge()
 	if err := application.Close(); err != nil {
 		logger.Error("close database failed", "error", err)
 		return 255
@@ -465,21 +454,6 @@ func newLogger(w io.Writer, loc *time.Location) *slog.Logger {
 		},
 	})
 	return slog.New(handler)
-}
-
-func purgeTokens(ctx context.Context, application *app.App, logger *slog.Logger) {
-	ticker := time.NewTicker(purgeInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := application.PurgeExpiredTokens(); err != nil {
-				logger.Error("purge expired registration tokens", "error", err)
-			}
-		}
-	}
 }
 
 // browseURL turns a listen address into a URL a human can open.

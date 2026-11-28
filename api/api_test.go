@@ -87,8 +87,7 @@ type deviceDetail struct {
 }
 
 type createDeviceResponse struct {
-	ID    string `json:"id"`
-	Token string `json:"token"`
+	ID string `json:"id"`
 }
 
 type configResponse struct {
@@ -168,7 +167,8 @@ func (r releasesResponse) releaseOf(platform string) releaseView {
 }
 
 // signedRegisterBody builds POST /api/v1/register carrying a signature from the
-// bound key: that is how an already bound slot proves it is the same device.
+// key the request presents: that signature is the only proof the control plane
+// accepts, for an unclaimed slot and for a claim that moves an existing one.
 func signedRegisterBody(t *testing.T, deviceID string, priv ed25519.PrivateKey, hostname string, pubkey []byte, ts int64, nonce string) []byte {
 	t.Helper()
 	stamp := fmt.Sprintf("%d", ts)
@@ -247,9 +247,33 @@ func signed(t *testing.T, env *testenv.Env, method, path string, body []byte, he
 	return env.Send(req)
 }
 
-func createDevice(t *testing.T, env *testenv.Env, name, toml string) (id, token string) {
+// freshNonce returns one unused nonce for a signed request.
+func freshNonce(t *testing.T) string {
 	t.Helper()
-	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": name, "configToml": toml})
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("generate nonce: %v", err)
+	}
+	return hex.EncodeToString(raw)
+}
+
+// createDevice creates a slot bound to a fresh key pair and returns its id.
+func createDevice(t *testing.T, env *testenv.Env, name, toml string) string {
+	t.Helper()
+	id, _, _ := createDeviceWithKey(t, env, name, toml)
+	return id
+}
+
+// createDeviceWithKey also returns the key pair the slot is bound to, so the
+// caller can sign a claim for it.
+func createDeviceWithKey(t *testing.T, env *testenv.Env, name, toml string) (string, ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv := newKeypair(t)
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{
+		"name":       name,
+		"configToml": toml,
+		"pubkey":     base64.StdEncoding.EncodeToString(pub),
+	})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("create device = %d, want 200: %s", res.StatusCode, data)
 	}
@@ -257,20 +281,17 @@ func createDevice(t *testing.T, env *testenv.Env, name, toml string) (id, token 
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if out.ID == "" || out.Token == "" {
-		t.Fatalf("create response missing id/token: %s", data)
+	if out.ID == "" {
+		t.Fatalf("create response missing id: %s", data)
 	}
-	return out.ID, out.Token
+	return out.ID, pub, priv
 }
 
-func register(t *testing.T, env *testenv.Env, token, deviceID, hostname string, pub ed25519.PublicKey) (int, []byte) {
+// register sends one claim signed with the slot's key and returns the answer.
+func register(t *testing.T, env *testenv.Env, deviceID, hostname string, pub ed25519.PublicKey, priv ed25519.PrivateKey) (int, []byte) {
 	t.Helper()
-	res, data := env.Do("POST", "/api/v1/register", map[string]string{
-		"token":    token,
-		"deviceId": deviceID,
-		"hostname": hostname,
-		"pubkey":   base64.StdEncoding.EncodeToString(pub),
-	})
+	body := signedRegisterBody(t, deviceID, priv, hostname, pub, env.Clock.Now().Unix(), freshNonce(t))
+	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
 	return res.StatusCode, data
 }
 
@@ -284,10 +305,9 @@ type registeredDevice struct {
 
 func registerDevice(t *testing.T, env *testenv.Env, name, toml string) registeredDevice {
 	t.Helper()
-	id, token := createDevice(t, env, name, toml)
-	pub, priv := newKeypair(t)
+	id, pub, priv := createDeviceWithKey(t, env, name, toml)
 	deviceID := "dev-" + name
-	status, data := register(t, env, token, deviceID, "HOST-"+name, pub)
+	status, data := register(t, env, deviceID, "HOST-"+name, pub, priv)
 	if status != http.StatusOK {
 		t.Fatalf("register = %d, want 200: %s", status, data)
 	}
@@ -434,15 +454,19 @@ func TestTamperedCredentialIsRejected(t *testing.T) {
 	}
 }
 
+// TestRegisterIsIdempotent pins the claim table of /api/v1/register: the key is
+// the only handle, so the same device_id is a repeated claim that returns the
+// same configuration, another device_id is a rebind that retires the old
+// identity, a device_id held by another slot is a 409, and a key that names no
+// slot gets the ordinary 401.
 func TestRegisterIsIdempotent(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
-	id, token := createDevice(t, env, "laptop", testTOML)
-	pub, priv := newKeypair(t)
+	id, pub, priv := createDeviceWithKey(t, env, "laptop", testTOML)
 
-	status, data := register(t, env, token, "device-1", "DESKTOP-1", pub)
+	status, data := register(t, env, "device-1", "DESKTOP-1", pub, priv)
 	if status != http.StatusOK {
-		t.Fatalf("register = %d: %s", status, data)
+		t.Fatalf("register = %d, want 200: %s", status, data)
 	}
 	var first configResponse
 	if err := json.Unmarshal(data, &first); err != nil {
@@ -451,15 +475,17 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	if first.ConfigTOML != testTOML || first.ConfigHash != core.Hash(testTOML) {
 		t.Fatalf("register config = %+v", first)
 	}
-
-	// The token is single use: another deviceId cannot register with it.
-	if status, _ := register(t, env, token, "device-2", "OTHER", pub); status != http.StatusUnauthorized {
-		t.Fatalf("reused token = %d, want 401", status)
+	stored, found, err := env.App.DeviceByID(id)
+	if err != nil || !found {
+		t.Fatalf("device disappeared from the database: found %v, %v", found, err)
+	}
+	if stored.DeviceID != "device-1" || stored.Hostname != "DESKTOP-1" ||
+		stored.Pubkey != base64.StdEncoding.EncodeToString(pub) {
+		t.Fatalf("device not claimed: %+v", stored)
 	}
 
-	// The same deviceId and pubkey are idempotent, but only with a valid
-	// credential: the signature is made with the key the slot is bound to.
-	body := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", pub, env.Clock.Now().Unix(), newNonce(&nonces))
+	// 同一把钥匙、同一个 device_id：幂等认领，返回同一份配置并刷新记录。
+	body := signedRegisterBody(t, "device-1", priv, "DESKTOP-2", pub, env.Clock.Now().Unix(), newNonce(&nonces))
 	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("signed idempotent register = %d: %s", res.StatusCode, data)
@@ -468,48 +494,145 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal(data, &again); err != nil {
 		t.Fatal(err)
 	}
-	if again.ConfigHash != first.ConfigHash {
+	if again != first {
 		t.Fatalf("idempotent register = %+v, want %+v", again, first)
 	}
-
-	// The same deviceId with another pubkey conflicts, once the credential of
-	// the bound key has been presented.
-	otherPub, _ := newKeypair(t)
-	status, _ = register(t, env, "", "device-1", "DESKTOP-1", otherPub)
-	if status != http.StatusUnauthorized {
-		t.Fatalf("unsigned conflict attempt = %d, want 401", status)
-	}
-	conflictBody := signedRegisterBody(t, "device-1", priv, "DESKTOP-1", otherPub, env.Clock.Now().Unix(), newNonce(&nonces))
-	res, data = env.Do("POST", "/api/v1/register", json.RawMessage(conflictBody))
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("pubkey conflict = %d, want 409: %s", res.StatusCode, data)
+	if stored, found, err = env.App.DeviceByID(id); err != nil || !found || stored.Hostname != "DESKTOP-2" {
+		t.Fatalf("idempotent register did not refresh the row: %+v, found %v, %v", stored, found, err)
 	}
 
-	stored, found, err := env.App.DeviceByID(id)
-	if err != nil || !found {
-		t.Fatalf("device disappeared from the database: found %v, %v", found, err)
+	// 同一把钥匙、另一个 device_id：换绑，旧身份作废。
+	if status, data = register(t, env, "device-2", "DESKTOP-1", pub, priv); status != http.StatusOK {
+		t.Fatalf("rebind register = %d, want 200: %s", status, data)
 	}
-	if stored.Token != "" || stored.TokenExpiresAt != 0 {
-		t.Fatalf("token not cleared after register: %+v", stored)
+	if !env.App.Revoked("device-1") {
+		t.Fatal("the previous identity was not revoked by the rebind")
 	}
-	if stored.DeviceID != "device-1" || stored.Hostname != "DESKTOP-1" {
-		t.Fatalf("device not bound: %+v", stored)
+
+	// device_id 已被另一个槽位占用：409 device_conflict。
+	_, otherPub, otherPriv := createDeviceWithKey(t, env, "other", testTOML)
+	status, data = register(t, env, "device-2", "OTHER", otherPub, otherPriv)
+	if status != http.StatusConflict || !strings.Contains(string(data), `"device_conflict"`) {
+		t.Fatalf("device_id conflict = %d: %s, want 409 device_conflict", status, data)
+	}
+
+	// 不属于任何槽位的钥匙：401 unauthorized，且不泄露配置。
+	strangerPub, strangerPriv := newKeypair(t)
+	status, data = register(t, env, "device-9", "STRANGER", strangerPub, strangerPriv)
+	if status != http.StatusUnauthorized || !strings.Contains(string(data), `"unauthorized"`) {
+		t.Fatalf("unknown key = %d: %s, want 401 unauthorized", status, data)
+	}
+	if strings.Contains(string(data), "configToml") {
+		t.Fatalf("the refused register leaked the configuration: %s", data)
 	}
 }
 
-func TestRegisterRejectsExpiredToken(t *testing.T) {
+func TestRegisterRejectsAStaleTimestamp(t *testing.T) {
 	env := testenv.New(t)
-	_, fresh := createDevice(t, env, "fresh", testTOML)
-	env.Clock.Advance(9 * time.Minute)
-	pub, _ := newKeypair(t)
-	if status, data := register(t, env, fresh, "device-fresh", "HOST-FRESH", pub); status != http.StatusOK {
+	_, pub, priv := createDeviceWithKey(t, env, "laptop", testTOML)
+	now := env.Clock.Now().Unix()
+	for _, ts := range []int64{now - 301, now + 301} {
+		body := signedRegisterBody(t, "device-stale", priv, "HOST-STALE", pub, ts, freshNonce(t))
+		res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
+		if res.StatusCode != http.StatusUnauthorized || !strings.Contains(string(data), `"unauthorized"`) {
+			t.Fatalf("register signed at %d = %d: %s, want 401 unauthorized", ts, res.StatusCode, data)
+		}
+	}
+	// 时间窗内的签名照常认领。
+	if status, data := register(t, env, "device-fresh", "HOST-FRESH", pub, priv); status != http.StatusOK {
 		t.Fatalf("fresh register = %d: %s", status, data)
 	}
+}
 
-	_, stale := createDevice(t, env, "stale", testTOML)
-	env.Clock.Advance(11 * time.Minute)
-	if status, _ := register(t, env, stale, "device-stale", "HOST-STALE", pub); status != http.StatusUnauthorized {
-		t.Fatalf("expired token = %d, want 401", status)
+// TestRegisterRejectsAnUnusableKey pins the door check before any lookup: a value
+// that cannot be an Ed25519 key is 400 invalid_pubkey, not an authentication
+// failure that invites a retry with the same bytes.
+func TestRegisterRejectsAnUnusableKey(t *testing.T) {
+	env := testenv.New(t)
+	res, data := env.Do("POST", "/api/v1/register", map[string]string{
+		"deviceId":  "device-1",
+		"hostname":  "HOST",
+		"pubkey":    "not-base64!",
+		"timestamp": fmt.Sprintf("%d", env.Clock.Now().Unix()),
+		"nonce":     freshNonce(t),
+		"signature": "c2lnbmF0dXJl",
+		"platform":  testPlatform,
+	})
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_pubkey") {
+		t.Fatalf("register with an unusable key = %d: %s, want 400 invalid_pubkey", res.StatusCode, data)
+	}
+}
+
+// TestAdminCreateDeviceRequiresAUsableKey pins the two key answers of the create
+// endpoint: an unusable value is 400 invalid_pubkey, and a key another slot
+// already claims is 409 pubkey_in_use.
+func TestAdminCreateDeviceRequiresAUsableKey(t *testing.T) {
+	env := testenv.New(t)
+	create := func(name, pubkey string) (*http.Response, []byte) {
+		t.Helper()
+		return env.Do("POST", "/api/admin/devices", map[string]string{
+			"name": name, "configToml": testTOML, "pubkey": pubkey,
+		})
+	}
+	res, data := create("laptop", "not-base64!")
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_pubkey") {
+		t.Fatalf("create with an unusable key = %d: %s, want 400 invalid_pubkey", res.StatusCode, data)
+	}
+	pub, _ := newKeypair(t)
+	encoded := base64.StdEncoding.EncodeToString(pub)
+	if res, data := create("laptop", encoded); res.StatusCode != http.StatusOK {
+		t.Fatalf("create = %d: %s", res.StatusCode, data)
+	}
+	res, data = create("second", encoded)
+	if res.StatusCode != http.StatusConflict || !strings.Contains(string(data), "pubkey_in_use") {
+		t.Fatalf("create with a taken key = %d: %s, want 409 pubkey_in_use", res.StatusCode, data)
+	}
+}
+
+// TestAdminRebindKey pins POST /api/admin/devices/{id}/pubkey: the two refusals
+// keep their codes, and a successful rebind hands the slot to the new key while
+// the old key can no longer claim it.
+func TestAdminRebindKey(t *testing.T) {
+	env := testenv.New(t)
+	dev := registerDevice(t, env, "laptop", testTOML)
+	oldPub := publicKeyOf(t, env, dev.internalID)
+	nextPub, nextPriv := newKeypair(t)
+	next := base64.StdEncoding.EncodeToString(nextPub)
+
+	rebind := func(id, pubkey string) (*http.Response, []byte) {
+		t.Helper()
+		return env.Do("POST", "/api/admin/devices/"+id+"/pubkey", map[string]string{"pubkey": pubkey})
+	}
+	if res, data := rebind(dev.internalID, "not-base64!"); res.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(string(data), "invalid_pubkey") {
+		t.Fatalf("rebind to an unusable key = %d: %s, want 400 invalid_pubkey", res.StatusCode, data)
+	}
+	_, otherPub, _ := createDeviceWithKey(t, env, "other", testTOML)
+	if res, data := rebind(dev.internalID, base64.StdEncoding.EncodeToString(otherPub)); res.StatusCode != http.StatusConflict ||
+		!strings.Contains(string(data), "pubkey_in_use") {
+		t.Fatalf("rebind to a taken key = %d: %s, want 409 pubkey_in_use", res.StatusCode, data)
+	}
+	if res, data := rebind("d_missing", next); res.StatusCode != http.StatusNotFound ||
+		!strings.Contains(string(data), "not_found") {
+		t.Fatalf("rebind of a missing slot = %d: %s, want 404 not_found", res.StatusCode, data)
+	}
+
+	if res, data := rebind(dev.internalID, next); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("rebind = %d: %s, want 204", res.StatusCode, data)
+	}
+	// 旧钥匙的认领被拒：槽位已经换给了新钥匙，旧身份也进了墓碑。
+	status, data := register(t, env, dev.deviceID, "HOST", oldPub, dev.priv)
+	if status != http.StatusUnauthorized || !strings.Contains(string(data), "revoked") {
+		t.Fatalf("claim with the replaced key = %d: %s, want 401 revoked", status, data)
+	}
+	// 槽位回到待认领：新钥匙认领它，拿回同一份配置。
+	status, data = register(t, env, "dev-next", "HOST", nextPub, nextPriv)
+	if status != http.StatusOK {
+		t.Fatalf("claim with the new key = %d: %s", status, data)
+	}
+	var out configResponse
+	if err := json.Unmarshal(data, &out); err != nil || out.ConfigHash != dev.configHash {
+		t.Fatalf("claim with the new key returned %s (%v), want hash %q", data, err, dev.configHash)
 	}
 }
 
@@ -621,16 +744,12 @@ func TestDeviceFieldDomainIsRejected(t *testing.T) {
 		t.Fatalf("valid heartbeat = %d, want 204: %s", res.StatusCode, data)
 	}
 
-	// 注册入口用同一份值域：带换行的 deviceId 在查库之前就被拒绝。
-	pub, _ := newKeypair(t)
-	res, data := env.Do("POST", "/api/v1/register", map[string]string{
-		"token":    "",
-		"deviceId": "dev\nMESH2",
-		"hostname": "HOST",
-		"pubkey":   base64.StdEncoding.EncodeToString(pub),
-	})
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("register with a newline in deviceId = %d, want 400: %s", res.StatusCode, data)
+	// 注册入口用同一份值域：带换行的 deviceId 在查库与验签之前就被拒绝。
+	_, regPub, regPriv := createDeviceWithKey(t, env, "domain", testTOML)
+	registerBody := signedRegisterBody(t, "dev\nMESH2", regPriv, "HOST", regPub, env.Clock.Now().Unix(), newNonce(&nonces))
+	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(registerBody))
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "invalid_request") {
+		t.Fatalf("register with a newline in deviceId = %d: %s, want 400 invalid_request", res.StatusCode, data)
 	}
 }
 
@@ -1070,7 +1189,11 @@ func TestDeviceLimitReturnsConflict(t *testing.T) {
 	for i := range app.MaxDevices {
 		createDevice(t, env, fmt.Sprintf("dev-%03d", i), testTOML)
 	}
-	res, data := env.Do("POST", "/api/admin/devices", map[string]string{"name": "overflow", "configToml": testTOML})
+	overflowPub, _ := newKeypair(t)
+	res, data := env.Do("POST", "/api/admin/devices", map[string]string{
+		"name": "overflow", "configToml": testTOML,
+		"pubkey": base64.StdEncoding.EncodeToString(overflowPub),
+	})
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("device over limit = %d, want 409: %s", res.StatusCode, data)
 	}
@@ -1079,25 +1202,27 @@ func TestDeviceLimitReturnsConflict(t *testing.T) {
 	}
 }
 
-func TestReissuedTokenReenrollsDevice(t *testing.T) {
+// TestRegisterRebindsTheSlotToANewDeviceID pins the rebind a claim can perform:
+// the same key under another device_id takes the slot over, the previous
+// identity stops authenticating, and the new one keeps working without any
+// administrative action.
+func TestRegisterRebindsTheSlotToANewDeviceID(t *testing.T) {
 	env := testenv.New(t)
 	var nonces int64
 	dev := registerDevice(t, env, "laptop", testTOML)
+	pub := publicKeyOf(t, env, dev.internalID)
 
-	res, data := env.Do("POST", "/api/admin/devices/"+dev.internalID+"/token", nil)
+	body := signedRegisterBody(t, "device-2", dev.priv, "HOST-2", pub, env.Clock.Now().Unix(), newNonce(&nonces))
+	res, data := env.Do("POST", "/api/v1/register", json.RawMessage(body))
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("issue token = %d, want 200: %s", res.StatusCode, data)
+		t.Fatalf("rebind register = %d, want 200: %s", res.StatusCode, data)
 	}
-	var issued struct {
-		Token string `json:"token"`
+	var out configResponse
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &issued); err != nil || issued.Token == "" {
-		t.Fatalf("issue token response = %s", data)
-	}
-
-	newPub, newPriv := newKeypair(t)
-	if status, body := register(t, env, issued.Token, "device-2", "HOST-2", newPub); status != http.StatusOK {
-		t.Fatalf("re-enroll = %d: %s", status, body)
+	if out.ConfigHash != dev.configHash {
+		t.Fatalf("rebind register returned %+v, want hash %q", out, dev.configHash)
 	}
 
 	// The previous identity of the slot is revoked.
@@ -1107,7 +1232,7 @@ func TestReissuedTokenReenrollsDevice(t *testing.T) {
 	}
 
 	// The new identity of the same slot authenticates.
-	updated := registeredDevice{deviceID: "device-2", priv: newPriv, configHash: dev.configHash}
+	updated := registeredDevice{internalID: dev.internalID, deviceID: "device-2", priv: dev.priv, configHash: dev.configHash}
 	res, data = heartbeat(t, env, updated, &nonces, dev.configHash, "")
 	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("new identity heartbeat = %d, want 204: %s", res.StatusCode, data)
@@ -2123,7 +2248,7 @@ ipv4 = "10.126.126.9/24"`
 		t.Fatalf("template = %q, want %q", tmpl.Template, custom)
 	}
 
-	id, _ := createDevice(t, env, "fresh", tmpl.Template)
+	id := createDevice(t, env, "fresh", tmpl.Template)
 	res, data := env.Do("GET", "/api/admin/devices/"+id, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get device = %d: %s", res.StatusCode, data)
@@ -2145,7 +2270,7 @@ func TestDeviceConfigIsStoredVerbatim(t *testing.T) {
 	env := testenv.New(t)
 	// 连占位符都会被原样收下：控制面不认识它。
 	const withPlaceholder = "ipv4 = \"{{ IP }}\"\n"
-	id, _ := createDevice(t, env, "laptop", withPlaceholder)
+	id := createDevice(t, env, "laptop", withPlaceholder)
 
 	// 同一个地址建两台也不拦：多网卡、迁移期并存都可能是有意为之。
 	createDevice(t, env, "ali-seed", "ipv4 = \"10.126.126.1/24\"\n")

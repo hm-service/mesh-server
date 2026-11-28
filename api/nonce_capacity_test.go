@@ -31,17 +31,19 @@ func TestNonceCacheExhaustionIsRetryable(t *testing.T) {
 		t.Fatalf("Open() error: %v", err)
 	}
 	t.Cleanup(func() { _ = instance.Close() })
-	device, token, err := instance.CreateDevice("laptop", "a = 1\n")
-	if err != nil {
-		t.Fatalf("CreateDevice() error: %v", err)
-	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 	pubkey := base64.StdEncoding.EncodeToString(pub)
-	if _, err := instance.BindDevice(context.Background(), token, "dev-1", "HOST", pubkey, ""); err != nil {
-		t.Fatalf("BindDevice() error: %v", err)
+	device, err := instance.CreateDevice("laptop", "a = 1\n", pubkey)
+	if err != nil {
+		t.Fatalf("CreateDevice() error: %v", err)
+	}
+	if _, err := instance.ClaimDevice(context.Background(), app.Claim{
+		PublicID: device.PublicID, ProvedPubkey: pubkey, DeviceID: "dev-1", Hostname: "HOST",
+	}); err != nil {
+		t.Fatalf("ClaimDevice() error: %v", err)
 	}
 
 	server := New(Options{App: instance, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
@@ -119,23 +121,7 @@ func TestNonceCacheExhaustionIsRetryable(t *testing.T) {
 	if got := res.Header.Get("Retry-After"); got == "" {
 		t.Fatal("register 503 without Retry-After")
 	}
-
-	// 令牌本身就是一份完整的证明，缓存满不影响它。
-	issued, err := instance.IssueToken(device.PublicID)
-	if err != nil {
-		t.Fatalf("IssueToken() error: %v", err)
-	}
-	body, err := json.Marshal(map[string]string{
-		"token":    issued,
-		"deviceId": "dev-1",
-		"hostname": "HOST",
-		"pubkey":   pubkey,
-	})
-	if err != nil {
-		t.Fatalf("marshal register: %v", err)
-	}
-	res, data = post("/api/v1/register", body)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("register with a token and a full replay cache = %d, want 200: %s", res.StatusCode, data)
+	if !strings.Contains(string(data), `"busy"`) {
+		t.Fatalf("register 503 body = %s, want code busy", data)
 	}
 }

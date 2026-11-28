@@ -48,6 +48,20 @@ func TestDeviceRoundTrip(t *testing.T) {
 	if _, err := d.GetByDeviceID(""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByDeviceID(\"\") = %v, want ErrNotFound", err)
 	}
+	// 公钥是槽位的身份：注册请求只凭它找到行。
+	if byPubkey, err := d.GetByPubkey("pk"); err != nil || byPubkey.PublicID != "d_1" {
+		t.Fatalf("GetByPubkey() = %+v, %v", byPubkey, err)
+	}
+	if _, err := d.GetByPubkey("another"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetByPubkey(unknown) = %v, want ErrNotFound", err)
+	}
+	// 空公钥不匹配任何行，包括迁移前留下的空公钥行。
+	if err := d.Create(Device{PublicID: "d_2"}, 10); err != nil {
+		t.Fatalf("Create() of a row without a key: %v", err)
+	}
+	if _, err := d.GetByPubkey(""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetByPubkey(\"\") = %v, want ErrNotFound", err)
+	}
 }
 
 // TestObserveMatchesTheAuthenticatedKey pins the condition of the observation
@@ -139,29 +153,50 @@ func TestUpdateAndDelete(t *testing.T) {
 	}
 }
 
-func TestPurgeExpiredTokens(t *testing.T) {
+// TestPubkeyBelongsToOneSlot pins the identity rule of the device table: two
+// slots cannot claim the same key, whether the duplicate arrives through Create
+// or through Update. The unique index backs the rule up; the check exists so the
+// caller gets ErrPubkeyTaken instead of a constraint error. Rows without a key
+// (written before keys were mandatory) are exempt.
+func TestPubkeyBelongsToOneSlot(t *testing.T) {
 	d := openTemp(t)
-	now := int64(1_800_000_000)
-	if err := d.Create(Device{PublicID: "d_old", Token: "etk_old", TokenExpiresAt: now - 1}, 10); err != nil {
-		t.Fatal(err)
+	if err := d.Create(Device{PublicID: "d_1", Pubkey: "pk1"}, 10); err != nil {
+		t.Fatalf("Create() error: %v", err)
 	}
-	if err := d.Create(Device{PublicID: "d_new", Token: "etk_new", TokenExpiresAt: now + 600}, 10); err != nil {
-		t.Fatal(err)
+	if err := d.Create(Device{PublicID: "d_2", Pubkey: "pk1"}, 10); !errors.Is(err, ErrPubkeyTaken) {
+		t.Fatalf("Create() with a key another slot holds = %v, want ErrPubkeyTaken", err)
 	}
-	purged, err := d.PurgeExpiredTokens(now)
-	if err != nil {
-		t.Fatalf("PurgeExpiredTokens() error: %v", err)
+	if _, err := d.Get("d_2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the refused create wrote a row: %v", err)
 	}
-	if purged != 1 {
-		t.Fatalf("purged = %d, want 1", purged)
+
+	if err := d.Create(Device{PublicID: "d_2", Pubkey: "pk2"}, 10); err != nil {
+		t.Fatalf("Create() error: %v", err)
 	}
-	old, err := d.Get("d_old")
-	if err != nil || old.Token != "" || old.TokenExpiresAt != 0 {
-		t.Fatalf("expired token not purged: %+v, %v", old, err)
+	if _, err := d.Update("d_2", func(device *Device) error {
+		device.Pubkey = "pk1"
+		return nil
+	}); !errors.Is(err, ErrPubkeyTaken) {
+		t.Fatalf("Update() to a key another slot holds = %v, want ErrPubkeyTaken", err)
 	}
-	fresh, err := d.Get("d_new")
-	if err != nil || fresh.Token != "etk_new" {
-		t.Fatalf("fresh token purged: %+v, %v", fresh, err)
+	untouched, err := d.Get("d_2")
+	if err != nil || untouched.Pubkey != "pk2" {
+		t.Fatalf("the refused update wrote the row: %+v, %v", untouched, err)
+	}
+
+	// 同一个槽位保留自己的钥匙不是冲突。
+	if _, err := d.Update("d_1", func(device *Device) error {
+		device.Pubkey = "pk1"
+		return nil
+	}); err != nil {
+		t.Fatalf("Update() keeping the slot's own key: %v", err)
+	}
+
+	// 没有钥匙的行可以有多条：迁移前的槽位都是这个状态。
+	for _, id := range []string{"d_3", "d_4"} {
+		if err := d.Create(Device{PublicID: id}, 10); err != nil {
+			t.Fatalf("Create() without a key (%s): %v", id, err)
+		}
 	}
 }
 

@@ -51,10 +51,9 @@ export interface DevicePlacement {
 }
 
 export interface DeviceDetail extends DeviceSummary {
+  /** 槽位认的那把 Ed25519 公钥（标准 base64）：设备靠它认领，也靠它解封凭据。 */
   pubkey: string;
   configToml: string;
-  token: string;
-  tokenExpiresAt: number;
   lastIp: string;
   credential: CredentialTimes | null;
 }
@@ -214,8 +213,8 @@ export const api = {
   getDevice(id: string): Promise<DeviceDetail> {
     return jsonRequest<DeviceDetail>("GET", "/api/admin/devices/" + encodeURIComponent(id));
   },
-  createDevice(name: string, configToml: string): Promise<{ id: string; token: string; ipv4?: string }> {
-    return jsonRequest<{ id: string; token: string }>("POST", "/api/admin/devices", { name, configToml: configToml });
+  createDevice(name: string, configToml: string, pubkey: string): Promise<{ id: string; ipv4?: string }> {
+    return jsonRequest<{ id: string; ipv4?: string }>("POST", "/api/admin/devices", { name, configToml, pubkey });
   },
   /**
    * autoUpdate 是三态覆盖，undefined 表示这次请求不带它（不改这一列）：
@@ -234,8 +233,12 @@ export const api = {
   deleteDevice(id: string): Promise<void> {
     return jsonRequest<void>("DELETE", "/api/admin/devices/" + encodeURIComponent(id));
   },
-  issueToken(id: string): Promise<{ token: string }> {
-    return jsonRequest<{ token: string }>("POST", "/api/admin/devices/" + encodeURIComponent(id) + "/token");
+  /**
+   * 换钥匙：把槽位指到另一把公钥。旧钥匙立即失效，旧身份的凭据被撤销，槽位回到
+   * 待认领——用于机器重装、私钥文件丢失。
+   */
+  rebindKey(id: string, pubkey: string): Promise<void> {
+    return jsonRequest<void>("POST", "/api/admin/devices/" + encodeURIComponent(id) + "/pubkey", { pubkey });
   },
   /**
    * 轮换凭据：服务端签发一张并把 id 记在设备名下，私钥只回给这一次请求。

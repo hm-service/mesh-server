@@ -194,7 +194,7 @@ func (s *Server) HandlerFor(surface Surface) http.Handler {
 	admin("GET", "/api/admin/devices/{id}", s.admin(s.handleGetDevice))
 	admin("PUT", "/api/admin/devices/{id}", s.admin(s.handleUpdateDevice))
 	admin("DELETE", "/api/admin/devices/{id}", s.admin(s.handleDeleteDevice))
-	admin("POST", "/api/admin/devices/{id}/token", s.admin(s.handleIssueToken))
+	admin("POST", "/api/admin/devices/{id}/pubkey", s.admin(s.handleRebindKey))
 	admin("POST", "/api/admin/devices/{id}/credential", s.admin(s.handleIssueCredential))
 	admin("DELETE", "/api/admin/devices/{id}/credential", s.admin(s.handleRevokeCredential))
 	admin("PUT", "/api/admin/devices/{id}/group", s.admin(s.handleSetDeviceGroup))

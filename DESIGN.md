@@ -27,7 +27,7 @@ HTTP 契约以 [`../docs/`](../docs/) 为准；本文件只描述服务端这一
 
 | 页面 | 内容 |
 | --- | --- |
-| 设备 | 按分组排的表：名称与主机名、mesh 地址、在线状态、配置是否同步、客户端版本、最后在线；行内拖拽排序与改分组。详情抽屉里编辑配置（含「重置为模板」）、轮换凭据、签发注册令牌、撤销设备 |
+| 设备 | 按分组排的表：名称与主机名、mesh 地址、在线状态、配置是否同步、客户端版本、最后在线；行内拖拽排序与改分组。详情抽屉里编辑配置（含「重置为模板」）、轮换凭据、换钥匙、撤销设备 |
 | 默认模板 | 当前生效的默认 EasyTier 模板（`DATA_DIR/peer.default.toml`，缺失或空白时展示内置模板）；保存写回该文件 |
 | 客户端更新 | 按平台分启动器与客户端包两个槽位用外部地址发布，各自展示版本、摘要与地址；客户端包的版本号从包内 `version.json` 读出，不在表单里填；该槽位另有「自动安装」复选框，列表行显示该平台当前是自动还是手动 |
 
@@ -40,12 +40,12 @@ HTTP 契约以 [`../docs/`](../docs/) 为准；本文件只描述服务端这一
 | 方法 | 路径 | 认证 |
 | --- | --- | --- |
 | POST | `/api/auth` | 无 |
-| POST | `/api/v1/register` | token 或设备签名（在请求体里） |
+| POST | `/api/v1/register` | 设备签名（在请求体里），按公钥认领槽位 |
 | POST | `/api/v1/heartbeat` | 设备签名（在请求体里） |
 | GET/PUT | `/api/admin/template` | Bearer |
 | GET/POST | `/api/admin/devices` | Bearer |
 | GET/PUT/DELETE | `/api/admin/devices/{id}` | Bearer |
-| POST | `/api/admin/devices/{id}/token` | Bearer |
+| POST | `/api/admin/devices/{id}/pubkey` | Bearer |
 | POST | `/api/admin/devices/{id}/credential` | Bearer |
 | DELETE | `/api/admin/devices/{id}/credential` | Bearer |
 | PUT | `/api/admin/devices/{id}/group` | Bearer |
@@ -82,11 +82,9 @@ CREATE TABLE device (
     name             TEXT NOT NULL DEFAULT '',
     device_id        TEXT NOT NULL DEFAULT '', -- 客户端生成的身份，未注册为空
     hostname         TEXT NOT NULL DEFAULT '',
-    pubkey           TEXT NOT NULL DEFAULT '', -- base64(ed25519 公钥)
+    pubkey           TEXT NOT NULL DEFAULT '', -- base64(ed25519 公钥)：槽位认的钥匙，非空时唯一
     config_toml      TEXT NOT NULL DEFAULT '',
     config_hash      TEXT NOT NULL DEFAULT '', -- 心跳比对用
-    token            TEXT NOT NULL DEFAULT '', -- 一次性注册令牌，用后清空
-    token_expires_at INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL DEFAULT 0,
     last_seen_at     INTEGER NOT NULL DEFAULT 0,
     last_ip          TEXT NOT NULL DEFAULT '',
@@ -177,8 +175,8 @@ ET 自己的 `credential_file` 里存了每张凭据的私钥，它是全网凭�
 | --- | --- |
 | 管理面 | `AUTH_TOKEN` 的 Argon2id（m=19456、t=2、p=1）哈希 + 无状态 Bearer（HMAC-SHA256、24h、`SESSION_SIGNING_KEY`）；登录响应有 1s + rand(0..200ms) 的下限时长（`api` 包内常量，不提供关闭开关） |
 | 设备面 | Ed25519 请求签名（`MESH2` 八行原文）+ 300 秒时间窗 + nonce 重放缓存；普通节点在 mesh 里的身份是种子签发的凭据，控制面只留 `credential_id` 与到期时间 |
-| 注册令牌 | 形状固定：`64` 个小写十六进制字符（`32` 字节熵）。生成端自检、接受端在查库之前先判形状；一次性、`10` 分钟有效 |
-| 重新注册 | 已绑定设备重新注册必须出示签名或有效令牌，只有 `device_id` + 公钥不足以取回含 `network_secret` 的配置 |
+| 注册即认领 | 槽位从创建起绑定一把 Ed25519 公钥；注册按公钥找槽位、验签、写 `device_id`。没有可传递的共享秘密，因此也没有过期与一次性语义 |
+| 换钥匙 | `POST /api/admin/devices/{id}/pubkey`：旧钥匙立即失效、撤销该槽位凭据、`device_id` 清空回待认领。机器重装或私钥丢失之后走这一条 |
 | 发布包 | 客户端包：版本号取自包内 `version.json`（必须与 `YYYY.MM.DD-N` 一致），发布时连包一起校验；`app_sha256`（完整）用于下载后校验；启动器：只有完整摘要（`sha256`），由客户端自己比对 |
 | 发布签名 | 两个槽位各带一份 Ed25519 签名，原文是 `MESH3`、槽位、平台、版本、摘要五行。私钥离线，公钥编进两端二进制；控制面在下载并算完摘要之后验签，不过就 `400` 且不写槽位。这一环只让坏包在发布时失败，信任锚在客户端 |
 | 发布下载 | 服务端下载发布地址时拒绝回环、私网、链路本地、组播与未指定地址（`net.Dialer.Control` 逐个连接校验），最多 5 次重定向且每一跳重新校验，不走代理 |

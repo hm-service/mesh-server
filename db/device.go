@@ -15,6 +15,10 @@ var (
 	// ErrIdentityChanged reports a slot that no longer holds the identity a
 	// request was authenticated as: a rebind happened in between.
 	ErrIdentityChanged = errors.New("device identity changed")
+	// ErrPubkeyTaken reports a key another slot already claims.
+	ErrPubkeyTaken = errors.New("public key already used by another slot")
+	// ErrDeviceIDTaken reports a device_id another slot already holds.
+	ErrDeviceIDTaken = errors.New("device id already used by another slot")
 )
 
 // Device is one row of the device table. The field names follow the wire
@@ -27,8 +31,6 @@ type Device struct {
 	Pubkey         string
 	ConfigTOML     string
 	ConfigHash     string
-	Token          string
-	TokenExpiresAt int64
 	CreatedAt      int64
 	LastSeenAt     int64
 	LastIP         string
@@ -43,10 +45,10 @@ type Device struct {
 }
 
 const deviceColumns = "public_id, name, device_id, hostname, pubkey, config_toml, config_hash, " +
-	"token, token_expires_at, created_at, last_seen_at, last_ip, last_config_hash, last_app_version, " +
+	"created_at, last_seen_at, last_ip, last_config_hash, last_app_version, " +
 	"last_platform, group_id, position, auto_update"
 
-const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+const insertDevice = "INSERT INTO device (" + deviceColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -55,7 +57,7 @@ type rowScanner interface {
 func scanDevice(row rowScanner) (Device, error) {
 	var d Device
 	err := row.Scan(&d.PublicID, &d.Name, &d.DeviceID, &d.Hostname, &d.Pubkey,
-		&d.ConfigTOML, &d.ConfigHash, &d.Token, &d.TokenExpiresAt, &d.CreatedAt, &d.LastSeenAt,
+		&d.ConfigTOML, &d.ConfigHash, &d.CreatedAt, &d.LastSeenAt,
 		&d.LastIP, &d.LastConfigHash, &d.LastAppVersion, &d.LastPlatform, &d.GroupID, &d.Position,
 		&d.AutoUpdate)
 	return d, err
@@ -113,17 +115,19 @@ func (d *DB) GetByDeviceID(deviceID string) (Device, error) {
 	return device, nil
 }
 
-// GetByToken returns the device holding token, ignoring empty tokens.
-func (d *DB) GetByToken(token string) (Device, error) {
-	if token == "" {
+// GetByPubkey returns the slot whose key is pubkey. That key is the slot's
+// identity: a register request carries no other handle the server could look up
+// an unclaimed slot with. An empty key matches nothing.
+func (d *DB) GetByPubkey(pubkey string) (Device, error) {
+	if pubkey == "" {
 		return Device{}, ErrNotFound
 	}
-	device, err := scanDevice(d.conn.QueryRow("SELECT "+deviceColumns+" FROM device WHERE token = ?", token))
+	device, err := scanDevice(d.conn.QueryRow("SELECT "+deviceColumns+" FROM device WHERE pubkey = ?", pubkey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Device{}, ErrNotFound
 	}
 	if err != nil {
-		return Device{}, fmt.Errorf("get device by token: %w", err)
+		return Device{}, fmt.Errorf("get device by pubkey: %w", err)
 	}
 	return device, nil
 }
@@ -143,6 +147,9 @@ func (d *DB) Create(dev Device, max int) error {
 	if n >= max {
 		return ErrLimit
 	}
+	if err := checkPubkeyFree(tx, dev.PublicID, dev.Pubkey); err != nil {
+		return err
+	}
 	// 新设备排在未分组末尾；既有行的 position 都是 0，仍保持创建顺序。
 	if err := tx.QueryRow("SELECT COALESCE(MAX(position), -1) + 1 FROM device WHERE group_id = 0").Scan(&dev.Position); err != nil {
 		return fmt.Errorf("next device position: %w", err)
@@ -159,7 +166,7 @@ func (d *DB) Create(dev Device, max int) error {
 func deviceArgs(dev Device) []any {
 	return []any{
 		dev.PublicID, dev.Name, dev.DeviceID, dev.Hostname, dev.Pubkey,
-		dev.ConfigTOML, dev.ConfigHash, dev.Token, dev.TokenExpiresAt, dev.CreatedAt,
+		dev.ConfigTOML, dev.ConfigHash, dev.CreatedAt,
 		dev.LastSeenAt, dev.LastIP, dev.LastConfigHash, dev.LastAppVersion, dev.LastPlatform,
 		dev.GroupID, dev.Position, dev.AutoUpdate,
 	}
@@ -180,15 +187,32 @@ func (d *DB) Update(publicID string, mutate func(*Device) error) (Device, error)
 	if err != nil {
 		return Device{}, fmt.Errorf("load device: %w", err)
 	}
+	loaded := device
 	if err := mutate(&device); err != nil {
 		return Device{}, err
 	}
+	if device.Pubkey != loaded.Pubkey {
+		if err := checkPubkeyFree(tx, device.PublicID, device.Pubkey); err != nil {
+			return Device{}, err
+		}
+	}
+	if device.DeviceID != loaded.DeviceID && device.DeviceID != "" {
+		var other string
+		err := tx.QueryRow("SELECT public_id FROM device WHERE device_id = ? AND public_id <> ?",
+			device.DeviceID, device.PublicID).Scan(&other)
+		if err == nil {
+			return Device{}, ErrDeviceIDTaken
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Device{}, fmt.Errorf("check device id: %w", err)
+		}
+	}
 	if _, err := tx.Exec("UPDATE device SET name=?, device_id=?, hostname=?, pubkey=?, config_toml=?, "+
-		"config_hash=?, token=?, token_expires_at=?, created_at=?, last_seen_at=?, last_ip=?, "+
+		"config_hash=?, created_at=?, last_seen_at=?, last_ip=?, "+
 		"last_config_hash=?, last_app_version=?, last_platform=?, group_id=?, position=?, "+
 		"auto_update=? WHERE public_id=?",
 		device.Name, device.DeviceID, device.Hostname, device.Pubkey, device.ConfigTOML,
-		device.ConfigHash, device.Token, device.TokenExpiresAt, device.CreatedAt, device.LastSeenAt,
+		device.ConfigHash, device.CreatedAt, device.LastSeenAt,
 		device.LastIP, device.LastConfigHash, device.LastAppVersion, device.LastPlatform, device.GroupID,
 		device.Position, device.AutoUpdate, publicID,
 	); err != nil {
@@ -286,12 +310,20 @@ func observeMiss(tx *sql.Tx, publicID, deviceID, pubkey string) error {
 	return ErrNotFound
 }
 
-// PurgeExpiredTokens clears registration tokens whose validity has ended; the
-// plaintext token is only kept until token_expires_at (contract/server.md).
-func (d *DB) PurgeExpiredTokens(now int64) (int64, error) {
-	res, err := d.conn.Exec("UPDATE device SET token = '', token_expires_at = 0 WHERE token <> '' AND token_expires_at <= ?", now)
-	if err != nil {
-		return 0, fmt.Errorf("purge expired tokens: %w", err)
+// checkPubkeyFree refuses a key another slot already claims. The unique index
+// backs this up; the check is here so the caller gets ErrPubkeyTaken instead of
+// a constraint error to parse.
+func checkPubkeyFree(tx *sql.Tx, publicID, pubkey string) error {
+	if pubkey == "" {
+		return nil
 	}
-	return res.RowsAffected()
+	var other string
+	err := tx.QueryRow("SELECT public_id FROM device WHERE pubkey = ? AND public_id <> ?", pubkey, publicID).Scan(&other)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check pubkey: %w", err)
+	}
+	return ErrPubkeyTaken
 }

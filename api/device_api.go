@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"mesh-server/app"
 	"mesh-server/core"
@@ -18,11 +17,10 @@ const (
 	codeRevoked      = "revoked"
 )
 
-// registerRequest is POST /api/v1/register. timestamp、nonce、signature、platform
-// 只有"槽位已经绑定"时才用得上：它们带着本机私钥的签名，证明调用方就是那个
-// 设备。签名覆盖 MESH2\nPOST\n/api/v1/register\n<deviceId>\n<timestamp>\n<nonce>\n<platform>\n\n。
+// registerRequest is POST /api/v1/register. 公钥是唯一的句柄：服务端按它找到槽位
+// （包括还没被认领的那个），签名证明调用方确实持着对应的私钥。签名覆盖
+// MESH2\nPOST\n/api/v1/register\n<deviceId>\n<timestamp>\n<nonce>\n<platform>\n\n。
 type registerRequest struct {
-	Token     string `json:"token"`
 	DeviceID  string `json:"deviceId"`
 	Hostname  string `json:"hostname"`
 	Pubkey    string `json:"pubkey"`
@@ -123,10 +121,10 @@ func (s *Server) writeUnauthorizedDevice(w http.ResponseWriter, deviceID string)
 	httpx.WriteError(w, http.StatusUnauthorized, code)
 }
 
-// handleRegister binds a device identity to a device slot. The idle branch is
-// not credential free: a slot that is already bound only hands out its
-// configuration again to the holder of a still valid registration token or of
-// the slot's own key, because that configuration carries the network secret.
+// handleRegister claims a slot for the identity that proved it holds the slot's
+// key. 认领只有这一条路径：按公钥找到槽位、验签、写 device_id。配置里有
+// network_secret，所以这条会覆盖配置的请求同样要认证——认证材料是设备自己的
+// 私钥，不是任何可以转交的凭据。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	body, err := httpx.ReadBody(w, r)
 	if err != nil {
@@ -138,12 +136,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
-	req.Token = strings.TrimSpace(req.Token)
 	req.DeviceID = strings.TrimSpace(req.DeviceID)
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.Pubkey = strings.TrimSpace(req.Pubkey)
-	// 与心跳同一份值域：注册请求里的签名三件套要么全空（只出示令牌），要么
-	// 全部在合法域内。hostname 不参与签名，只受长度限制。
+	// 与心跳同一份值域：签名三件套与 deviceId 全部必需。hostname 不参与签名，
+	// 只受长度限制。
 	fields := core.DeviceRequestFields{
 		DeviceID:  req.DeviceID,
 		Timestamp: req.Timestamp,
@@ -160,122 +157,61 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.app.Now()
-	existing, bound, err := s.app.DeviceByDeviceID(req.DeviceID)
+	device, found, err := s.app.DeviceByPubkey(req.Pubkey)
 	if err != nil {
-		s.logger.Error("load device", "device_id", req.DeviceID, "error", err)
+		s.logger.Error("load device by pubkey", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	if bound {
-		// 签名这一支先验：验不过才看令牌，契约要求「出示下列任一凭据」，而调用
-		// 方可能同时带着两者（管理端刚补签了令牌，本机又试了一次签名）。
-		proof := s.registerSignature(existing.Pubkey, req, now)
-		if proof == proofExhausted && req.Token == "" {
-			// 签名可用、nonce 登记不下：与心跳同一条可重试的服务不可用。带着令牌
-			// 的请求不受影响，令牌本身就是一份完整的证明。
-			writeBusy(w)
-			return
-		}
-		signed := proof == proofAccepted
-		if !signed && req.Token == "" {
-			httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
-			return
-		}
-		device, err := s.app.AcceptRegistration(r.Context(), existing.PublicID, app.BoundRegistration{
-			DeviceID: req.DeviceID,
-			Pubkey:   req.Pubkey,
-			Token:    req.Token,
-			Signed:   signed,
-			// 签名是用这一把公钥验过的；锁内复核要的是「这次证明属于哪一代绑定」，
-			// 而请求自己带来的 pubkey 只是它想绑上的钥匙。
-			ProvedPubkey: existing.Pubkey,
-			IP:           s.clientIP(r),
-		})
-		switch {
-		case errors.Is(err, app.ErrPubkeyMismatch):
-			httpx.WriteError(w, http.StatusConflict, "device_conflict")
-			return
-		case errors.Is(err, app.ErrIdentityChanged), errors.Is(err, app.ErrTokenInvalid), errors.Is(err, app.ErrNotFound):
-			// 与认证失败同一条 401：注册这条路径不区分「槽位被换绑」「令牌不对」
-			// 「记录被删」。墓碑只给签名请求回 revoked，注册仍按未授权处理。
-			httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
-			return
-		case err != nil:
-			s.logger.Error("accept registration", "device_id", req.DeviceID, "error", err)
-			httpx.WriteError(w, http.StatusInternalServerError, "internal")
-			return
-		}
-		httpx.WriteJSON(w, http.StatusOK, registerResponse{
-			DeviceID:   device.DeviceID,
-			ConfigTOML: device.ConfigTOML,
-			ConfigHash: device.ConfigHash,
-		})
+	if !found {
+		// 这把钥匙不认任何槽位。已删除设备的 device_id 回 revoked，其余一律未授权。
+		s.writeUnauthorizedDevice(w, req.DeviceID)
 		return
 	}
-	if req.Token == "" {
-		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token")
+	signedAt, err := core.CheckTimestamp(req.Timestamp, now)
+	if err != nil {
+		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return
 	}
-	device, err := s.app.BindDevice(r.Context(), req.Token, req.DeviceID, req.Hostname, req.Pubkey, s.clientIP(r))
+	// 注册请求没有配置与版本信息，签名里这两行留空。
+	signing := core.SigningString(http.MethodPost, "/api/v1/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
+	if err := core.VerifySignature(device.Pubkey, req.Signature, []byte(signing)); err != nil {
+		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
+		return
+	}
+	switch s.nonces.Claim(req.Nonce, now, signedAt) {
+	case core.NonceReplay:
+		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
+		return
+	case core.NonceExhausted:
+		writeBusy(w)
+		return
+	}
+	claimed, err := s.app.ClaimDevice(r.Context(), app.Claim{
+		PublicID:     device.PublicID,
+		ProvedPubkey: device.Pubkey,
+		DeviceID:     req.DeviceID,
+		Hostname:     req.Hostname,
+		IP:           s.clientIP(r),
+	})
 	switch {
-	case errors.Is(err, app.ErrTokenInvalid):
-		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token")
+	case errors.Is(err, app.ErrIdentityChanged), errors.Is(err, app.ErrNotFound):
+		// 与认证失败同一条 401：注册这条路径不区分「槽位换了钥匙」与「记录被删」。
+		httpx.WriteError(w, http.StatusUnauthorized, codeUnauthorized)
 		return
-	case errors.Is(err, app.ErrNotFound):
-		httpx.WriteError(w, http.StatusUnauthorized, "invalid_token")
+	case errors.Is(err, app.ErrDeviceIDTaken):
+		httpx.WriteError(w, http.StatusConflict, "device_conflict")
 		return
 	case err != nil:
-		s.logger.Error("bind device", "device_id", req.DeviceID, "error", err)
+		s.logger.Error("claim device", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, registerResponse{
-		DeviceID:   device.DeviceID,
-		ConfigTOML: device.ConfigTOML,
-		ConfigHash: device.ConfigHash,
+		DeviceID:   claimed.DeviceID,
+		ConfigTOML: claimed.ConfigTOML,
+		ConfigHash: claimed.ConfigHash,
 	})
-}
-
-// signatureProof is what a bound slot's register request proved with the slot key.
-type signatureProof int
-
-const (
-	// proofUnusable reports no usable signature (absent, malformed, outside the
-	// time window, made by another key, or a replay). 签名这一支失败时由调用方退回
-	// 令牌，而不是直接拒绝：契约要求「出示下列任一凭据」。
-	proofUnusable signatureProof = iota
-	// proofAccepted reports a signature made by the slot's key whose nonce was
-	// free; the nonce is now claimed.
-	proofAccepted
-	// proofExhausted reports a signature that verified but whose nonce could not
-	// be claimed because the replay cache is full. That is server capacity, not a
-	// failed proof.
-	proofExhausted
-)
-
-// registerSignature reports what the request's signature proved against the
-// bound slot's key.
-func (s *Server) registerSignature(pubkey string, req registerRequest, now time.Time) signatureProof {
-	if req.Timestamp == "" || req.Nonce == "" || req.Signature == "" {
-		return proofUnusable
-	}
-	signedAt, err := core.CheckTimestamp(req.Timestamp, now)
-	if err != nil {
-		return proofUnusable
-	}
-	// 注册请求没有配置与版本信息，签名里这两行留空。
-	signing := core.SigningString(http.MethodPost, "/api/v1/register", req.DeviceID, req.Timestamp, req.Nonce, req.Platform, "", "")
-	if err := core.VerifySignature(pubkey, req.Signature, []byte(signing)); err != nil {
-		return proofUnusable
-	}
-	switch s.nonces.Claim(req.Nonce, now, signedAt) {
-	case core.NonceAccepted:
-		return proofAccepted
-	case core.NonceExhausted:
-		return proofExhausted
-	default:
-		return proofUnusable
-	}
 }
 
 // updateInfo points a client at the published build. Version is only sent to a

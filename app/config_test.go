@@ -75,7 +75,8 @@ func TestConfigFactsOfKeepsTheParseError(t *testing.T) {
 
 	// 签发路径拿的是同一个答案：坏配置既不算正式节点，也不算凭据节点。
 	a := openCredentialTemp(t)
-	device, _, err := a.CreateDevice("broken", broken)
+	pubkey, _ := testKeypair(t)
+	device, err := a.CreateDevice("broken", broken, pubkey)
 	if err != nil {
 		t.Fatalf("CreateDevice() error: %v", err)
 	}

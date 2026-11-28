@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -487,22 +488,37 @@ func TestAdminCredentialRefusedForFormalNode(t *testing.T) {
 	}
 }
 
-// TestAdminCredentialRefusedWithoutADeviceKey pins the precondition: a slot that
-// has never registered has no public key, so a credential cannot be sealed for it.
-// 这一类请求的前提不成立，应当是 409 而不是 500。
-func TestAdminCredentialRefusedWithoutADeviceKey(t *testing.T) {
+// TestAdminCredentialRefusedForAnUnusableKey pins the precondition: a credential
+// is sealed to the slot's public key, so a stored key that cannot be a sealing
+// recipient is 409 device_key_unusable, not 500. 新建的槽位从创建起就有一把合法
+// 钥匙，这条只剩被改坏的记录：形状是 32 字节，但它是低阶点，封不出共享秘密。
+func TestAdminCredentialRefusedForAnUnusableKey(t *testing.T) {
 	env := testenv.New(t, testenv.WithCredentialCLI())
-	id, _ := createDevice(t, env, "laptop", testTOML)
+	id := createDevice(t, env, "laptop", testTOML)
+
+	unusable := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	handle, err := db.Open(filepath.Join(env.DataDir, "mesh.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer handle.Close()
+	if _, err := handle.Update(id, func(d *db.Device) error {
+		d.Pubkey = unusable
+		return nil
+	}); err != nil {
+		t.Fatalf("store an unusable key: %v", err)
+	}
+
 	res, data := env.Do("POST", "/api/admin/devices/"+id+"/credential", nil)
 	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("issue credential for an unregistered device = %d, want 409: %s", res.StatusCode, data)
+		t.Fatalf("issue credential for a device with an unusable key = %d, want 409: %s", res.StatusCode, data)
 	}
 	var body map[string]string
 	if err := json.Unmarshal(data, &body); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
-	if body["code"] != "device_key_missing" || body["message"] == "" {
-		t.Fatalf("error = %+v, want code device_key_missing and a message", body)
+	if body["code"] != "device_key_unusable" || body["message"] == "" {
+		t.Fatalf("error = %+v, want code device_key_unusable and a message", body)
 	}
 	if _, err := env.App.LatestCredential(id); !errors.Is(err, db.ErrCredentialNotFound) {
 		t.Fatalf("a refused issuance left a credential row: %v", err)
